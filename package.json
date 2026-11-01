@@ -1,0 +1,14 @@
+{
+  "name": "deadsignal-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project Deadsignal - browser co-op stealth prototype (2 players, phone friendly)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
