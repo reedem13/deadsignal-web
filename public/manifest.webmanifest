@@ -1,0 +1,2 @@
+{ "name": "Project Deadsignal", "short_name": "Deadsignal", "start_url": "./", "display": "fullscreen",
+  "orientation": "any", "background_color": "#0a1418", "theme_color": "#0a1418" }

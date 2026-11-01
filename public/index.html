@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a1418">
+<link rel="icon" href="data:,">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Project Deadsignal</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div id="hudTop">
+    <div id="roomInfo"><span id="roomCode">----</span> <span id="peerStatus" class="bad">waiting</span> <span id="ping"></span>
+      <button id="btnShare" class="small">Share link</button></div>
+    <div id="alertBanner" class="hidden"></div>
+    <canvas id="radar" width="160" height="120"></canvas>
+  </div>
+  <div id="objective">Reach the door switches</div>
+  <div id="toast" class="hidden"></div>
+  <div id="stickZone"><div id="stickBase" class="hidden"><div id="stickKnob"></div></div></div>
+  <div id="buttons">
+    <button id="btnCrouch" class="act">CROUCH</button>
+    <button id="btnAct" class="act">ACT</button>
+  </div>
+  <div id="stance">WALK</div>
+</div>
+
+<!-- Lobby -->
+<div id="lobby" class="panel">
+  <h1>PROJECT<br><span>DEADSIGNAL</span></h1>
+  <p class="sub">2-player co-op infiltration &middot; prototype</p>
+  <div id="lobbyMain">
+    <button id="btnHost" class="big">HOST MISSION</button>
+    <div class="or">or join with a code</div>
+    <div class="row"><input id="codeInput" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false"><button id="btnJoin" class="big">JOIN</button></div>
+    <label class="solo"><input type="checkbox" id="soloBox"> Solo test (door + extract need only you)</label>
+  </div>
+  <div id="lobbyMsg"></div>
+  <div class="help">
+    <b>Phone:</b> left thumb = move (push to edge = run, loud) &middot; CROUCH = slow &amp; quiet, hides behind crates &middot; ACT = press a door switch<br>
+    <b>Keyboard:</b> WASD/arrows move &middot; Shift run &middot; C crouch &middot; E/Space act
+  </div>
+</div>
+
+<!-- End / info overlay -->
+<div id="overlay" class="panel hidden">
+  <h2 id="ovTitle"></h2>
+  <div id="ovBody"></div>
+  <button id="ovBtn" class="big"></button>
+</div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>

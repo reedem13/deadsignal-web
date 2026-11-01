@@ -1,0 +1,59 @@
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1418; color: #bfe8c8;
+  font-family: "Courier New", ui-monospace, monospace; touch-action: none; overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#game { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; image-rendering: pixelated; display: block; }
+.hidden { display: none !important; }
+button { font-family: inherit; color: #d8ffe0; background: #13312a; border: 2px solid #4fbf7a; border-radius: 6px;
+  padding: 8px 12px; font-size: 15px; letter-spacing: 1px; touch-action: manipulation; }
+button:active { background: #2a6b4a; }
+button.big { font-size: 20px; padding: 14px 20px; }
+button.small { font-size: 12px; padding: 3px 8px; }
+
+.panel { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 20px; background: radial-gradient(circle at 50% 30%, #12302a 0%, #050a0c 80%); text-align: center; z-index: 20;
+  overflow: auto; touch-action: auto; }
+#overlay { background: rgba(3, 10, 8, 0.86); }
+h1 { margin: 0; font-size: 26px; letter-spacing: 6px; color: #7fd99a; }
+h1 span { font-size: 40px; color: #c9ffd6; text-shadow: 0 0 12px #2f9f5f; }
+h2 { margin: 0; font-size: 30px; letter-spacing: 4px; color: #c9ffd6; }
+.sub { margin: 0; opacity: .7; }
+#lobbyMain { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.row { display: flex; gap: 8px; }
+.or { opacity: .6; font-size: 13px; }
+input#codeInput { width: 130px; font: inherit; font-size: 26px; text-align: center; letter-spacing: 6px; text-transform: uppercase;
+  background: #071612; color: #c9ffd6; border: 2px solid #4fbf7a; border-radius: 6px; padding: 8px; -webkit-user-select: text; user-select: text; }
+.solo { font-size: 12px; opacity: .75; }
+#lobbyMsg { min-height: 1.2em; color: #ffd27f; max-width: 420px; }
+.help { font-size: 12px; opacity: .65; max-width: 460px; line-height: 1.6; }
+#ovBody { line-height: 1.7; font-size: 16px; }
+
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+#hudTop { position: absolute; top: calc(6px + env(safe-area-inset-top)); left: calc(6px + env(safe-area-inset-left));
+  right: calc(6px + env(safe-area-inset-right)); display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
+#roomInfo { background: rgba(0,0,0,.45); padding: 4px 6px; border-radius: 4px; font-size: 13px; pointer-events: auto; }
+#roomCode { font-weight: bold; color: #fff; letter-spacing: 2px; }
+.good { color: #7fff9f; } .bad { color: #ffb36b; }
+#ping { opacity: .6; font-size: 11px; }
+#radar { width: 128px; height: 96px; background: rgba(0, 30, 18, .75); border: 1px solid #4fbf7a; image-rendering: pixelated; }
+#alertBanner { font-size: 20px; font-weight: bold; padding: 2px 10px; border-radius: 4px; letter-spacing: 3px; }
+#alertBanner.alert { background: #a01818; color: #fff; animation: blink .5s steps(2) infinite; }
+#alertBanner.caution { background: #b88a12; color: #111; }
+@keyframes blink { 50% { opacity: .55; } }
+#objective { position: absolute; top: calc(108px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center;
+  font-size: 13px; color: #e8ffe8; text-shadow: 0 1px 2px #000; }
+#toast { position: absolute; top: 38%; left: 0; right: 0; text-align: center; font-size: 28px; font-weight: bold; color: #fff;
+  text-shadow: 0 0 8px #f00, 0 2px 2px #000; }
+#stickZone { position: absolute; left: 0; bottom: 0; width: 58%; height: 65%; pointer-events: auto; touch-action: none; }
+#stickBase { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%;
+  border: 2px solid rgba(127, 217, 154, .6); background: rgba(20, 60, 40, .25); }
+#stickKnob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(127, 217, 154, .65); }
+#buttons { position: absolute; right: calc(14px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 14px; pointer-events: auto; }
+button.act { width: 86px; height: 86px; border-radius: 50%; font-size: 14px; background: rgba(19, 49, 42, .7); }
+button.act.on { background: #2f8f5a; color: #fff; }
+button.act.flash { background: #d8c040; color: #111; }
+#stance { position: absolute; left: calc(10px + env(safe-area-inset-left)); bottom: calc(8px + env(safe-area-inset-bottom));
+  font-size: 13px; background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 4px; }
+body.desktop #stickZone, body.desktop #buttons { display: none; }
+@media (max-width: 500px) { #alertBanner { font-size: 15px; letter-spacing: 1px; } #roomInfo { font-size: 12px; } #radar { width: 112px; height: 84px; } #objective { top: calc(96px + env(safe-area-inset-top)); font-size: 12px; padding: 0 8px; } }
