@@ -51,7 +51,7 @@ function freshWorld() {
     guards: GUARD_PATHS.map((p) => ({ x: p[0][0], z: p[0][1], a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0,
       rx: p[0][0], rz: p[0][1], ra: 0 })),
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
-    ext: [false, false], inv: [0, 0], finalT: 0,
+    ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, // dead: index of the player who died (-1 = nobody)
   };
 }
 
@@ -223,7 +223,7 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 function toggleCrouch() { me.c = !me.c; $('btnCrouch').classList.toggle('on', me.c); }
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
 function doInteract() {
-  if (!role) return;
+  if (!role || world.phase !== 'play') return;
   flash($('btnAct'));
   const near = SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
   if (!near) { toast('Nothing to use here', 900, '#ccc'); return; }
@@ -271,11 +271,11 @@ function triggerAlert(p) {
   world.alert = 2; world.alertT = ALERT_TIME;
   for (const g of world.guards) { g.st = 'chase'; g.tx = p.x; g.tz = p.z; g.give = 8; }
 }
+// Being caught = death = GAME OVER for both players. Host decides; phase 'over' is broadcast in every state packet.
 function catchPlayer(idx) {
-  world.caught++; world.inv[idx] = 2.5;
-  const s = SPAWNS[idx];
-  if (idx === 0) { me.x = s.x; me.z = s.z; toast('CAUGHT! Back to start', 1600); }
-  else { other.x = s.x; other.z = s.z; net.relay({ t: 'tp', x: s.x, z: s.z }); }
+  if (world.phase !== 'play') return;
+  world.caught++; world.dead = idx; world.phase = 'over'; world.finalT = world.t;
+  if (peerConnected) sendState(); // push immediately so both screens flip together
 }
 function hostUpdate(dt) {
   if (world.phase !== 'play') return;
@@ -326,7 +326,8 @@ function hostUpdate(dt) {
       if (g.wait <= 0) { g.st = 'chase'; g.tx = clamp(g.x + (Math.random() - 0.5) * 10, -19, 19); g.tz = clamp(g.z + (Math.random() - 0.5) * 10, -14, 14); g.give = 4; }
     }
     // --- catch
-    if (world.alert === 2) for (const p of ps) if (world.inv[p.idx] <= 0 && Math.hypot(p.x - g.x, p.z - g.z) < 0.95) catchPlayer(p.idx);
+    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && Math.hypot(p.x - g.x, p.z - g.z) < 0.95) { catchPlayer(p.idx); break; }
+    if (world.phase !== 'play') return;
   }
   // --- alert phases
   if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { g.st = 'patrol'; g.meter = 0; }); } }
@@ -347,7 +348,7 @@ const r2 = (v) => Math.round(v * 100) / 100;
 function sendState() {
   net.relay({ t: 's',
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter)]),
-    al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT),
+    al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo,
     h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0] });
 }
@@ -355,10 +356,11 @@ function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a
 
 function onGameMsg(d) {
   if (d.t === 'p' && role === 'host') { other.x = d.x; other.z = d.z; other.a = d.a; other.c = !!d.c; other.noise = d.n || 0; }
-  else if (d.t === 'i' && role === 'host') armSwitch(1);
+  else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(1); }
+  else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
     d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; g.x = a[0]; g.z = a[1]; g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search' }[a[3]]; g.meter = a[4]; });
-    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext });
+    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1 });
     solo = d.solo;
     other.x = d.h[0]; other.z = d.h[1]; other.a = d.h[2]; other.c = !!d.h[3];
   } else if (d.t === 'tp' && role === 'guest') {
@@ -411,7 +413,8 @@ function setPeer(v) {
 // ---------------------------------------------------------------- lobby / UI
 function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
 function showLobby(msg) {
-  role = null; $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
+  role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false;
+  me.c = false; $('btnCrouch').classList.remove('on'); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
@@ -457,20 +460,47 @@ function rank() {
   if (a <= 3 && c <= 2) return 'OPERATIVE';
   return 'ROOKIE';
 }
+const myIdx = () => (role === 'host' ? 0 : 1);
+function fmtTime(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; }
 function updateOverlay() {
-  if (world.phase === 'win' && lastPhase !== 'win') {
-    beep(523, 0.15, 'triangle', 0.1); setTimeout(() => beep(784, 0.3, 'triangle', 0.1), 160);
-    const m = Math.floor(world.finalT / 60), s = Math.floor(world.finalT % 60);
-    $('ovTitle').textContent = 'MISSION COMPLETE';
-    $('ovBody').innerHTML = `Time ${m}:${String(s).padStart(2, '0')}<br>Alerts ${world.alerts} &middot; Caught ${world.caught}<br>Rank: <b>${rank()}</b>`;
-    $('ovBtn').textContent = role === 'host' ? 'RUN IT AGAIN' : 'Waiting for host to restart...';
-    $('ovBtn').disabled = role !== 'host';
+  if (world.phase !== lastPhase && world.phase !== 'play') {
+    const btn = $('ovBtn');
+    if (world.phase === 'win') {
+      beep(523, 0.15, 'triangle', 0.1); setTimeout(() => beep(784, 0.3, 'triangle', 0.1), 160);
+      $('overlay').classList.remove('over');
+      $('ovTitle').textContent = 'MISSION COMPLETE';
+      $('ovBody').innerHTML = `Time ${fmtTime(world.finalT)}<br>Alerts ${world.alerts}<br>Rank: <b>${rank()}</b>`;
+      btn.textContent = 'RUN IT AGAIN';
+    } else if (world.phase === 'over') {
+      beep(220, 0.25, 'sawtooth', 0.1); setTimeout(() => beep(110, 0.6, 'sawtooth', 0.1), 220);
+      if (navigator.vibrate) navigator.vibrate([300, 100, 500]);
+      input.jx = input.jz = 0; input.keys.clear();
+      $('overlay').classList.add('over');
+      const who = solo ? 'You were caught.' : world.dead === myIdx() ? 'You were caught.' : 'Your partner was caught.';
+      $('ovTitle').textContent = 'GAME OVER';
+      $('ovBody').innerHTML = `${who}<br>Mission failed at ${fmtTime(world.finalT)} &middot; Alerts ${world.alerts}`;
+      btn.textContent = 'RETRY';
+    }
+    btn.disabled = false;
+    $('ovHint').textContent = role === 'host' || solo ? '' : 'Either player can tap RETRY to restart for both.';
     $('overlay').classList.remove('hidden');
   }
-  if (world.phase === 'play' && lastPhase === 'win') $('overlay').classList.add('hidden');
+  if (world.phase === 'play' && lastPhase !== 'play') $('overlay').classList.add('hidden');
   lastPhase = world.phase;
 }
-$('ovBtn').onclick = () => { if (role === 'host') { hostRestart(); $('overlay').classList.add('hidden'); } };
+$('ovBtn').onclick = () => {
+  unlockAudio();
+  if (role === 'host') { hostRestart(); $('overlay').classList.add('hidden'); }
+  else if (role === 'guest') {
+    if (!peerConnected) { $('ovHint').textContent = 'Host is offline - wait for them or go to Main Menu.'; return; }
+    net.relay({ t: 'r' }); $('ovBtn').disabled = true; $('ovBtn').textContent = 'RESTARTING...';
+  }
+};
+$('ovMenu').onclick = () => { // leave the room and go back to Host/Join
+  net.fatal = true; if (net.ws) net.ws.close();
+  roomCode = ''; showLobby(role === 'host' && !solo ? 'Room closed. Host a new mission or join one.' : '');
+  history.replaceState(null, '', location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
+};
 
 // ---------------------------------------------------------------- radar (top-right, Soliton-style)
 const radar = $('radar'), rc = radar.getContext('2d');
@@ -497,8 +527,11 @@ function render(dt) {
   // remote player smoothing
   other.rx += (other.x - other.rx) * k; other.rz += (other.z - other.rz) * k; other.ra = lerpA(other.ra, other.a, k);
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a; meMesh.inner.scale.y = me.c ? 0.6 : 1;
+  const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
+  meMesh.inner.rotation.z = deadMe ? -Math.PI / 2 : 0; meMesh.inner.position.y = deadMe ? 0.3 : 0;
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra; otherMesh.inner.scale.y = other.c ? 0.6 : 1;
+  otherMesh.inner.rotation.z = deadOther ? -Math.PI / 2 : 0; otherMesh.inner.position.y = deadOther ? 0.3 : 0;
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { g.rx += (g.x - g.rx) * k; g.rz += (g.z - g.rz) * k; g.ra = lerpA(g.ra, g.a, k); }
@@ -538,7 +571,8 @@ function updateHud() {
   if (world.alert === 2 && lastAlert < 2) { alertSound(); if (navigator.vibrate) navigator.vibrate(200); }
   lastAlert = world.alert;
   let obj;
-  if (!world.door) {
+  if (world.phase === 'over') obj = 'GAME OVER';
+  else if (!world.door) {
     const armed = world.sw.filter((v) => v > 0).length;
     obj = solo ? 'Stand on a switch pad and press ACT' :
       armed ? `Switch armed! Partner: press the OTHER switch now (${Math.max(...world.sw).toFixed(1)}s)` :

@@ -27,6 +27,11 @@ input#codeInput { width: 130px; font: inherit; font-size: 26px; text-align: cent
 #lobbyMsg { min-height: 1.2em; color: #ffd27f; max-width: 420px; }
 .help { font-size: 12px; opacity: .65; max-width: 460px; line-height: 1.6; }
 #ovBody { line-height: 1.7; font-size: 16px; }
+#overlay.over { background: rgba(40, 0, 0, 0.82); }
+#overlay.over h2 { color: #ff5050; font-size: 40px; text-shadow: 0 0 14px #a00; }
+#overlay button { min-width: 200px; }
+#ovBtn:disabled { opacity: .6; }
+#ovHint { font-size: 12px; opacity: .7; min-height: 1em; max-width: 320px; }
 
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 #hudTop { position: absolute; top: calc(6px + env(safe-area-inset-top)); left: calc(6px + env(safe-area-inset-left));
