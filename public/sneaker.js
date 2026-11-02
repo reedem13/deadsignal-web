@@ -479,7 +479,10 @@ export function makeSneaker(scene, opts = {}) {
     patch: new THREE.MeshLambertMaterial({ color: new THREE.Color(opts.accent ?? 0x6fb0ff).multiplyScalar(0.55), flatShading: true }),
   };
   if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); M.vest = L(T.vest); }
-  else { M.gun = L(T.gun); M.blade = L(T.blade); }
+  else { M.gun = L(T.gun); M.blade = L(T.blade);
+    M.nvg = new THREE.MeshBasicMaterial({ color: 0x7dff6a }); // Night Ops NVG lens glow
+    M.hud = new THREE.MeshBasicMaterial({ color: 0x58d8ff, transparent: true, opacity: 0.85 }); // Ash Fox HUD monocle glass
+  }
   const suitFrontMat = M.suitFront = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
   const headMats = enemy ? [M.face, M.skin, M.hair, M.skin, M.skin, M.skin] : [M.face, M.headSide, M.hair, M.skin, M.headSide, M.headSide];
@@ -568,6 +571,7 @@ export function makeSneaker(scene, opts = {}) {
   const neck = pivot(torso, 0.01, 0.52, 0);
   add(neck, G.neck, M.skin);
   const headPivot = pivot(neck, 0, 0.03, 0);
+  let tails = null; // Ash Fox bandana tails (animated)
   if (enemy) buildEnemyHead(headPivot, M, headMats, B, G);
   else {
     at(new THREE.Mesh(G.head, headMats), 0.01, 0.13, 0, headPivot);
@@ -604,6 +608,39 @@ export function makeSneaker(scene, opts = {}) {
     for (let i = 0; i < 3; i++) A(G.tip, 0.09 - i * 0.01, 0.37 - i * 0.012, -0.02 + i * 0.05, -0.3, 0, -1.0, [0.8, 0.9, 0.5]); // quiff points
     for (let i = 0; i < 4; i++) A(G.tip, -0.06 + i * 0.05, 0.315, -0.075, -0.9, 0, 0.1, [0.7, 0.8, 0.45]); // short layer over the left side of the undercut
     for (let i = 0; i < 3; i++) A(G.tip, -0.115, 0.27 + i * 0.02, -0.05 + i * 0.06, 0, 0, 1.75, [0.75, 0.8, 0.5]); // tapered back
+
+    // ESPIONAGE HEADGEAR - different silhouette per kit so P1 / P2 read apart from the top-down camera.
+    // NIGHT OPS: head harness (olive band + crown strap) carrying a flipped-up QUAD-TUBE NVG on a forehead mount -
+    // four stubby tubes jutting forward-up with green-lit lenses (a forward "prow" over the face).
+    const NV = { tag: 'night' };
+    add(headPivot, band(0.24, 0.032, 0.128, 0.118, 10, 0.01), M.web, 0, 0, 0, NV); // harness band round the skull
+    add(headPivot, shaped(0.24, 0.014, 0.034, [4, 1, 1], (v, nx) => { v.y -= 0.075 * nx * nx; }), M.web, 0.005, 0.335, 0, NV); // crown strap, front to back
+    for (const z of [-0.075, 0.075]) add(headPivot, shaped(0.014, 0.1, 0.03, [1, 2, 1], (v, nx, ny) => { v.z *= 1 + 0.2 * ny; }), M.web, 0.0, 0.29, z * 1.45, { ...NV, r: [-Math.sign(z) * 0.5, 0, 0] }); // side straps over the temples
+    add(headPivot, boxG(0.03, 0.06, 0.075), M.metal, 0.128, 0.27, 0, NV); // forehead mount plate
+    add(headPivot, boxG(0.05, 0.022, 0.03), M.gear, 0.15, 0.3, 0, { ...NV, r: [0, 0, -0.5] }); // flip-up arm
+    add(headPivot, shaped(0.07, 0.055, 0.2, [1, 1, 2], (v, nx, ny, nz) => { v.x -= 0.01 * nz * nz; }), M.gear, 0.17, 0.315, 0, { ...NV, r: [0, 0, -0.85] }); // NVG housing / bridge
+    const tube = new THREE.CylinderGeometry(0.022, 0.025, 0.1, 6), lensG = new THREE.CylinderGeometry(0.019, 0.019, 0.012, 6);
+    for (const [z, ry] of [[-0.078, 0.22], [-0.027, 0.05], [0.027, -0.05], [0.078, -0.22]]) { // quad tubes, outer pair canted out
+      const ax = Math.sin(0.85), ay = Math.cos(0.85), cx = 0.195, cy = 0.335;
+      add(headPivot, tube, M.gear, cx, cy, z, { ...NV, r: [ry, 0, -0.85] });
+      add(headPivot, lensG, M.nvg, cx + ax * 0.054, cy + ay * 0.054, z + ry * 0.02, { ...NV, r: [ry, 0, -0.85] }); // lit lens
+    }
+    add(headPivot, boxG(0.05, 0.03, 0.04), M.pouch, -0.13, 0.25, 0, NV); // battery pack on the back of the harness
+    // ASH FOX: long knotted BANDANA (blue) with two tails that stream behind when moving, a left-ear comms
+    // earpiece + boom mic, and a cyan HUD monocle over the right eye (a trailing "tail" + side glint silhouette).
+    const AF = { tag: 'ash' };
+    add(headPivot, band(0.235, 0.042, 0.132, 0.12, 10, 0.012), M.trim, 0, 0, 0, AF); // bandana band, under the swept top
+    add(headPivot, shaped(0.045, 0.055, 0.065, [1, 2, 1], (v, nx, ny) => { v.z *= 1 - 0.25 * Math.abs(ny); }), M.trim, -0.13, 0.235, 0, AF); // knot
+    tails = pivot(headPivot, -0.14, 0.235, 0);
+    add(tails, shaped(0.26, 0.012, 0.045, [3, 1, 1], (v, nx) => { v.z *= 1 - 0.35 * Math.max(0, -nx); v.y += 0.012 * Math.sin(nx * 3); }), M.trim, -0.13, 0, 0.02, { ...AF, r: [0.25, 0.15, 0] });
+    add(tails, shaped(0.2, 0.012, 0.04, [3, 1, 1], (v, nx) => { v.z *= 1 - 0.35 * Math.max(0, -nx); v.y -= 0.01 * Math.sin(nx * 3); }), M.trim, -0.1, -0.02, -0.02, { ...AF, r: [-0.3, -0.2, 0.15] });
+    add(headPivot, shaped(0.05, 0.065, 0.026, [1, 2, 1], (v, nx, ny) => { v.x *= 1 - 0.15 * Math.abs(ny); }), M.gear, -0.01, 0.13, -0.116, AF); // earpiece (left)
+    add(headPivot, boxG(0.012, 0.012, 0.012), M.accent, -0.01, 0.15, -0.131, AF); // earpiece LED (P accent)
+    add(headPivot, boxG(0.14, 0.012, 0.012), M.metal, 0.065, 0.075, -0.112, { ...AF, r: [0, 0.12, -0.38] }); // boom mic arm
+    add(headPivot, boxG(0.028, 0.022, 0.024), M.gear, 0.13, 0.048, -0.094, AF); // mic
+    add(headPivot, boxG(0.12, 0.012, 0.014), M.gear, 0.055, 0.2, 0.112, AF); // monocle arm along the right temple
+    add(headPivot, boxG(0.014, 0.06, 0.07), M.gear, 0.124, 0.165, 0.05, AF); // monocle frame
+    add(headPivot, boxG(0.008, 0.046, 0.056), M.hud, 0.133, 0.165, 0.05, AF); // HUD glass
   }
 
   // --- arms
@@ -695,7 +732,7 @@ export function makeSneaker(scene, opts = {}) {
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07), raim: K(0.09) };
+    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07), raim: K(0.09), tail: K(0.25) };
   // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
   // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
   // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
@@ -703,6 +740,10 @@ export function makeSneaker(scene, opts = {}) {
   const aimGoal = [0, 0], AIM_MAX = [1.1, 0.6];
   let aimHad = false;
   let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0, kickYaw = 0;
+  // HIT REACT: s.hurt = damage counter (bump it on every hit), s.hurtFrom = world angle the hit came FROM (attacker),
+  // s.hurtAmt = damage. A change snaps `hit` up (stacks a little over a FAMAS burst) and it bleeds off in ~0.4s;
+  // hitF / hitS = where the hit came from relative to the facing (front / right side), hitJ = random head jolt.
+  let lastHurt = 0, hit = 0, hitF = 1, hitS = 0, hitJ = 0;
   const bump = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return Math.sin(u * Math.PI); }; // 0 -> 1 -> 0 over [a,b]
   const mix = (a, b, k) => a + (b - a) * k;
   const sstep = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
@@ -745,6 +786,12 @@ export function makeSneaker(scene, opts = {}) {
       kickYaw = (Math.random() - 0.5) * (enemy ? 0.55 : 0.8); flashT = enemy ? 0.05 : 0.08; lastShot = s.shot;
     }
     recoil = Math.max(0, recoil - dt * (enemy ? 4.6 : 3.4)); flashT = Math.max(0, flashT - dt);
+    if (s.hurt && s.hurt !== lastHurt) {
+      const rel = (s.hurtFrom ?? -g.rotation.y) + g.rotation.y; // attacker angle relative to the facing (a = -rotation.y)
+      hitF = Math.cos(rel); hitS = Math.sin(rel); hitJ = (Math.random() - 0.5) * 2;
+      hit = Math.min(1.5, hit + clamp((s.hurtAmt ?? 10) / 12, 0.55, 1.2)); lastHurt = s.hurt;
+    }
+    hit = clamp(hit - Math.max(0, dt) * 3.2, 0, 1.5); // (dt can come in negative on a first preview frame)
     // takedown: attacker sinks into a braced half-crouch; victim's knees give out as the hold finishes
     crouchK = Math.max(crouchK, tdK * 0.45, heldK * sstep((heldP - 0.45) / 0.55) * 0.8);
     const proneK = sstep(damp(W.prone, s.prone && !s.dead ? 1 : 0, dt));
@@ -937,6 +984,17 @@ export function makeSneaker(scene, opts = {}) {
       }
       rflash.visible = flashT > 0 && holdK > 0.5; rflash.rotation.x = t * 40;
     }
+    // ---- HIT REACT (flinch): snap away from the hit - rock back (front hit) / pitch forward (from behind), lean off the
+    // side it came from, head whips, arms jerk up, knees give a little. Additive on top of whatever pose is running;
+    // applied BEFORE traversal so ladders / ropes / mantles keep their grip (traversal blends over it), damped prone.
+    const hk = hit > 0.001 ? sstep(Math.min(1, hit)) * (1 - 0.6 * pk) : 0;
+    if (hk > 0) {
+      torso.rotation.z += hitF * hk * 0.42; torso.rotation.x -= hitS * hk * 0.28; torso.rotation.y += hitJ * hk * 0.18;
+      headPivot.rotation.z += hitF * hk * 0.55; headPivot.rotation.y += hitJ * hk * 0.35; headPivot.rotation.x = -hitS * hk * 0.3;
+      for (const a of arms) { a.sh.rotation.z += hk * 0.3 * (1 - aimK * 0.6); a.sh.rotation.x -= a.side * hk * 0.25; a.el.rotation.z += hk * 0.35; }
+      if (pk < 0.5) for (const lg of legs) { lg.knee.rotation.z -= hk * 0.22; lg.hip.rotation.z += hk * 0.11; lg.ankle.rotation.z = -(lg.hip.rotation.z + lg.knee.rotation.z); }
+      hips.position.y -= hk * 0.035 * (1 - pk);
+    } else headPivot.rotation.x = 0;
     // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw / tug / rope / hookset)
     applyTrav(dt, s);
     if (holstered) {
@@ -951,6 +1009,12 @@ export function makeSneaker(scene, opts = {}) {
     inner.position.y = mix(deadK * 0.16, 0.14, pk);
     inner.position.x = mix(deadK * 0.1, -0.78, pk);
     rig.rotation.x = roll * (1 - flat); // bank into turns from the feet
+    // hit stagger: the whole body is shoved a few cm away from the shot (eases back with `hit`; off while climbing)
+    if (hit > 0.001 && !s.trav) { const sk = sstep(Math.min(1, hit)) * (1 - flat) * 0.07; inner.position.x -= hitF * sk; inner.position.z = -hitS * sk; } else inner.position.z = 0;
+    // bandana tails: hang + sway at rest, stream out behind with speed, flick on a hit
+    if (tails) { const st = damp(W.tail, clamp(spd / 4.5, 0, 1), dt);
+      tails.rotation.z = mix(1.05, 0.12, st) + flat * -0.6 + Math.sin(t * (2 + st * 9)) * (0.08 + st * 0.12) - hit * 0.4;
+      tails.rotation.x = Math.sin(t * (1.3 + st * 7) + 1) * (0.1 + st * 0.18) + hitS * hit * 0.4; }
     aimHad = !!s.aimAt;
     solveShoulderAim(s, aimK, pk);
   }

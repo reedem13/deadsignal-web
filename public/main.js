@@ -408,6 +408,76 @@ function updateFx(dt) {
   }
 }
 
+// BLOOD (PS1-style): one InstancedMesh of chunky red octahedron droplets (single draw call) sprayed out of the hit
+// side, falling under gravity and flattening into dots when they land, plus a small pool of pixel-splat floor decals
+// (32px CanvasTexture, NearestFilter) that fade after a few seconds. Fixed pools, nothing allocated per hit.
+const BLOOD = { drops: 72, splats: 14, life: 0.75, splatLife: 4.5, grav: 9 };
+const bloodDrops = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.045, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }), BLOOD.drops);
+bloodDrops.instanceMatrix.setUsage(THREE.DynamicDrawUsage); bloodDrops.frustumCulled = false; bloodDrops.count = 0; scene.add(bloodDrops);
+const dropState = Array.from({ length: BLOOD.drops }, () => ({ t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, fy: 0, s: 1, land: false }));
+{ const c = new THREE.Color(); for (let i = 0; i < BLOOD.drops; i++) bloodDrops.setColorAt(i, c.setHex([0x9a0e0e, 0x7a0808, 0xb81a14, 0x5e0606][i % 4])); }
+let dropI = 0;
+const splatTex = (() => { // irregular pixel splat: dark core blob + a few satellite drips
+  const c = document.createElement('canvas'); c.width = c.height = 32; const x = c.getContext('2d');
+  const r = (n) => Math.floor(Math.random() * n);
+  for (const [cx, cy, rad, col] of [[16, 16, 7, '#6a0707'], [12, 18, 5, '#7e0a0a'], [20, 13, 5, '#7e0a0a'], [16, 16, 4, '#9a1010'], [24, 22, 2, '#6a0707'], [7, 10, 2, '#6a0707'], [26, 9, 1.5, '#7e0a0a'], [9, 25, 1.5, '#7e0a0a']]) {
+    x.fillStyle = col; for (let yy = -rad; yy <= rad; yy++) for (let xx = -rad; xx <= rad; xx++) if (xx * xx + yy * yy <= rad * rad + r(3)) x.fillRect(cx + xx, cy + yy, 1, 1);
+  }
+  const t = new THREE.CanvasTexture(c); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; return t;
+})();
+const splats = Array.from({ length: BLOOD.splats }, () => {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: splatTex, transparent: true, opacity: 0, depthWrite: false, alphaTest: 0.05 }));
+  m.rotation.x = -Math.PI / 2; m.visible = false; m.renderOrder = 1; scene.add(m); return { m, t: 0 };
+});
+let splatI = 0;
+const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bp = new THREE.Vector3(), _bh = new THREE.Vector3(), _bE = new THREE.Euler();
+// spray blood at world point (x, y, z), mostly along (dx, dz) = away from the shooter (exit side). amt ~ damage.
+// fy = floor height under the victim (roofs / gantries). floor = drop a decal under them.
+function bloodBurst(x, y, z, dx, dz, amt = 10, fy = 0, floor = true) {
+  const dl = Math.hypot(dx, dz) || 1, ux = dx / dl, uz = dz / dl, n = Math.round(clamp(5 + amt * 0.45, 6, 16));
+  for (let k = 0; k < n; k++) {
+    const d = dropState[dropI]; dropI = (dropI + 1) % BLOOD.drops;
+    const sp = 1.2 + Math.random() * 2.4, side = (Math.random() - 0.5) * 1.6, back = Math.random() < 0.25 ? -0.5 : 1; // a few spatter back at the shooter
+    d.t = BLOOD.life * (0.6 + Math.random() * 0.6); d.x = x; d.y = y; d.z = z; d.fy = fy; d.land = false;
+    d.vx = (ux * back - uz * side) * sp; d.vz = (uz * back + ux * side) * sp; d.vy = 0.6 + Math.random() * 1.8; d.s = 0.6 + Math.random() * 0.9;
+  }
+  bloodDrops.count = BLOOD.drops;
+  if (floor) {
+    const sp = splats[splatI++ % splats.length], off = 0.25 + Math.random() * 0.35;
+    sp.m.position.set(x + ux * off, fy + 0.03 + (splatI % 5) * 0.002, z + uz * off); sp.m.rotation.z = Math.random() * 6.28;
+    sp.m.scale.setScalar(0.45 + amt * 0.02 + Math.random() * 0.2); sp.t = BLOOD.splatLife; sp.m.visible = true;
+  }
+}
+// blood at a character's chest: hit from world angle `from` (attacker -> victim spray goes the other way)
+function bloodOn(mesh, fromX, fromZ, amt, fy = 0) {
+  mesh.head.getWorldPosition(_bh); const gx = mesh.g.position.x, gz = mesh.g.position.z;
+  const y = Math.max(fy + 0.15, _bh.y - 0.2);
+  bloodBurst(gx + (_bh.x - gx) * 0.6, y, gz + (_bh.z - gz) * 0.6, gx - fromX, gz - fromZ, amt, fy);
+}
+function updateBlood(dt) {
+  let live = 0;
+  for (let i = 0; i < BLOOD.drops; i++) {
+    const d = dropState[i];
+    if (d.t <= 0) { _bm.makeScale(0, 0, 0); bloodDrops.setMatrixAt(i, _bm); continue; }
+    d.t -= dt; live++;
+    if (!d.land) {
+      d.vy -= BLOOD.grav * dt; d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
+      if (d.y <= d.fy + 0.02) { d.y = d.fy + 0.02; d.land = true; d.t = Math.min(d.t + 0.6, 1.2); } // landed: lingers a beat as a dot
+    }
+    const k = clamp(d.t / 0.25, 0, 1) * d.s; // shrink out at the end
+    if (d.land) _bs.set(k * 1.6, 0.15 * k, k * 1.6); else _bs.set(k * 0.8, k * 1.4, k * 0.8); // flat dot / stretched drop in flight
+    _bq.setFromEuler(_bE.set(0, 0, d.land ? 0 : Math.atan2(d.vx, d.vy) * 0.6));
+    _bm.compose(_bp.set(d.x, d.y, d.z), _bq, _bs); bloodDrops.setMatrixAt(i, _bm);
+  }
+  bloodDrops.instanceMatrix.needsUpdate = true; if (!live) bloodDrops.count = 0;
+  for (const sp of splats) {
+    if (sp.t <= 0) continue;
+    sp.t -= dt; sp.m.material.opacity = clamp(sp.t / 1.2, 0, 0.9); if (sp.t <= 0) sp.m.visible = false;
+  }
+}
+// clear all blood (mission restart)
+function clearBlood() { for (const d of dropState) d.t = 0; for (const sp of splats) { sp.t = 0; sp.m.visible = false; } bloodDrops.count = 0; }
+
 // laser sight: one beam + dot per player rig. Beam is a thin unlit box stretched from the muzzle to the first thing it
 // hits (tall wall / guard), so it reads at the chunky pixel scale where a 1px THREE.Line would vanish.
 function makeLaser() {
@@ -1269,6 +1339,7 @@ function hostUpdate(dt) {
   if (world.door && world.ext[0] && (solo || world.ext[1])) { world.phase = 'win'; world.finalT = world.t; }
 }
 function hostRestart() {
+  clearBlood();
   world = freshWorld();
   me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); lastCoId = -1; other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z; other.nvx = other.nvz = 0;
   net.relay({ t: 'tp', x: SPAWNS[1].x, z: SPAWNS[1].z, silent: true });
@@ -1512,6 +1583,41 @@ const CAM_H = 12, CAM_Z = 7.2; // top-down cam height / back-offset before zoom 
 const topCam = new THREE.Vector3(me.x, CAM_H, me.z + CAM_Z), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
 const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
 let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
+// DAMAGE REACTIONS (both roles, purely visual): watch the synced state instead of hooking each damage path, so gun /
+// melee / FAMAS hits and host- or guest-side damage all land the same way. A player's LIFE dropping -> blood + flinch
+// on that player's rig (attacker = nearest guard); a guard going down -> blood + hit-react (shot kill) or a knife-finish
+// burst (takedown). hurtN / hurtA / hurtD on a mesh feed sneaker.js update (s.hurt / s.hurtFrom / s.hurtAmt).
+const hpSeen = [HP_MAX, HP_MAX];
+function hurtActor(mesh, fx, fz, amt, fy, blood = true) {
+  mesh.hurtN = (mesh.hurtN || 0) + 1; mesh.hurtD = amt;
+  mesh.hurtA = Math.atan2(fz - mesh.g.position.z, fx - mesh.g.position.x);
+  if (blood) bloodOn(mesh, fx, fz, amt, fy);
+}
+function hurtCheck() {
+  const mi = myIdx();
+  for (let i = 0; i < 2; i++) {
+    const hp = world.hp[i] ?? HP_MAX, mine = i === mi, mesh = mine ? meMesh : otherMesh, p = mine ? me : other;
+    if (hp < hpSeen[i] && (mine || peerConnected)) {
+      const px = mine ? me.x : other.rx, pz = mine ? me.z : other.rz;
+      let src = null, best = 1e9; // attacker: nearest standing guard (shooter / clubber)
+      for (const g of world.guards) { if (g.st === 'dead' || g.st === 'held') continue; const d = Math.hypot((g.rx ?? g.x) - px, (g.rz ?? g.z) - pz); if (d < best) { best = d; src = g; } }
+      const fx = src ? (src.rx ?? src.x) : px + Math.cos(p.a || 0), fz = src ? (src.rz ?? src.z) : pz + Math.sin(p.a || 0);
+      hurtActor(mesh, fx, fz, hpSeen[i] - hp, (mine ? me.y : other.ry) || 0, !(mine && fpsK > 0.3)); // no blood in my own face in first person
+    }
+    hpSeen[i] = hp;
+  }
+  world.guards.forEach((g, gi) => {
+    const m = guardMeshes[gi]; if (!m) return;
+    const prev = m.lastSt; m.lastSt = g.st;
+    if (prev === undefined || prev === g.st || g.st !== 'dead' || prev === 'dead') return;
+    // killer: host knows g.by (0 = host, 1 = guest); the guest doesn't get it, so it takes the nearest player
+    const gx = g.rx ?? g.x, gz = g.rz ?? g.z, cand = [{ x: me.x, z: me.z }, ...(peerConnected ? [{ x: other.rx, z: other.rz }] : [])];
+    let k = cand[0], bd = 1e9; for (const c of cand) { const d = Math.hypot(c.x - gx, c.z - gz); if (d < bd) { bd = d; k = c; } }
+    if (role === 'host' && g.by != null) k = g.by === mi || !peerConnected ? cand[0] : cand[1] || cand[0];
+    if (prev === 'held') bloodOn(m, k.x, k.z, 14, 0); // knife finish: burst, no flinch (the hold already sells it)
+    else hurtActor(m, k.x, k.z, 30, 0); // shot dead: big spray + snap back as he drops
+  });
+}
 // which climb spot / grapple ring to highlight (whatever ACT would use)
 function travNear() {
   const m = curTm; if (!m || me.tr) return null;
@@ -1530,6 +1636,7 @@ function render(dt) {
   { const [tx, tz] = ext(other); if (other.snap) { other.rx = tx; other.rz = tz; other.snap = false; } else { other.rx += (tx - other.rx) * kr; other.rz += (tz - other.rz) * kr; } }
   other.ra = lerpA(other.ra, other.a, k);
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
+  hurtCheck();
   meMesh.g.position.set(me.x, me.y, me.z); meMesh.g.rotation.y = -me.a;
   // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
   const play = world.phase === 'play';
@@ -1542,7 +1649,7 @@ function render(dt) {
     const side = Math.sin(tt) * 0.16 * w * d, upd = Math.sin(tt * 2 + 1) * 0.35 * w;
     myAim = { x: myAim.x - Math.sin(me.a) * side, y: myAim.y + upd, z: myAim.z + Math.cos(me.a) * side };
   }
-  meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe,
+  meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe, hurt: meMesh.hurtN || 0, hurtFrom: meMesh.hurtA, hurtAmt: meMesh.hurtD,
     takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && !myBusy, armed: me.eq && !myBusy, shot: me.shot, trav: myTr }); // drawn = always in the forward aim stance
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
@@ -1555,7 +1662,7 @@ function render(dt) {
   const oBusy = !!other.tk, oTr = oBusy ? poseFor(other.tk, other.ti, other.tp, other.ry) : null;
   const otherAim = aimPoint({ x: other.rx, z: other.rz, y: other.ry, a: other.ra, tun: tunAt(other.rx, other.rz, other.ry) }, otherMesh, peerConnected && !!other.eq && other.td < 0 && !oBusy && play && !deadOther);
   otherMesh.update(dt, { aimAt: otherAim, moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0 && !oTr, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 && !oTr ? otherSpeed : 0,
-    crouch: other.c && !other.p && !oBusy, prone: other.p && !oBusy, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: (!!other.gd || !!other.eq) && !oBusy, armed: !!other.eq && !oBusy, shot: other.shot, trav: oTr });
+    crouch: other.c && !other.p && !oBusy, prone: other.p && !oBusy, dead: deadOther, hurt: otherMesh.hurtN || 0, hurtFrom: otherMesh.hurtA, hurtAmt: otherMesh.hurtD, takedown: other.td >= 0 ? other.td : null, aim: (!!other.gd || !!other.eq) && !oBusy, armed: !!other.eq && !oBusy, shot: other.shot, trav: oTr });
   updateRope(myRope, meMesh, me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y, 1));
   updateRope(otherRope, otherMesh, peerConnected ? other.tk : '', other.ti, other.tp);
   travFx.tick(dt, travNear());
@@ -1571,7 +1678,8 @@ function render(dt) {
     m.px = g.rx; m.pz = g.rz;
     const down = g.st === 'dead', held = g.st === 'held', live = !down && !held;
     m.update(dt, { moving: live && m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4, speed: live && world.phase === 'play' ? m.spd : 0,
-      dead: down, held: held ? Math.min(1, g.tdT / TD.time) : null, rifleAim: live && !!g.shooting && world.phase === 'play', shot: m.shot || 0 });
+      dead: down, held: held ? Math.min(1, g.tdT / TD.time) : null, rifleAim: live && !!g.shooting && world.phase === 'play', shot: m.shot || 0,
+      hurt: m.hurtN || 0, hurtFrom: m.hurtA, hurtAmt: m.hurtD });
     m.coneHolder.visible = live;
     m.poolK = down ? Math.min(1, m.poolK + dt * 0.5) : 0; m.pool.visible = m.poolK > 0; m.pool.scale.setScalar(0.2 + m.poolK * 0.9);
     const range = SIGHT.stand + (world.alert > 0 ? 2 : 0);
@@ -1623,7 +1731,7 @@ function render(dt) {
   markers[0].visible = f < 0.5;
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
   $('fpsVignette').style.opacity = f.toFixed(2);
-  updateFx(dt);
+  updateFx(dt); updateBlood(dt);
   renderer.render(scene, camera);
 }
 

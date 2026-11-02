@@ -26,7 +26,7 @@ const spin = qs.get('spin') !== '0';
 document.querySelectorAll('button').forEach((b) => b.onclick = () => { if (b.dataset.p) pose = b.dataset.p; if (b.dataset.w) who = b.dataset.w; });
 function size() { r.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
 addEventListener('resize', size); size();
-let last = performance.now(), tdT = 0, shotT = 0, shot = 0, eShot = 0, eBurst = 0;
+let last = performance.now(), tdT = 0, shotT = 0, shot = 0, eShot = 0, eBurst = 0, hurtT = 0, hurtN = 0;
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.5;
   const low = /prone|crawl/.test(pose), dist = +(qs.get('dist') || 5); const ly = qs.has('ly') ? +qs.get('ly') : low ? 0.25 : 0.8; cam.position.set(Math.cos(ang) * dist, qs.has('cy') ? +qs.get('cy') : low ? 1.5 : 1.6, Math.sin(ang) * dist); cam.lookAt(0, ly, 0);
@@ -53,6 +53,9 @@ function loop(now) {
   }
   const s = { armed: /ready|aim/.test(pose), moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead',
     aim: /aim/.test(pose), shot };
+  // ?hurt=1: hit-react (flinch) every 0.9s, hit coming from the camera side
+  if (qs.get('hurt')) { hurtT += dt; if (hurtT > 0.9) { hurtT = 0; hurtN++; }
+    Object.assign(s, { hurt: hurtN, hurtFrom: Math.atan2(cam.position.z, cam.position.x), hurtAmt: 12 }); }
   // ?aimyaw=<rad> (aim poses): lock target 4m out at that angle off the facing -> arms turn at the shoulders toward it
   const ay = qs.has('aimyaw') ? +qs.get('aimyaw') : null;
   for (const m of E) m.update(dt, { ...s, armed: false, aim: false, rifleAim: s.aim, shot: eShot });
