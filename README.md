@@ -13,6 +13,8 @@ Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way aro
 - **Prone** (Z/X or PRONE button): belly-down commando crawl. Slowest, silent, guards only spot you from ~3.5 m and much more slowly; hides behind low crates.
 - **Tunnels** (yellow-striped mouths, gold on the radar): West Culvert (spawn yard → north-west yard), Barracks Crawlspace (through the barracks), Compound Drain (west yard → inside the extraction compound; you still need the two-switch door to win). Inside a tunnel your camera goes **first person** (only yours, not your partner's). Up/W crawls forward, left/right turns, down/S backs up. You can't stand up in there. Guards can't enter, see in, or catch you in a tunnel.
 - Guards: patrol → `?` investigate noises/glimpses → `!` ALERT (chase, ~15 s), then CAUTION, then calm. A guard touching you in ALERT sends you back to the start.
+- **Takedown** (ACT / E / Space, only from *behind* a guard, within ~1.4 m, rear ~±64° arc): sneaker snaps in, choke hold + two knife jabs (~2.2 s), guard drops and stays down (no sight, hearing or catching). Front/side never works; the ACT button turns red and reads TAKE DOWN when it's possible.
+- **Handgun** (P-9, holstered on the right thigh): ACT fires when there's no takedown/switch, F always fires. 12 rounds per mission, 0.5 s between shots, auto-aims at the nearest guard in front of you (narrow cone straight ahead in tunnels), one hit drops him. Crates don't stop bullets, walls do. Every shot is loud: live guards within 12 m come investigate (or chase if already on ALERT).
 - **Two-person door:** two switch pads by the red door, 10 m apart. Each player stands on one and presses ACT; the presses must land within 2 s of each other. One person can't do it alone.
 - **Extract:** both players inside the green ring behind the door = MISSION COMPLETE (time, alerts, times caught, rank). The host can restart.
 - Soliton-style radar in the top right, alert banner, objective line, beeps and vibration (Android) on ALERT.
@@ -56,7 +58,8 @@ Advanced: the client can talk to a relay on a different host with `?server=wss:/
 | Crouch toggle | CROUCH button | C |
 | Prone toggle | PRONE button | Z or X |
 | In a tunnel (1st person) | stick up/down = forward/back, left/right = turn | W/S forward/back, A/D turn |
-| Use switch | ACT button | E / Space |
+| Takedown (from behind) / use switch / fire | ACT button (label changes: TAKE DOWN / USE / FIRE) | E / Space |
+| Fire pistol | ACT (when nothing else to do) | F |
 
 ## Phone tips / known limits
 - **iPhone/iOS Safari**
