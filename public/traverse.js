@@ -60,16 +60,22 @@ export const LINKS = [
   { name: 'GANTRY SOUTH LINE', x: 12, z: -1.82, a: -Math.PI / 2, y0: 0, top: 3.4, lip: 4.32, wall: 0.38, land: 0.62, rail: 1 },
   { name: 'GANTRY EAST LINE', x: 16.5, z: -3.78, a: Math.PI / 2, y0: 0, top: 3.4, lip: 4.32, wall: 0.38, land: 0.62, rail: 1 },
 ];
-// Slow, deliberate timings (seconds). UP: square up -> wind + throw -> claw bites, tug test -> hand-over-hand climb
-// (pull, settle, pull...) -> mantle over the lip. DOWN: face the drop at the lip -> kneel + clamp the claw, feed the rope
-// down -> turn your back to the drop, step back over the edge -> controlled bounding drops down the face -> land.
+// Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
+//   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom
+//   DOWN entry (top ring): face the drop -> kneel + clamp the claw, feed the line -> turn, step back over the edge -> ON THE LINE at the top
+// ON THE LINE: hold up = hand-over-hand climb (pull, settle, pull...), hold down = controlled bounding descent (kick off, swing
+// back in), let go of the stick = hang still on the rope. Up at the top -> mantle over the lip; down at the bottom -> land.
 export const GRAPPLE = {
-  up: { sq: 0.5, throw: 1.05, set: 0.8, mantle: 1.0 }, upRate: 0.62, upStep: 0.34, // climb m/s, metres per hand pull
-  dn: { sq: 0.5, set: 1.2, over: 1.3, land: 0.4 }, dnRate: 0.95, dnStep: 0.62,   // rappel m/s, metres per bound
+  up: { sq: 0.5, throw: 1.05, set: 0.8 }, dn: { sq: 0.5, set: 1.2, over: 1.3 }, mantle: 1.0, land: 0.4,
+  upRate: 0.62, upStep: 0.34, upHold: 0.25, // climb m/s, metres per hand pull, fraction of each pull spent settling
+  dnRate: 0.95, dnStep: 0.62, dnHold: 0.3,  // descent m/s, metres per bound
   flyFrom: 0.48, // fraction of the throw phase spent winding (claw spinning under the hand) before it flies
-  hangDrop: 1.55, // feet this far under the lip = hands on it (end of the climb / start of the rappel)
+  hangDrop: 1.55, // feet this far under the lip = hands on it (top of the climbable line / start of the descent)
+  kick: 0.22,     // how far you push off the wall at the top of a bound
 };
-const UP_ORDER = ['sq', 'throw', 'set', 'climb', 'mantle'], DN_ORDER = ['sq', 'set', 'over', 'drop', 'land'];
+// phases (wire index = position in this list): entry phases depend on the direction you came from
+export const LINE_PH = ['sq', 'throw', 'set', 'over', 'line', 'mantle', 'land'];
+export const LINE_ENTRY = { gp: ['sq', 'throw', 'set'], rp: ['sq', 'set', 'over'] };
 for (const L of LINKS) {
   L.dx = Math.cos(L.a); L.dz = Math.sin(L.a);
   L.face = { x: L.x + L.dx * L.wall, z: L.z + L.dz * L.wall };
@@ -78,40 +84,50 @@ for (const L of LINKS) {
   L.foot = { x: L.x, y: L.y0, z: L.z };
   L.landP = { x: L.face.x + L.dx * L.land, y: L.top, z: L.face.z + L.dz * L.land };
   L.hang = Math.max(L.y0 + 0.4, L.lip - GRAPPLE.hangDrop);
-  const run = L.hang - L.y0;
-  L.upT = { ...GRAPPLE.up, climb: run / GRAPPLE.upRate }; L.dnT = { ...GRAPPLE.dn, drop: run / GRAPPLE.dnRate };
-  L.upDur = UP_ORDER.reduce((a, k) => a + L.upT[k], 0); L.dnDur = DN_ORDER.reduce((a, k) => a + L.dnT[k], 0);
-  L.upSteps = Math.max(1, Math.round(run / GRAPPLE.upStep)); L.dnSteps = Math.max(1, Math.round(run / GRAPPLE.dnStep));
 }
-// which phase of a grapple (up = true) / rappel we're in at time t: { ph, u (0..1 inside the phase), t }
-export function grapplePhase(L, up, t) {
-  const order = up ? UP_ORDER : DN_ORDER, T = up ? L.upT : L.dnT; let acc = 0;
-  for (const k of order) { if (t < acc + T[k]) return { ph: k, u: (t - acc) / T[k], t }; acc += T[k]; }
-  return { ph: order[order.length - 1], u: 1, t, done: true };
+/** duration of an automated phase (line = player-driven, no duration) */
+export function lineDur(k, ph) {
+  if (ph === 'mantle') return GRAPPLE.mantle; if (ph === 'land') return GRAPPLE.land;
+  return (k === 'gp' ? GRAPPLE.up : GRAPPLE.dn)[ph] || 0;
 }
 const ss = (v) => { v = Math.max(0, Math.min(1, v)); return v * v * (3 - 2 * v); };
 // stepped progress 0..1 over n beats: each beat eases in + out, so motion comes in deliberate pulls / bounds
 export function beats(u, n, hold = 0.25) { const f = u * n, i = Math.min(n - 1, Math.floor(f)), k = f - i; return (i + ss(k / (1 - hold))) / n; }
-/** body position along a vertical grapple. s = where the move started (x,y,z). Returns out with an extra `.off` (push-off). */
-export function grapplePos(L, up, t, s, out) {
-  const P = grapplePhase(L, up, t), u = P.u; out.off = 0;
-  if (up) {
-    if (P.ph === 'sq') { const k = ss(u); out.x = s.x + (L.foot.x - s.x) * k; out.z = s.z + (L.foot.z - s.z) * k; out.y = s.y; }
-    else if (P.ph === 'throw' || P.ph === 'set') { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0; }
-    else if (P.ph === 'climb') { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0 + (L.hang - L.y0) * beats(u, L.upSteps); }
-    else { const vy = ss(u / 0.6), vh = ss((u - 0.35) / 0.65);
-      out.y = L.hang + (L.top - L.hang) * vy; out.x = L.foot.x + (L.landP.x - L.foot.x) * vh; out.z = L.foot.z + (L.landP.z - L.foot.z) * vh; }
-  } else {
-    if (P.ph === 'sq') { const k = ss(u); out.x = s.x + (L.landP.x - s.x) * k; out.z = s.z + (L.landP.z - s.z) * k; out.y = s.y; }
-    else if (P.ph === 'set') { out.x = L.landP.x; out.z = L.landP.z; out.y = L.top; }
-    else if (P.ph === 'over') { const k = (u - 0.3) / 0.7, vh = ss(k / 0.6), vy = ss((k - 0.35) / 0.65); // turn around, back over the edge, lower onto the rope
-      out.x = L.landP.x + (L.foot.x - L.landP.x) * vh; out.z = L.landP.z + (L.foot.z - L.landP.z) * vh; out.y = L.top + (L.hang - L.top) * vy; }
-    else if (P.ph === 'drop') { const n = L.dnSteps, f = u * n, k = f - Math.min(n - 1, Math.floor(f));
-      out.x = L.foot.x; out.z = L.foot.z; out.y = L.hang - (L.hang - L.y0) * beats(u, n, 0.3);
-      out.off = Math.sin(Math.PI * Math.min(1, k / 0.7)) * 0.22; } // kick off the wall each bound, swing back in to plant
-    else { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0; }
-  }
+/** distance covered (0..1 of one stroke) at stroke fraction f: pull / bound, then settle */
+export const strokeAt = (f, hold) => ss(f / (1 - hold));
+/** push-off from the wall during a descending bound at stroke fraction f */
+export const kickAt = (f) => Math.sin(Math.PI * Math.min(1, Math.max(0, f) / 0.7)) * GRAPPLE.kick;
+/**
+ * body position during an automated phase. k = gp|rp (entry direction), ph, u = 0..1 in the phase,
+ * s = where the move started (x,y,z), y0 = height the mantle / land starts from.
+ */
+export function lineAutoPos(L, k, ph, u, s, y0, out) {
+  out.off = 0;
+  if (ph === 'sq') { const e = ss(u), t = k === 'gp' ? L.foot : L.landP; out.x = s.x + (t.x - s.x) * e; out.z = s.z + (t.z - s.z) * e; out.y = s.y; }
+  else if (ph === 'throw' || (ph === 'set' && k === 'gp')) { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0; }
+  else if (ph === 'set') { out.x = L.landP.x; out.z = L.landP.z; out.y = L.top; }
+  else if (ph === 'over') { const e = (u - 0.3) / 0.7, vh = ss(e / 0.6), vy = ss((e - 0.35) / 0.65); // turn around, back over the edge, onto the rope
+    out.x = L.landP.x + (L.foot.x - L.landP.x) * vh; out.z = L.landP.z + (L.foot.z - L.landP.z) * vh; out.y = L.top + (L.hang - L.top) * vy; }
+  else if (ph === 'mantle') { const vy = ss(u / 0.6), vh = ss((u - 0.35) / 0.65);
+    out.y = y0 + (L.top - y0) * vy; out.x = L.foot.x + (L.landP.x - L.foot.x) * vh; out.z = L.foot.z + (L.landP.z - L.foot.z) * vh; }
+  else { out.x = L.foot.x; out.z = L.foot.z; out.y = y0 + (L.y0 - y0) * ss(u * 2); } // land: last few cm, boots down
   return out;
+}
+/**
+ * Wire encoding of a line move's state in one float: phase index + fraction. ON THE LINE the fraction packs
+ * the motion slot (0 hang after climbing, 1 hang after descending, 2 climbing, 3 descending) + the stroke fraction.
+ */
+export function lineEncode(T) {
+  const pi = LINE_PH.indexOf(T.ph);
+  if (T.ph !== 'line') return pi + Math.min(0.999, Math.max(0, T.u || 0));
+  const slot = T.dir > 0 ? 2 : T.dir < 0 ? 3 : T.last < 0 ? 1 : 0;
+  return pi + slot * 0.2 + Math.min(0.999, Math.max(0, T.sf)) * 0.19;
+}
+export function lineDecode(tp) {
+  const pi = Math.max(0, Math.min(LINE_PH.length - 1, Math.floor(tp + 1e-6))), ph = LINE_PH[pi], r = Math.max(0, tp - pi);
+  if (ph !== 'line') return { ph, u: Math.min(1, r) };
+  const slot = Math.min(3, Math.floor(r / 0.2 + 1e-6));
+  return { ph, u: 0, slot, dir: slot === 2 ? 1 : slot === 3 ? -1 : 0, last: slot === 1 || slot === 3 ? -1 : 1, sf: Math.min(1, Math.max(0, (r - slot * 0.2) / 0.19)) };
 }
 
 // ---------------------------------------------------------------- meshes

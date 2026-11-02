@@ -10,12 +10,13 @@
 // The host is authoritative for guard deaths: guests send 'td' / 'sh' requests, the host applies them and broadcasts.
 // Climbing (Splinter Cell style, see traverse.js for the map data): players have a feet height me.y. Crates + roofs are
 // walkable; ACT near a lip / ladder / drainpipe / grapple ring / co-op wall climbs, mantles, grapples or boosts.
-// Grapples are vertical only: the claw bites a wall lip, you climb / rappel straight up / down the face (traverse.js LINKS).
+// Grapples are vertical only: the claw bites a wall lip, then YOU drive the rope: hold up = climb, hold down = descend,
+// release = hang still (traverse.js LINKS / GRAPPLE). ACT on the rope = let go.
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, WALKS, RAILS, GANTRY_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, coopGeom, grapplePhase, grapplePos, buildTraversal } from './traverse.js';
+import { TRAV, WALKS, RAILS, GANTRY_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal } from './traverse.js';
 
 // ---------------------------------------------------------------- level data (greybox yard)
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
@@ -78,6 +79,13 @@ const NOISE = { run: 6, walk: 2.2 };
 // walk reaches full speed in ~0.2s, run in ~0.33s; stops coast for ~0.15s (walk) / ~0.25s (run).
 const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
 const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
+// vertical vision (host): anyone off the ground (roof, gantry, ladder, rope) is checked in 3D from the guard's eye.
+//   upFov / upFovAlert = how far above eye level a guard looks (rad, ~49 / ~60 deg). Straight overhead is blind.
+//   high / rope = range scale for a target up on a roof / gantry vs hanging on a rope (silhouetted against the wall).
+//   steep = range lost at the top of the vertical cone (looking up hard = shorter sight). slowUp = meter fill lost there,
+//   calmUp = extra meter scale while CALM (a patrolling guard isn't scanning rooftops). Roof edges / decks occlude.
+const SIGHT_V = { eye: 1.6, upFov: 0.85, upFovAlert: 1.05, high: 0.85, rope: 0.95, steep: 0.35, slowUp: 0.45, calmUp: 0.8,
+  chest: { stand: 1.2, crouch: 0.75, prone: 0.25 } };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
 // takedown: must be within range and inside the guard's rear arc (|angle off his facing| > behind -> ~+-64deg behind him).
 // Host re-checks guest requests with the looser 'lenient' numbers to absorb lag.
@@ -181,8 +189,45 @@ function rayEnd(x, z, a, len) {
 const alive = (g) => g.st !== 'dead' && g.st !== 'held';
 // low crates (h < 1.3) only hide a crouching target
 function lineOfSight(g, p) {
+  if ((p.y || 0) > 0.3) return lineOfSight3(g, p);
   for (const b of solids()) { if (b.h < 1.3 && !p.c) continue; if (b.h <= (p.y || 0) + 0.3) continue; if (segHitsBox(g.x, g.z, p.x, p.z, b)) return false; }
   return true;
+}
+// 3D segment (a -> b) vs axis-aligned box b {x1..x2, y0..h, z1..z2}: hit strictly before the end (so the roof you stand on doesn't count)
+function seg3HitsBox(ax, ay, az, bx, by, bz, B, y0 = 0) {
+  let t0 = 0, t1 = 0.97;
+  for (const [p, d, lo, hi] of [[ax, bx - ax, B.x1, B.x2], [ay, by - ay, y0, B.h], [az, bz - az, B.z1, B.z2]]) {
+    if (Math.abs(d) < 1e-9) { if (p < lo || p > hi) return false; }
+    else { let ta = (lo - p) / d, tb = (hi - p) / d; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) return false; }
+  }
+  return true;
+}
+// eye (1.6 m) -> target's chest. Buildings / walls / crates / posts block in full 3D; walk decks (gantry, barracks roof slab) are thin slabs.
+function lineOfSight3(g, p) {
+  const ty = targetY(p), ey = SIGHT_V.eye;
+  for (const b of solids()) if (seg3HitsBox(g.x, ey, g.z, p.x, ty, p.z, b)) return false;
+  for (const w of WALKS) if (seg3HitsBox(g.x, ey, g.z, p.x, ty, p.z, w, w.h - 0.2)) return false;
+  return true;
+}
+const targetY = (p) => (p.y || 0) + (p.p ? SIGHT_V.chest.prone : p.c ? SIGHT_V.chest.crouch : SIGHT_V.chest.stand);
+/**
+ * can guard g see player p right now (cone + range + occlusion)? -> { d (effective distance), range, up (0..1 how hard he
+ * looks up) } or null. Ground targets: the original flat cone. Elevated targets: horizontal cone + vertical cone + 3D range.
+ */
+function guardSees(g, p) {
+  const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz), alert = world.alert > 0;
+  let range = (p.p ? SIGHT.prone : p.c ? SIGHT.crouch : SIGHT.stand) + (alert ? 2 : 0);
+  const inCone = Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < SIGHT.fovHalf;
+  if ((p.y || 0) <= 0.3) {
+    if (d > range || !(inCone || d < 1.1) || !lineOfSight(g, p)) return null;
+    return { d, range, up: 0 };
+  }
+  const dh = targetY(p) - SIGHT_V.eye, elev = Math.atan2(dh, Math.max(d, 1e-3)), vmax = world.alert === 2 ? SIGHT_V.upFovAlert : SIGHT_V.upFov;
+  if (elev > vmax) return null;                                   // straight overhead: outside his vertical cone
+  const up = clamp(elev / vmax, 0, 1), d3 = Math.hypot(d, dh);
+  range *= (p.rope ? SIGHT_V.rope : SIGHT_V.high) * (1 - SIGHT_V.steep * up);
+  if (d3 > range || !(inCone || d3 < 1.3) || !lineOfSight3(g, p)) return null;
+  return { d: d3, range, up };
 }
 function moveToward(o, tx, tz, speed, dt, r = 0.45) {
   const dx = tx - o.x, dz = tz - o.z, d = Math.hypot(dx, dz);
@@ -431,19 +476,19 @@ function cordBetween(m, a, b) {
 function updateRope(R, mesh, tk, ti, tp) {
   const on = (tk === 'gp' || tk === 'rp') && LINKS[ti];
   if (!on) { R.main.visible = R.grip.visible = R.claw.visible = false; return; }
-  const L = LINKS[ti], up = tk === 'gp', P = grapplePhase(L, up, tp * (up ? L.upDur : L.dnDur)), A = L.anchor;
+  const L = LINKS[ti], up = tk === 'gp', P = lineDecode(tp), A = L.anchor, now = performance.now() / 1000;
   mesh.handWorld(_rh, 1); R.claw.visible = true; R.grip.visible = R.main.visible = false;
   let bit = true, bottom = L.y0 + 0.02; // claw on the lip? where the hanging rope ends
   if (up && (P.ph === 'sq' || P.ph === 'throw')) {
     const f = P.ph === 'sq' ? 0 : P.u, w = GRAPPLE.flyFrom;
     if (f < w) { // wind-up: claw circles under the hand on ~0.4 m of line
-      const ang = (f / w) * Math.PI * 5 + P.t * 2, r = 0.12 + 0.2 * (f / w);
+      const ang = (f / w) * Math.PI * 5 + now * 2, r = 0.12 + 0.2 * (f / w);
       _re.set(_rh.x + Math.cos(-mesh.g.rotation.y + Math.PI) * 0.1 + Math.cos(ang) * r * 0.4, _rh.y - 0.32 + Math.sin(ang) * r, _rh.z + Math.sin(-mesh.g.rotation.y + Math.PI) * 0.1 + Math.sin(ang) * r * 0.4);
       R.claw.rotation.set(ang, -L.a, 0); cordBetween(R.grip, _rh, _re);
     } else { // flight: lob up past the lip, drop onto it
       const k = (f - w) / (1 - w), e = 1 - (1 - k) * (1 - k);
       _re.copy(_rh).lerp(_ra.set(A.x, A.y, A.z), e); _re.y += Math.sin(Math.PI * k) * 0.55; _re.x -= L.dx * Math.sin(Math.PI * k) * 0.25; _re.z -= L.dz * Math.sin(Math.PI * k) * 0.25;
-      R.claw.rotation.set(P.t * 14, -L.a, 0); cordBetween(R.grip, _rh, _re);
+      R.claw.rotation.set(now * 14, -L.a, 0); cordBetween(R.grip, _rh, _re);
     }
     bit = false;
   } else if (!up && (P.ph === 'sq' || (P.ph === 'set' && P.u < 0.45))) { // carrying it, then reaching to set it on the lip
@@ -453,7 +498,7 @@ function updateRope(R, mesh, tk, ti, tp) {
   if (bit) {
     R.claw.position.set(A.x, A.y, A.z); R.claw.rotation.set(0, -L.a, 0);
     _ra.set(L.rope.x, A.y - 0.06, L.rope.z); _rb.set(L.rope.x, bottom, L.rope.z); cordBetween(R.main, _ra, _rb);
-    if ((up && P.ph !== 'mantle') || (!up && P.ph !== 'set' && P.ph !== 'land')) { // hands on the line
+    if (P.ph === 'line' || P.ph === 'over' || (up && P.ph === 'set')) { // hands on the line
       _re.set(L.rope.x, clamp(_rh.y, bottom, A.y - 0.06), L.rope.z); if (_re.distanceTo(_rh) < 0.7) cordBetween(R.grip, _rh, _re);
     }
   } else R.claw.position.copy(_re);
@@ -561,7 +606,7 @@ function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.re
 const nearSwitch = () => me.y < 0.3 && SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
 let curTm = null; // traversal option ACT would use right now (refreshed every frame in updateHud)
 function actMode() {
-  if (me.tr) return me.tr.k === 'ld' ? 'letgo' : me.tr.k === 'kn' ? 'stand' : 'busy';
+  if (me.tr) return me.tr.k === 'ld' || (ON_LINE(me.tr.k) && me.tr.ph === 'line') ? 'letgo' : me.tr.k === 'kn' ? 'stand' : 'busy';
   if (takedownTarget(me) >= 0) return 'td';
   if (nearSwitch()) return 'use';
   curTm = travMode(); if (curTm) return curTm.m;
@@ -832,8 +877,8 @@ function startTrav(tm) {
     case 'down': solo1('md', tm.i, { dur: TRAV.downT * 1.6, sx: me.x, sy: me.y, sz: me.z, tx: c.x, ty: c.top - TRAV.hangBelow, tz: c.z }); me.a = c.a; break;
     case 'mantle': { const m = tm.s; me.a = m.a; solo1('mt', -1, { dur: TRAV.mantleT, sx: me.x, sy: me.y, sz: me.z, tx: m.x, ty: m.y, tz: m.z }); break; }
     case 'grapple': case 'rappel': { const up = tm.m === 'grapple', L = LINKS[tm.i];
-      solo1(up ? 'gp' : 'rp', tm.i, { s: { x: me.x, y: me.y, z: me.z }, a0: me.a, ph: '' });
-      if (me.tr) { me.tr.dur = up ? L.upDur : L.dnDur; beep(up ? 260 : 200, 0.06, 'triangle', 0.05); } break; }
+      solo1(up ? 'gp' : 'rp', tm.i, { s: { x: me.x, y: me.y, z: me.z }, a0: me.a, ph: 'sq', pt: 0, u: 0, ly: up ? L.y0 : L.hang, dir: 0, last: up ? 1 : -1, sf: 0, my: 0 });
+      if (me.tr) beep(up ? 260 : 200, 0.06, 'triangle', 0.05); break; }
     case 'kneel': { const g = COOP_G[tm.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[tm.i].a + Math.PI; stopMe(); me.c = me.p = false; syncStanceButtons();
       me.tr = { k: 'kn', i: tm.i, t: 0 }; toast('Kneeling - partner: ACT here to climb on', 1400, '#ffd27f'); break; }
     case 'boost': requestCoop('boost', tm.i, myIdx()); break;
@@ -846,6 +891,11 @@ function trAct() {
   const T = me.tr;
   if (T.k === 'ld') { me.tr = null; me.fallFrom = me.y; const c = CLIMBS[T.i]; me.x -= Math.cos(c.a) * 0.3; me.z -= Math.sin(c.a) * 0.3; me.vy = -0.01; } // let go
   else if (T.k === 'kn') me.tr = null;
+  else if (ON_LINE(T.k) && T.ph === 'line') { // let go of the rope: near the bottom = step off, higher = drop (a standing drop thuds)
+    const L = LINKS[T.i];
+    if (T.ly - L.y0 < 0.45) lineEnter(T, 'land');
+    else { me.tr = null; me.x = L.foot.x - L.dx * 0.28; me.z = L.foot.z - L.dz * 0.28; me.a = L.a + Math.PI; me.fallFrom = me.y; me.vy = -0.01; beep(220, 0.05, 'triangle', 0.05); }
+  }
 }
 function requestCoop(k, i, climber) {
   if (role === 'host') { if (!hostCoop(k, i, climber)) toast('Can\'t - get in position', 900, '#ffb36b'); }
@@ -892,29 +942,64 @@ function updateTrav(dt, jx, jz, mag) {
       if (u >= 1) { me.x = T.tx; me.y = T.ty; me.z = T.tz; me.tr = T.k === 'md' ? { k: 'ld', i: T.i, t: 0 } : null; if (T.k === 'mt') beep(150, 0.05, 'sine', 0.06); }
       break;
     }
-    case 'gp': case 'rp': { // vertical grapple: fixed slow timeline (traverse.js GRAPPLE), always facing the wall
-      const L = LINKS[T.i], up = T.k === 'gp', P = grapplePhase(L, up, T.t);
-      grapplePos(L, up, T.t, T.s, _gp); me.x = _gp.x - L.dx * _gp.off; me.y = _gp.y; me.z = _gp.z - L.dz * _gp.off;
-      // up: turn to square up to the wall, then locked to the face. down: face the drop to set the hook, then turn your back to it
-      const face = up ? L.a : L.a + Math.PI;
-      me.a = P.ph === 'sq' ? T.a0 + angDiff(face, T.a0) * ss01(P.u * 1.4) : !up && P.ph === 'set' ? face : !up && P.ph === 'over' ? face + angDiff(L.a, face) * ss01(P.u / 0.3) : L.a;
-      if (P.ph !== T.ph) { // phase cues: whoosh on the throw, clank when it bites, rope zip when it drops, thump on landing
-        if (up && P.ph === 'throw') beep(320, 0.12, 'sawtooth', 0.025);
-        if (up && P.ph === 'set') { beep(1500, 0.04, 'square', 0.06); beep(700, 0.05, 'square', 0.04); }
-        if (up && P.ph === 'mantle') beep(160, 0.05, 'sine', 0.06);
-        if (!up && P.ph === 'over') beep(1300, 0.04, 'square', 0.05);
-        if (!up && P.ph === 'land') beep(110, 0.08, 'sine', 0.1);
-        T.ph = P.ph; T.beat = -1;
-      }
-      if (P.ph === 'climb' || P.ph === 'drop') { const n = up ? L.upSteps : L.dnSteps, bt = Math.min(n - 1, Math.floor(P.u * n));
-        if (bt !== T.beat) { T.beat = bt; beep(up ? 240 + bt * 12 : 180, 0.03, 'triangle', 0.03); } }
-      if (up && P.ph === 'set' && T.tug !== Math.floor(P.u * 2)) { T.tug = Math.floor(P.u * 2); beep(500, 0.03, 'square', 0.03); } // two tug tests
-      if (P.done || T.t >= T.dur) { const e = up ? L.landP : L.foot; me.x = e.x; me.y = e.y; me.z = e.z; me.a = up ? L.a : L.a + Math.PI; me.tr = null; }
-      break;
-    }
+    case 'gp': case 'rp': lineStep(T, dt, jx, jz, mag); break;
     case 'kn': { const g = COOP_G[T.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[T.i].a + Math.PI; if (mag > 0.6) me.tr = null; break; }
     default: coopStep(T);
   }
+}
+// vertical grapple line. Entry (throw / tug, or hook-set / over the edge) is a short automated sequence; then the
+// player drives it: up (W / stick up, or push into the wall) climbs, down descends, nothing = hang still. Up at the top
+// mantles over the lip, down at the bottom lands. ACT on the line = let go (trAct).
+function lineEnter(T, ph) {
+  const up = T.k === 'gp';
+  T.ph = ph; T.pt = 0; T.u = 0;
+  if (ph === 'throw') beep(320, 0.12, 'sawtooth', 0.025);                       // whoosh
+  if (ph === 'set' && up) { beep(1500, 0.04, 'square', 0.06); beep(700, 0.05, 'square', 0.04); } // claw bites
+  if (ph === 'over') beep(1300, 0.04, 'square', 0.05);
+  if (ph === 'line') { T.dir = 0; T.sf = 0; T.last = up ? 1 : -1; beep(420, 0.04, 'triangle', 0.04); }
+  if (ph === 'mantle') { T.my = T.ly; beep(160, 0.05, 'sine', 0.06); }
+  if (ph === 'land') { T.my = T.ly; beep(110, 0.08, 'sine', 0.1); }
+}
+// rope stick axis: screen up / down (W / S) is up / down the rope; sideways input counts only if it pushes into / away from the wall
+function lineAxis(L, jx, jz, mag) {
+  if (mag < 0.15) return 0;
+  if (Math.abs(jz) >= 0.35) return -jz;
+  const d = jx * L.dx + jz * L.dz; return Math.abs(d) > 0.35 ? d : 0;
+}
+function lineStep(T, dt, jx, jz, mag) {
+  const L = LINKS[T.i], up = T.k === 'gp';
+  T.pt += dt;
+  if (T.ph !== 'line') {
+    const D = lineDur(T.k, T.ph), u = Math.min(1, T.pt / D); T.u = u;
+    lineAutoPos(L, T.k, T.ph, u, T.s, T.my, _gp); me.x = _gp.x; me.y = _gp.y; me.z = _gp.z;
+    const face = up ? L.a : L.a + Math.PI; // up: square up to the wall. down: face the drop to set the hook, then turn your back to it
+    me.a = T.ph === 'sq' ? T.a0 + angDiff(face, T.a0) * ss01(u * 1.4) : !up && T.ph === 'set' ? face : !up && T.ph === 'over' ? face + angDiff(L.a, face) * ss01(u / 0.3) : L.a;
+    if (up && T.ph === 'set' && T.tug !== Math.floor(u * 2)) { T.tug = Math.floor(u * 2); beep(500, 0.03, 'square', 0.03); } // two tug tests
+    if (u < 1) return;
+    if (T.ph === 'mantle') { me.x = L.landP.x; me.y = L.top; me.z = L.landP.z; me.a = L.a; me.tr = null; return; }
+    if (T.ph === 'land') { me.x = L.foot.x; me.y = L.y0; me.z = L.foot.z; me.a = L.a + Math.PI; me.tr = null; return; }
+    const E = LINE_ENTRY[T.k], nx = E[E.indexOf(T.ph) + 1];
+    T.ly = up ? L.y0 : L.hang; lineEnter(T, nx || 'line');
+    return;
+  }
+  // ---- on the line: player-driven
+  const ax = lineAxis(L, jx, jz, mag), want = Math.abs(ax) > 0.3 ? Math.sign(ax) : 0;
+  if (want > 0 && T.ly >= L.hang - 1e-3) { lineEnter(T, 'mantle'); return lineStep(T, 0, 0, 0, 0); }
+  if (want < 0 && T.ly <= L.y0 + 1e-3) { lineEnter(T, 'land'); return lineStep(T, 0, 0, 0, 0); }
+  if (want) {
+    if (want !== T.last) { T.sf = 0; T.last = want; } // switched direction: start a fresh pull / bound
+    const rate = want > 0 ? GRAPPLE.upRate : GRAPPLE.dnRate, step = want > 0 ? GRAPPLE.upStep : GRAPPLE.dnStep, hold = want > 0 ? GRAPPLE.upHold : GRAPPLE.dnHold;
+    const f0 = T.sf; let f1 = f0 + dt * rate / step, dist;
+    if (f1 >= 1) { dist = step * (1 - strokeAt(f0, hold)); f1 -= 1; dist += step * strokeAt(f1, hold); beep(want > 0 ? 240 + (T.ly - L.y0) * 30 : 180, 0.03, 'triangle', 0.03); } // a pull / a bound lands
+    else dist = step * (strokeAt(f1, hold) - strokeAt(f0, hold));
+    T.sf = f1; T.dir = want;
+    T.ly = clamp(T.ly + want * dist, L.y0, L.hang);
+  } else { // hang still. Mid-bound: swing back in and plant the boots
+    T.dir = 0;
+    if (T.last < 0) T.sf = T.sf >= 0.7 ? 0 : Math.max(0, T.sf - dt * 2.2);
+  }
+  const off = T.last < 0 ? kickAt(T.sf) : 0;
+  me.x = L.foot.x - L.dx * off; me.z = L.foot.z - L.dz * off; me.y = T.ly; me.a = L.a;
 }
 // co-op choreography (both sides read the same host clock T.t, so the two bodies line up)
 function coopStep(T) {
@@ -937,14 +1022,21 @@ function coopStep(T) {
 }
 const TR_STANCE = { ld: 'CLIMBING (push into it = up, away = down · ACT let go)', mt: 'MANTLE', md: 'CLIMBING DOWN', gp: 'GRAPPLE', rp: 'RAPPEL',
   kn: 'KNEELING - BOOST READY (move = stand)', bs: 'BOOSTED UP', lf: 'BOOSTING PARTNER', hs: 'BEING PULLED UP', pl: 'PULLING PARTNER UP' };
-const GP_STANCE = { gp: { sq: 'GRAPPLE - SQUARING UP', throw: 'GRAPPLE - THROWING HOOK', set: 'GRAPPLE - HOOK SET, TESTING', climb: 'GRAPPLE - CLIMBING ROPE', mantle: 'GRAPPLE - OVER THE LIP' },
-  rp: { sq: 'RAPPEL - SQUARING UP', set: 'RAPPEL - SETTING HOOK', over: 'RAPPEL - OVER THE EDGE', drop: 'RAPPELLING', land: 'RAPPEL - DOWN' } };
-const travStance = () => (ON_LINE(me.tr.k) ? GP_STANCE[me.tr.k][me.tr.ph] || TR_STANCE[me.tr.k] : TR_STANCE[me.tr.k] || '');
+const GP_STANCE = { gp: { sq: 'GRAPPLE - SQUARING UP', throw: 'GRAPPLE - THROWING HOOK', set: 'GRAPPLE - HOOK SET, TESTING' },
+  rp: { sq: 'RAPPEL - SQUARING UP', set: 'RAPPEL - SETTING HOOK', over: 'RAPPEL - OVER THE EDGE' },
+  any: { mantle: 'ROPE - OVER THE LIP', land: 'ROPE - BOOTS DOWN' } };
+const ROPE_KEYS = () => (isTouch ? 'stick up / down' : 'W / S');
+function lineStance(T) {
+  if (T.ph !== 'line') return GP_STANCE[T.k][T.ph] || GP_STANCE.any[T.ph] || TR_STANCE[T.k];
+  const L = LINKS[T.i], h = (T.ly - L.y0).toFixed(1) + 'm';
+  return (T.dir > 0 ? 'ROPE - CLIMBING ' : T.dir < 0 ? 'ROPE - DESCENDING ' : 'ROPE - HANGING ') + h + ' (' + ROPE_KEYS() + ' · ACT let go)';
+}
+const travStance = () => (ON_LINE(me.tr.k) ? lineStance(me.tr) : TR_STANCE[me.tr.k] || '');
 // progress 0..1 for the wire (remote pose / rope)
 function trProg(T, y, raw) {
   if (!T) return 0;
   if (T.k === 'ld') return r2(y);
-  if (ON_LINE(T.k)) { const v = Math.min(1, T.t / T.dur); return raw ? v : Math.round(v * 1000) / 1000; } // long move: finer wire steps
+  if (ON_LINE(T.k)) { const v = lineEncode(T); return raw ? v : Math.round(v * 1000) / 1000; } // phase + motion slot + stroke, fine steps
   return T.dur ? r2(Math.min(1, T.t / T.dur)) : 0;
 }
 // traversal pose for sneaker.js from the (wire) state: shared by my body and the partner's
@@ -956,15 +1048,14 @@ function poseFor(tk, ti, tp, y) {
     case 'kn': return { k: 'kneel' };
     case 'lf': return { k: 'lift', p: tp };
     case 'pl': return { k: 'pull', p: tp };
-    case 'gp': case 'rp': { const L = LINKS[ti]; if (!L) return null; const up = tk === 'gp', P = grapplePhase(L, up, tp * (up ? L.upDur : L.dnDur));
+    case 'gp': case 'rp': { if (!LINKS[ti]) return null; const up = tk === 'gp', P = lineDecode(tp);
       switch (P.ph) {
         case 'sq': return up ? { k: 'throw', p: 0 } : null;
         case 'throw': return { k: 'throw', p: P.u };
         case 'set': return up ? { k: 'tug', p: P.u } : { k: 'hookset', p: P.u };
-        case 'climb': return { k: 'rope', ph: P.u * L.upSteps * Math.PI, up: 1 };
-        case 'mantle': return { k: 'mantle', p: 0.2 + P.u * 0.8 };
         case 'over': return { k: 'mantle', p: 1 - clamp((P.u - 0.3) / 0.7, 0, 1) };
-        case 'drop': return { k: 'rope', ph: P.u * L.dnSteps * Math.PI * 2, up: 0 };
+        case 'line': return P.last > 0 ? { k: 'rope', ph: P.sf * Math.PI, up: 1 } : { k: 'rope', ph: P.sf * Math.PI * 2, up: 0 }; // still = frozen mid-stroke
+        case 'mantle': return { k: 'mantle', p: 0.2 + P.u * 0.8 };
         case 'land': return { k: 'kneel' };
       }
       return null; }
@@ -977,8 +1068,8 @@ function poseFor(tk, ti, tp, y) {
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
   const low = (tk) => tk === 'kn' || tk === 'lf' || tk === 'pl';
-  const list = [{ x: me.x, z: me.z, y: me.y, c: me.c || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: 0 }];
-  if (peerConnected) list.push({ x: other.x, z: other.z, y: other.y, c: other.c || low(other.tk), p: other.p, tun: tunAt(other.x, other.z, other.y), noise: other.noise, idx: 1 });
+  const list = [{ x: me.x, z: me.z, y: me.y, c: me.c || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: 0, rope: ON_LINE(me.tr && me.tr.k) }];
+  if (peerConnected) list.push({ x: other.x, z: other.z, y: other.y, c: other.c || low(other.tk), p: other.p, tun: tunAt(other.x, other.z, other.y), noise: other.noise, idx: 1, rope: ON_LINE(other.tk) });
   return list;
 }
 function armSwitch(pi) {
@@ -1017,19 +1108,19 @@ function hostUpdate(dt) {
       continue;
     }
     // --- sight
-    let seen = null, seenD = 1e9, seenRange = 1;
+    // (3D for anyone off the ground: roofs / gantry / ladders / ropes are in view if inside his vertical cone + not occluded)
+    let seen = null, seenD = 1e9, seenRange = 1, seenUp = 0;
     for (const p of ps) {
       if (world.inv[p.idx] > 0 || p.tun >= 0) continue; // nobody sees into the crawlspaces
-      const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz);
-      let range = (p.p ? SIGHT.prone : p.c ? SIGHT.crouch : SIGHT.stand) + (world.alert > 0 ? 2 : 0);
-      // up on a roof / gantry: guards look along the ground, so you're harder to pick out (and never straight overhead)
-      if (p.y > 1.2) { range = p.c || p.p ? SIGHT.prone * 0.6 : SIGHT.stand * 0.75; if (d < 1.4 && p.y > 2) continue; }
-      if (d > range) continue;
-      if ((Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < SIGHT.fovHalf || d < 1.1) && lineOfSight(g, p) && d < seenD) { seen = p; seenD = d; seenRange = range; }
+      const v = guardSees(g, p);
+      if (v && v.d < seenD) { seen = p; seenD = v.d; seenRange = v.range; seenUp = v.up; }
     }
+    g.seeUp = seen && seen.y > 0.3 ? 1 : 0;
     if (seen) {
       anySeen = true;
-      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.p ? 0.35 : seen.c ? 0.6 : 1);
+      // looking up = slower to be sure of what he saw (and calm guards aren't scanning rooftops)
+      const upK = seen.y > 0.3 ? (1 - SIGHT_V.slowUp * seenUp) * (world.alert === 0 ? SIGHT_V.calmUp : 1) : 1;
+      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.p ? 0.35 : seen.c ? 0.6 : 1) * upK;
       g.meter = Math.min(1, g.meter + rate * dt);
       if (g.meter >= 1) { triggerAlert(seen); }
       if (world.alert === 2) { g.st = 'chase'; g.tx = seen.x; g.tz = seen.z; g.give = 8; world.alertT = ALERT_TIME; }
@@ -1454,7 +1545,9 @@ function updateHud() {
   if (act.textContent !== label) act.textContent = label;
   act.classList.toggle('kill', mode === 'td');
   act.classList.toggle('climb', !!tl);
-  const pr = $('prompt'), ptxt = mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : tl && tl[1] ? (isTouch ? tl[1] : 'E  ' + tl[1]) : '';
+  const onRope = mode === 'letgo' && me.tr && ON_LINE(me.tr.k);
+  const pr = $('prompt'), ptxt = mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : onRope ? (isTouch ? 'STICK UP / DOWN = ROPE · ACT LET GO' : 'W UP · S DOWN · E LET GO')
+    : tl && tl[1] ? (isTouch ? tl[1] : 'E  ' + tl[1]) : '';
   if (pr.textContent !== ptxt) { pr.textContent = ptxt; pr.classList.toggle('hidden', !ptxt); }
 }
 
@@ -1481,4 +1574,4 @@ requestAnimationFrame(loop);
 window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, grapplePhase, myRope };
+  travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };
