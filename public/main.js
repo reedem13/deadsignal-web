@@ -10,11 +10,12 @@
 // The host is authoritative for guard deaths: guests send 'td' / 'sh' requests, the host applies them and broadcasts.
 // Climbing (Splinter Cell style, see traverse.js for the map data): players have a feet height me.y. Crates + roofs are
 // walkable; ACT near a lip / ladder / drainpipe / grapple ring / co-op wall climbs, mantles, grapples or boosts.
+// Grapples are vertical only: the claw bites a wall lip, you climb / rappel straight up / down the face (traverse.js LINKS).
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, WALKS, RAILS, GANTRY_POSTS, CLIMBS, COOPS, LINKS, coopGeom, linkPos, buildTraversal } from './traverse.js';
+import { TRAV, WALKS, RAILS, GANTRY_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, coopGeom, grapplePhase, grapplePos, buildTraversal } from './traverse.js';
 
 // ---------------------------------------------------------------- level data (greybox yard)
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
@@ -406,22 +407,56 @@ function aimPoint(p, mesh, on) {
   return { x: g.rx ?? g.x, y: Math.max(0.45, Math.min(1.15, _am.y)), z: g.rz ?? g.z };
 }
 const myLaser = makeLaser(), otherLaser = makeLaser();
-// grapple rope: dark cord from the right hand to the hook (shoots out during the throw), small claw at the tip
+// grapple rope: dark cord hanging straight down the wall face from the claw, plus a short grip segment to the hands.
+// Before it bites, the claw spins under the right hand (wind-up), then flies up in a lob and drops onto the lip.
 function makeRope() {
-  const cord = new THREE.Mesh(new THREE.BoxGeometry(1, 0.035, 0.035), new THREE.MeshLambertMaterial({ color: 0x2a2620 }));
-  const claw = new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0), new THREE.MeshLambertMaterial({ color: 0x9aa0a4, flatShading: true }));
-  cord.frustumCulled = claw.frustumCulled = false; cord.visible = claw.visible = false; scene.add(cord, claw); return { cord, claw };
+  const cordMat = new THREE.MeshLambertMaterial({ color: 0x2a2620 });
+  const seg = () => { const m = new THREE.Mesh(new THREE.BoxGeometry(1, 0.03, 0.03), cordMat); m.frustumCulled = false; m.visible = false; scene.add(m); return m; };
+  const steel = new THREE.MeshLambertMaterial({ color: 0x9aa0a4, flatShading: true });
+  const claw = new THREE.Group(); // local +x = into the wall; three tines curl over the lip and bite down
+  const sh = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.16, 0.035), steel); sh.position.y = -0.07; claw.add(sh);
+  for (const yo of [-0.75, 0, 0.75]) {
+    const t = new THREE.Group(); t.rotation.y = yo; claw.add(t);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.03), steel); arm.position.set(0.06, 0.01, 0); t.add(arm);
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.08, 0.03), steel); tip.position.set(0.12, -0.03, 0); t.add(tip);
+  }
+  claw.traverse((o) => { o.frustumCulled = false; }); claw.visible = false; scene.add(claw);
+  return { main: seg(), grip: seg(), claw };
 }
-const _rh = new THREE.Vector3(), _re = new THREE.Vector3(), _rd = new THREE.Vector3(), _X = new THREE.Vector3(1, 0, 0);
+const _rh = new THREE.Vector3(), _re = new THREE.Vector3(), _rd = new THREE.Vector3(), _ra = new THREE.Vector3(), _rb = new THREE.Vector3(), _X = new THREE.Vector3(1, 0, 0);
+function cordBetween(m, a, b) {
+  _rd.copy(b).sub(a); const len = _rd.length(); m.visible = len > 0.02; if (!m.visible) return;
+  m.scale.set(len, 1, 1); m.position.copy(a).addScaledVector(_rd, 0.5); m.quaternion.setFromUnitVectors(_X, _rd.multiplyScalar(1 / len));
+}
 function updateRope(R, mesh, tk, ti, tp) {
-  const on = tk === 'gp' && LINKS[ti];
-  R.cord.visible = R.claw.visible = !!on; if (!on) return;
-  const L = LINKS[ti], tt = tp * L.dur, k = Math.min(1, tt / TRAV.fireT);
-  mesh.handWorld(_rh, 1); _re.set(L.hook.x, L.hook.y, L.hook.z);
-  _re.sub(_rh).multiplyScalar(k).add(_rh); // hook flies out during the throw
-  _rd.copy(_re).sub(_rh); const len = Math.max(0.01, _rd.length());
-  R.cord.scale.set(len, 1, 1); R.cord.position.copy(_rh).addScaledVector(_rd, 0.5); R.cord.quaternion.setFromUnitVectors(_X, _rd.normalize());
-  R.claw.position.copy(_re); R.claw.rotation.y += 0.3;
+  const on = (tk === 'gp' || tk === 'rp') && LINKS[ti];
+  if (!on) { R.main.visible = R.grip.visible = R.claw.visible = false; return; }
+  const L = LINKS[ti], up = tk === 'gp', P = grapplePhase(L, up, tp * (up ? L.upDur : L.dnDur)), A = L.anchor;
+  mesh.handWorld(_rh, 1); R.claw.visible = true; R.grip.visible = R.main.visible = false;
+  let bit = true, bottom = L.y0 + 0.02; // claw on the lip? where the hanging rope ends
+  if (up && (P.ph === 'sq' || P.ph === 'throw')) {
+    const f = P.ph === 'sq' ? 0 : P.u, w = GRAPPLE.flyFrom;
+    if (f < w) { // wind-up: claw circles under the hand on ~0.4 m of line
+      const ang = (f / w) * Math.PI * 5 + P.t * 2, r = 0.12 + 0.2 * (f / w);
+      _re.set(_rh.x + Math.cos(-mesh.g.rotation.y + Math.PI) * 0.1 + Math.cos(ang) * r * 0.4, _rh.y - 0.32 + Math.sin(ang) * r, _rh.z + Math.sin(-mesh.g.rotation.y + Math.PI) * 0.1 + Math.sin(ang) * r * 0.4);
+      R.claw.rotation.set(ang, -L.a, 0); cordBetween(R.grip, _rh, _re);
+    } else { // flight: lob up past the lip, drop onto it
+      const k = (f - w) / (1 - w), e = 1 - (1 - k) * (1 - k);
+      _re.copy(_rh).lerp(_ra.set(A.x, A.y, A.z), e); _re.y += Math.sin(Math.PI * k) * 0.55; _re.x -= L.dx * Math.sin(Math.PI * k) * 0.25; _re.z -= L.dz * Math.sin(Math.PI * k) * 0.25;
+      R.claw.rotation.set(P.t * 14, -L.a, 0); cordBetween(R.grip, _rh, _re);
+    }
+    bit = false;
+  } else if (!up && (P.ph === 'sq' || (P.ph === 'set' && P.u < 0.45))) { // carrying it, then reaching to set it on the lip
+    const k = P.ph === 'sq' ? 0 : ss01((P.u - 0.15) / 0.3);
+    _re.copy(_rh).lerp(_ra.set(A.x, A.y, A.z), k); R.claw.rotation.set(0, -L.a, 0); bit = false;
+  } else if (!up && P.ph === 'set') { bottom = L.lip - (L.lip - L.y0 - 0.02) * ss01((P.u - 0.55) / 0.3); if (P.u < 0.55) bottom = L.lip - 0.3; } // feed the line down the face
+  if (bit) {
+    R.claw.position.set(A.x, A.y, A.z); R.claw.rotation.set(0, -L.a, 0);
+    _ra.set(L.rope.x, A.y - 0.06, L.rope.z); _rb.set(L.rope.x, bottom, L.rope.z); cordBetween(R.main, _ra, _rb);
+    if ((up && P.ph !== 'mantle') || (!up && P.ph !== 'set' && P.ph !== 'land')) { // hands on the line
+      _re.set(L.rope.x, clamp(_rh.y, bottom, A.y - 0.06), L.rope.z); if (_re.distanceTo(_rh) < 0.7) cordBetween(R.grip, _rh, _re);
+    }
+  } else R.claw.position.copy(_re);
 }
 const myRope = makeRope(), otherRope = makeRope();
 
@@ -722,7 +757,7 @@ const noiseOf = (p) => (p.thud > 0 ? TRAV.landNoise : !p.moving ? 0 : p.run && M
 // ---------------------------------------------------------------- vertical traversal (climb / mantle / grapple / co-op)
 // me.tr = { k, i, t, ... }. k is sent on the wire:
 //   ld ladder or drainpipe (manual up/down)   mt mantle / vault over a lip   md step off a roof onto a ladder
-//   gp grapple or rappel along LINKS[i]   kn kneeling at co-op wall i (offering a boost)
+//   gp grapple up LINKS[i]   rp rappel down LINKS[i]   kn kneeling at co-op wall i (offering a boost)
 //   bs boosted climber   lf booster lifting   hs climber being pulled up   pl puller at the roof edge
 // Solo moves start optimistically; the guest tells the host ('tr') and the host can veto ('trx' -> snap back) if the
 // partner already owns that rope / ladder. Co-op moves only ever start from the host's world.co (see hostCoop).
@@ -731,7 +766,8 @@ const hz = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const ss01 = (v) => { v = clamp(v, 0, 1); return v * v * (3 - 2 * v); };
 const mixv = (a, b, k) => a + (b - a) * k;
 const COOP_G = COOPS.map(coopGeom);
-const TR_SOLO = { ld: 1, mt: 1, md: 1, gp: 1 };
+const TR_SOLO = { ld: 1, mt: 1, md: 1, gp: 1, rp: 1 };
+const ON_LINE = (k) => k === 'gp' || k === 'rp';
 const meNet = () => ({ x: me.x, z: me.z, y: me.y, tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1 });
 const otherNet = () => ({ x: other.x, z: other.z, y: other.y, tk: other.tk, ti: other.ti });
 const partnerHere = () => peerConnected && !solo;
@@ -774,7 +810,11 @@ function travMode() {
     if (me.y < 0.3 && hz(me, c) < 0.85) return { m: 'climb', i };
     if (Math.abs(me.y - c.top) < 0.2 && dd < 0.8 && dd < downD) { down = { m: 'down', i }; downD = dd; }
   }
-  for (let i = 0; i < LINKS.length; i++) { const f = LINKS[i].from, d = hz(me, f); if (Math.abs(me.y - f.y) < 0.25 && d < f.r && d < downD) return { m: LINKS[i].up ? 'grapple' : 'rappel', i }; }
+  for (let i = 0; i < LINKS.length; i++) { // vertical lines: foot ring (ground, facing the wall) = grapple up, top ring = rappel down
+    const L = LINKS[i], fb = { x: L.foot.x - L.dx * 0.12, z: L.foot.z - L.dz * 0.12 }, db = hz(me, fb), dt = hz(me, L.landP);
+    if (Math.abs(me.y - L.y0) < 0.25 && db < 0.62 && db < downD) return { m: 'grapple', i };
+    if (Math.abs(me.y - L.top) < 0.25 && dt < 0.55 && dt < downD) return { m: 'rappel', i };
+  }
   if (down) return down;
   const ms = mantleSpot(me); if (ms) return { m: 'mantle', i: -1, s: ms };
   return null;
@@ -782,7 +822,7 @@ function travMode() {
 function startTrav(tm) {
   const o = otherNet(), keep = { ox: me.x, oy: me.y, oz: me.z };
   const solo1 = (k, i, extra) => {
-    if (o.tk === k && o.ti === i && (k === 'ld' || k === 'gp')) { toast('Partner is on it - wait', 1000, '#ffb36b'); return; } // host-side rule (guest also re-checked by host)
+    if (o.ti === i && ((o.tk === k && k === 'ld') || (ON_LINE(o.tk) && ON_LINE(k)))) { toast('Partner is on it - wait', 1000, '#ffb36b'); return; } // host-side rule (guest also re-checked by host)
     me.tr = Object.assign({ k, i, t: 0 }, keep, extra); stopMe(); me.c = me.p = false; syncStanceButtons();
     if (role === 'guest') net.relay({ t: 'tr', k, i });
   };
@@ -791,8 +831,9 @@ function startTrav(tm) {
     case 'climb': me.x = c.x; me.z = c.z; me.a = c.a; solo1('ld', tm.i, {}); beep(300, 0.04, 'square', 0.04); break;
     case 'down': solo1('md', tm.i, { dur: TRAV.downT * 1.6, sx: me.x, sy: me.y, sz: me.z, tx: c.x, ty: c.top - TRAV.hangBelow, tz: c.z }); me.a = c.a; break;
     case 'mantle': { const m = tm.s; me.a = m.a; solo1('mt', -1, { dur: TRAV.mantleT, sx: me.x, sy: me.y, sz: me.z, tx: m.x, ty: m.y, tz: m.z }); break; }
-    case 'grapple': case 'rappel': { const L = LINKS[tm.i]; solo1('gp', tm.i, { s: { x: me.x, y: me.y, z: me.z } });
-      if (me.tr) { me.a = Math.atan2(L.hook.z - me.z, L.hook.x - me.x); beep(900, 0.05, 'sawtooth', 0.05); } break; }
+    case 'grapple': case 'rappel': { const up = tm.m === 'grapple', L = LINKS[tm.i];
+      solo1(up ? 'gp' : 'rp', tm.i, { s: { x: me.x, y: me.y, z: me.z }, a0: me.a, ph: '' });
+      if (me.tr) { me.tr.dur = up ? L.upDur : L.dnDur; beep(up ? 260 : 200, 0.06, 'triangle', 0.05); } break; }
     case 'kneel': { const g = COOP_G[tm.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[tm.i].a + Math.PI; stopMe(); me.c = me.p = false; syncStanceButtons();
       me.tr = { k: 'kn', i: tm.i, t: 0 }; toast('Kneeling - partner: ACT here to climb on', 1400, '#ffd27f'); break; }
     case 'boost': requestCoop('boost', tm.i, myIdx()); break;
@@ -851,16 +892,24 @@ function updateTrav(dt, jx, jz, mag) {
       if (u >= 1) { me.x = T.tx; me.y = T.ty; me.z = T.tz; me.tr = T.k === 'md' ? { k: 'ld', i: T.i, t: 0 } : null; if (T.k === 'mt') beep(150, 0.05, 'sine', 0.06); }
       break;
     }
-    case 'gp': {
-      const L = LINKS[T.i];
-      if (T.t >= TRAV.fireT) {
-        if (!T.hit) { T.hit = 1; beep(1500, 0.04, 'square', 0.06); }
-        const u = Math.min(1, (T.t - TRAV.fireT) / L.reelT);
-        linkPos(L, T.s, ss01(u * 0.85 + 0.15) * (u < 1 ? 1 : 1), _gp); me.x = _gp.x; me.y = _gp.y; me.z = _gp.z;
-        if (u >= 1) { me.x = L.to.x; me.y = L.to.y; me.z = L.to.z; me.tr = null; beep(120, 0.06, 'sine', 0.08); }
+    case 'gp': case 'rp': { // vertical grapple: fixed slow timeline (traverse.js GRAPPLE), always facing the wall
+      const L = LINKS[T.i], up = T.k === 'gp', P = grapplePhase(L, up, T.t);
+      grapplePos(L, up, T.t, T.s, _gp); me.x = _gp.x - L.dx * _gp.off; me.y = _gp.y; me.z = _gp.z - L.dz * _gp.off;
+      // up: turn to square up to the wall, then locked to the face. down: face the drop to set the hook, then turn your back to it
+      const face = up ? L.a : L.a + Math.PI;
+      me.a = P.ph === 'sq' ? T.a0 + angDiff(face, T.a0) * ss01(P.u * 1.4) : !up && P.ph === 'set' ? face : !up && P.ph === 'over' ? face + angDiff(L.a, face) * ss01(P.u / 0.3) : L.a;
+      if (P.ph !== T.ph) { // phase cues: whoosh on the throw, clank when it bites, rope zip when it drops, thump on landing
+        if (up && P.ph === 'throw') beep(320, 0.12, 'sawtooth', 0.025);
+        if (up && P.ph === 'set') { beep(1500, 0.04, 'square', 0.06); beep(700, 0.05, 'square', 0.04); }
+        if (up && P.ph === 'mantle') beep(160, 0.05, 'sine', 0.06);
+        if (!up && P.ph === 'over') beep(1300, 0.04, 'square', 0.05);
+        if (!up && P.ph === 'land') beep(110, 0.08, 'sine', 0.1);
+        T.ph = P.ph; T.beat = -1;
       }
-      const hx = L.up ? L.hook.x - T.s.x : L.hook.x - L.to.x, hzz = L.up ? L.hook.z - T.s.z : L.hook.z - L.to.z;
-      if (Math.hypot(hx, hzz) > 0.2) me.a = Math.atan2(hzz, hx); // face the hook (rappel: face the wall you drop down)
+      if (P.ph === 'climb' || P.ph === 'drop') { const n = up ? L.upSteps : L.dnSteps, bt = Math.min(n - 1, Math.floor(P.u * n));
+        if (bt !== T.beat) { T.beat = bt; beep(up ? 240 + bt * 12 : 180, 0.03, 'triangle', 0.03); } }
+      if (up && P.ph === 'set' && T.tug !== Math.floor(P.u * 2)) { T.tug = Math.floor(P.u * 2); beep(500, 0.03, 'square', 0.03); } // two tug tests
+      if (P.done || T.t >= T.dur) { const e = up ? L.landP : L.foot; me.x = e.x; me.y = e.y; me.z = e.z; me.a = up ? L.a : L.a + Math.PI; me.tr = null; }
       break;
     }
     case 'kn': { const g = COOP_G[T.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[T.i].a + Math.PI; if (mag > 0.6) me.tr = null; break; }
@@ -886,14 +935,16 @@ function coopStep(T) {
   else if (T.k === 'pl') { const k = ss01(u / 0.12); me.x = mixv(T.sx, g.edge.x, k); me.z = mixv(T.sz, g.edge.z, k); me.y = c.top; me.a = c.a + Math.PI; }
   if (u >= 1) { if (T.k === 'bs' || T.k === 'hs') { me.x = g.land.x; me.z = g.land.z; me.y = c.top; } me.tr = null; }
 }
-const TR_STANCE = { ld: 'CLIMBING (push into it = up, away = down · ACT let go)', mt: 'MANTLE', md: 'CLIMBING DOWN', gp: 'GRAPPLE',
+const TR_STANCE = { ld: 'CLIMBING (push into it = up, away = down · ACT let go)', mt: 'MANTLE', md: 'CLIMBING DOWN', gp: 'GRAPPLE', rp: 'RAPPEL',
   kn: 'KNEELING - BOOST READY (move = stand)', bs: 'BOOSTED UP', lf: 'BOOSTING PARTNER', hs: 'BEING PULLED UP', pl: 'PULLING PARTNER UP' };
-const travStance = () => (me.tr.k === 'gp' && LINKS[me.tr.i] && !LINKS[me.tr.i].up ? 'RAPPEL' : TR_STANCE[me.tr.k] || '');
+const GP_STANCE = { gp: { sq: 'GRAPPLE - SQUARING UP', throw: 'GRAPPLE - THROWING HOOK', set: 'GRAPPLE - HOOK SET, TESTING', climb: 'GRAPPLE - CLIMBING ROPE', mantle: 'GRAPPLE - OVER THE LIP' },
+  rp: { sq: 'RAPPEL - SQUARING UP', set: 'RAPPEL - SETTING HOOK', over: 'RAPPEL - OVER THE EDGE', drop: 'RAPPELLING', land: 'RAPPEL - DOWN' } };
+const travStance = () => (ON_LINE(me.tr.k) ? GP_STANCE[me.tr.k][me.tr.ph] || TR_STANCE[me.tr.k] : TR_STANCE[me.tr.k] || '');
 // progress 0..1 for the wire (remote pose / rope)
-function trProg(T, y) {
+function trProg(T, y, raw) {
   if (!T) return 0;
   if (T.k === 'ld') return r2(y);
-  if (T.k === 'gp') return r2(Math.min(1, T.t / LINKS[T.i].dur));
+  if (ON_LINE(T.k)) { const v = Math.min(1, T.t / T.dur); return raw ? v : Math.round(v * 1000) / 1000; } // long move: finer wire steps
   return T.dur ? r2(Math.min(1, T.t / T.dur)) : 0;
 }
 // traversal pose for sneaker.js from the (wire) state: shared by my body and the partner's
@@ -905,11 +956,18 @@ function poseFor(tk, ti, tp, y) {
     case 'kn': return { k: 'kneel' };
     case 'lf': return { k: 'lift', p: tp };
     case 'pl': return { k: 'pull', p: tp };
-    case 'gp': { const L = LINKS[ti]; if (!L) return null; const tt = tp * L.dur;
-      if (tt < TRAV.fireT) return { k: 'throw', p: tt / TRAV.fireT };
-      const u = (tt - TRAV.fireT) / L.reelT;
-      if (L.up && u > 0.82) return { k: 'mantle', p: 0.25 + ((u - 0.82) / 0.18) * 0.75 };
-      return { k: 'hang', ph: tt * 6 }; }
+    case 'gp': case 'rp': { const L = LINKS[ti]; if (!L) return null; const up = tk === 'gp', P = grapplePhase(L, up, tp * (up ? L.upDur : L.dnDur));
+      switch (P.ph) {
+        case 'sq': return up ? { k: 'throw', p: 0 } : null;
+        case 'throw': return { k: 'throw', p: P.u };
+        case 'set': return up ? { k: 'tug', p: P.u } : { k: 'hookset', p: P.u };
+        case 'climb': return { k: 'rope', ph: P.u * L.upSteps * Math.PI, up: 1 };
+        case 'mantle': return { k: 'mantle', p: 0.2 + P.u * 0.8 };
+        case 'over': return { k: 'mantle', p: 1 - clamp((P.u - 0.3) / 0.7, 0, 1) };
+        case 'drop': return { k: 'rope', ph: P.u * L.dnSteps * Math.PI * 2, up: 0 };
+        case 'land': return { k: 'kneel' };
+      }
+      return null; }
     case 'bs': return tp < 0.22 ? null : tp < 0.5 ? { k: 'climb', ph: tp * 22 } : tp < 0.75 ? { k: 'hang', ph: tp * 9 } : { k: 'mantle', p: (tp - 0.75) / 0.25 };
     case 'hs': return tp < 0.15 ? null : tp < 0.7 ? { k: 'hang', ph: tp * 9 } : { k: 'mantle', p: (tp - 0.7) / 0.3 };
   }
@@ -1059,7 +1117,7 @@ function netSample(o, x, z, vx, vz) {
 function onGameMsg(d) {
   if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; other.td = d.td ?? -1; other.gd = d.gd || 0; other.eq = d.eq ?? (other.gd ? 1 : 0); netTrav(other, d.y, d.tk, d.ti, d.tp); }
   else if (d.t === 'tr' && role === 'host') { // guest solo climb / grapple: veto if I'm already on that ladder / rope, or it's over
-    const busy = me.tr && me.tr.k === d.k && me.tr.i === d.i && (d.k === 'ld' || d.k === 'gp');
+    const busy = me.tr && me.tr.i === d.i && ((me.tr.k === d.k && d.k === 'ld') || (ON_LINE(me.tr.k) && ON_LINE(d.k)));
     if (busy || world.phase !== 'play') net.relay({ t: 'trx' });
   }
   else if (d.t === 'trx' && role === 'guest') { const T = me.tr; if (T && TR_SOLO[T.k]) { me.x = T.ox ?? me.x; me.y = T.oy ?? 0; me.z = T.oz ?? me.z; me.tr = null; toast('Partner is on that line', 1000, '#ffb36b'); } }
@@ -1240,8 +1298,8 @@ function drawRadar() {
   for (const b of WALKS) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = '#ffd040'; for (const c of CLIMBS) rc.fillRect(X(c.x) - 1.5, Z(c.z) - 1.5, 3, 3); // ladders / pipe
   for (const c of COOPS) rc.fillRect(X(c.x) - 2.5, Z(c.z) - 1, 5, 2);
-  rc.fillStyle = '#ff9a30'; const hk = new Set(); // grapple hooks
-  for (const L of LINKS) { const key = L.hook.x + ',' + L.hook.z; if (hk.has(key)) continue; hk.add(key); rc.beginPath(); rc.arc(X(L.hook.x), Z(L.hook.z), 2.2, 0, 7); rc.fill(); }
+  rc.fillStyle = '#ff9a30'; // grapple anchors (vertical lines up a wall face)
+  for (const L of LINKS) { rc.beginPath(); rc.arc(X(L.anchor.x), Z(L.anchor.z), 2.2, 0, 7); rc.fill(); }
   rc.strokeStyle = '#7fff9f'; rc.beginPath(); rc.arc(X(EXTRACT.x), Z(EXTRACT.z), EXTRACT.r * sx, 0, 7); rc.stroke();
   for (const g of world.guards) {
     if (!alive(g)) { rc.fillStyle = '#777'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 1, 5, 2); continue; }
@@ -1261,7 +1319,7 @@ let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
 function travNear() {
   const m = curTm; if (!m || me.tr) return null;
   if (m.m === 'climb' || m.m === 'down') return { kind: 'climb', i: m.i };
-  if (m.m === 'grapple' || m.m === 'rappel') return { kind: 'link', i: m.i };
+  if (m.m === 'grapple' || m.m === 'rappel') return { kind: m.m === 'grapple' ? 'link' : 'linkTop', i: m.i };
   if (m.i >= 0 && m.m !== 'mantle') return { kind: 'coop', i: m.i };
   return null;
 }
@@ -1278,7 +1336,7 @@ function render(dt) {
   meMesh.g.position.set(me.x, me.y, me.z); meMesh.g.rotation.y = -me.a;
   // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
   const play = world.phase === 'play';
-  const myTr = me.tr ? poseFor(me.tr.k, me.tr.i, trProg(me.tr, me.y), me.y) : null, myBusy = !!me.tr; // climbing: hands busy, gun slung
+  const myTr = me.tr ? poseFor(me.tr.k, me.tr.i, trProg(me.tr, me.y, 1), me.y) : null, myBusy = !!me.tr; // climbing: hands busy, gun slung
   const myAim = aimPoint(me, meMesh, me.eq && !me.td && !myBusy && play && !deadMe);
   meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe,
     takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && !myBusy, armed: me.eq && !myBusy, shot: me.shot, trav: myTr }); // drawn = always in the forward aim stance
@@ -1294,7 +1352,7 @@ function render(dt) {
   const otherAim = aimPoint({ x: other.rx, z: other.rz, y: other.ry, a: other.ra, tun: tunAt(other.rx, other.rz, other.ry) }, otherMesh, peerConnected && !!other.eq && other.td < 0 && !oBusy && play && !deadOther);
   otherMesh.update(dt, { aimAt: otherAim, moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0 && !oTr, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 && !oTr ? otherSpeed : 0,
     crouch: other.c && !other.p && !oBusy, prone: other.p && !oBusy, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: (!!other.gd || !!other.eq) && !oBusy, armed: !!other.eq && !oBusy, shot: other.shot, trav: oTr });
-  updateRope(myRope, meMesh, me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y));
+  updateRope(myRope, meMesh, me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y, 1));
   updateRope(otherRope, otherMesh, peerConnected ? other.tk : '', other.ti, other.tp);
   travFx.tick(dt, travNear());
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
@@ -1362,7 +1420,7 @@ function render(dt) {
 }
 
 // ACT button label + prompt for each traversal option (prompt '' = button label only)
-const TRAV_LABEL = { climb: ['CLIMB', 'CLIMB'], down: ['CLIMB DOWN', 'CLIMB DOWN'], mantle: ['MANTLE', 'MANTLE'], grapple: ['GRAPPLE', 'GRAPPLE'],
+const TRAV_LABEL = { climb: ['CLIMB', 'CLIMB'], down: ['CLIMB DOWN', 'CLIMB DOWN'], mantle: ['MANTLE', 'MANTLE'], grapple: ['GRAPPLE', 'GRAPPLE UP THE WALL'],
   rappel: ['RAPPEL', 'RAPPEL DOWN'], kneel: ['BOOST', 'KNEEL - BOOST PARTNER'], boost: ['CLIMB ON', 'CLIMB ON PARTNER'], hoist: ['GRAB HAND', 'GET PULLED UP'],
   pull: ['PULL UP', 'PULL PARTNER UP'], solo2p: ['2P', 'TOO HIGH - CO-OP BOOST'], letgo: ['LET GO', ''], stand: ['STAND', ''], busy: ['...', ''] };
 function updateHud() {
@@ -1423,4 +1481,4 @@ requestAnimationFrame(loop);
 window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input };
+  travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, grapplePhase, myRope };

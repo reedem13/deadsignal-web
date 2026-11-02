@@ -520,7 +520,7 @@ export function makeSneaker(scene, opts = {}) {
         a.wr.rotation.z = mix(a.wr.rotation.z, 0, k);
       }
     }
-    // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw)
+    // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw / tug / rope / hookset)
     applyTrav(dt, s);
     if (holstered) {
       const out = aimK > 0.35 || (armK > 0.5 && tdK < 0.3);
@@ -538,7 +538,7 @@ export function makeSneaker(scene, opts = {}) {
     solveShoulderAim(s, aimK, pk);
   }
   // ---------------------------------------------------------------- traversal poses
-  // s.trav = { k, p, ph }: k = climb | hang | mantle | kneel | lift | pull | throw, p = 0..1 progress, ph = climb phase.
+  // s.trav = { k, p, ph, up }: k = climb | hang | mantle | kneel | lift | pull | throw | tug | rope | hookset, p = 0..1 progress, ph = climb phase.
   // Each builder starts from the finished base pose and overrides only the joints it owns; switching kinds cross-fades
   // over ~0.16s, entering / leaving eases on the W.trav spring. Joint vector (JN floats) - see readPose().
   const JN = 26, trCur = new Float32Array(JN), trFrom = new Float32Array(JN), trTgt = new Float32Array(JN), trOut = new Float32Array(JN);
@@ -593,9 +593,43 @@ export function makeSneaker(scene, opts = {}) {
         setBody(P.b, 0.55, -0.35, 0.45); for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(P.b, i, 0, sd * 0.3, 1.25, 1.6); }
         blendInto(o, P.a, P.b, sstep((p - 0.2) / 0.55)); return 1 - sstep((p - 0.86) / 0.14);
       }
-      case 'throw': { // grapple: right arm winds up and slings the hook up at the anchor (legs keep their base pose)
-        const k = sstep(p / 0.45);
-        setArm(o, 1, -0.05, 0, mix(1.0, 2.7, k), mix(1.5, 0.1, k), 0); setArm(o, 0, 0.05, 0, 0.7, 1.0); return 1;
+      case 'throw': { // grapple: claw spins low on the right hand (eyes on the lip) -> big overhead sling -> both hands take in the line
+        const w = 0.48, wind = Math.min(1, p / w), sling = sstep((p - w) / 0.17), take = sstep((p - 0.68) / 0.32), spin = Math.sin(p * 34);
+        setBody(o, o[0] - 0.04 * (1 - take), 0.08 + 0.14 * sling - 0.06 * take, 0.42 + 0.15 * sling);
+        const rz = p < w ? 0.55 + 0.3 * wind + 0.28 * spin : mix(mix(0.85, 3.0, sling), 2.35, take);
+        setArm(o, 1, -0.08, 0.1 * (1 - sling), rz, p < w ? 0.35 + 0.2 * spin : mix(0.15, 0.55, take), 0);
+        setArm(o, 0, 0.08, -0.15 * (1 - take), mix(0.85, 2.1, take), mix(1.15, 0.6, take));
+        setLeg(o, 0, 0.32 * (1 - take * 0.5), -0.22, null, 0.04); setLeg(o, 1, -0.14, -0.2, null, -0.04); // staggered stance
+        return 1;
+      }
+      case 'tug': { // claw bit: two hard tugs on the line, one boot up on the wall, then lean back into it
+        const pull = Math.abs(Math.sin(Math.min(1, p / 0.7) * Math.PI * 2)), settle = sstep((p - 0.7) / 0.3);
+        setBody(o, o[0], 0.1 + 0.22 * pull + 0.15 * settle, 0.5);
+        for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(o, i, -sd * 0.06, 0, (i ? 2.55 : 2.25) - 0.25 * pull, 0.35 + 0.65 * pull); }
+        setLeg(o, 0, mix(0.15, 0.95, settle), mix(-0.2, -0.9, settle), null, 0.05); setLeg(o, 1, -0.05 * pull, -0.15);
+        return 1;
+      }
+      case 'rope': { // on the line, feet on the wall. up: hand-over-hand, boots walk the face. down: L-sit, guide hand high,
+        // brake hand at the hip, legs straighten on each kick-off and soak the plant
+        const sn = Math.sin(tr.ph ?? 0);
+        if (tr.up) {
+          setBody(o, 0.86, 0.32, 0.42);
+          setArm(o, 0, 0.1, 0, 2.5 + 0.38 * sn, 0.5 - 0.35 * sn); setArm(o, 1, -0.1, 0, 2.5 - 0.38 * sn, 0.5 + 0.35 * sn);
+          setLeg(o, 0, 1.1 + 0.28 * sn, -(0.85 + 0.35 * sn), null, 0.08); setLeg(o, 1, 1.1 - 0.28 * sn, -(0.85 - 0.35 * sn), null, -0.08);
+        } else {
+          const kick = Math.max(0, sn);
+          setBody(o, 0.84, 0.48 - 0.12 * kick, -0.25 - 0.1 * kick);
+          setArm(o, 0, 0.08, 0, 2.45, 0.55 - 0.2 * kick); setArm(o, 1, -0.2, 0.25, 0.25 + 0.35 * kick, 0.55);
+          setLeg(o, 0, 1.25 - 0.15 * kick, -(0.75 - 0.5 * kick), null, 0.1); setLeg(o, 1, 1.25 - 0.15 * kick, -(0.75 - 0.5 * kick), null, -0.1);
+        }
+        return 1;
+      }
+      case 'hookset': { // rappel prep at the lip: kneel, reach out + clamp the claw, two checks, toss the line down the face
+        KNEEL(o); const reach = sstep(p / 0.3) * (1 - sstep((p - 0.5) / 0.15)), toss = Math.sin(Math.PI * clamp((p - 0.52) / 0.3, 0, 1));
+        setBody(o, 0.5, -0.3 - 0.4 * reach, 0.1 - 0.35 * reach);
+        setArm(o, 1, -0.05, 0.1, mix(0.8, 1.35, reach) + 0.9 * toss, mix(1.15, 0.2, reach) + 0.3 * toss, 0);
+        setArm(o, 0, 0.05, -0.3, mix(0.8, 1.15, reach), mix(1.15, 0.5, reach));
+        return 1;
       }
     }
     return 0;

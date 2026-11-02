@@ -5,8 +5,8 @@
 //   RAILS  : collision boxes that only exist up high (y0..h) - catwalk railings. Ignored by guards / sight / bullets.
 //   CLIMBS : solo ladders / drainpipes. Stand at (x,z) facing a (toward the wall), climb to `top`, vault onto (lx,lz).
 //   COOPS  : co-op boost walls (too high to climb solo). Face point (x,z) on the wall, a = facing into the wall.
-//   LINKS  : grapple / rappel lines. Fire from the `from` zone (radius r at height y) -> reel along a bezier
-//            (from -> c -> to) to `to`; the rope hangs from `hook`.
+//   LINKS  : vertical grapple lines up a wall face (hook bites the lip, rope hangs straight down). Two-way:
+//            foot ring = GRAPPLE up, top ring = RAPPEL down.
 import * as THREE from 'three';
 
 export const TRAV = {
@@ -17,7 +17,6 @@ export const TRAV = {
   downT: 0.45,      // roof -> onto the ladder
   mantleMax: 1.45,  // highest lip you can mantle onto from where you stand
   boostT: 1.9, pullT: 2.2, // co-op moves (host clock)
-  fireT: 0.38, ropeSpeed: 7.5, // grapple: hook flight, then reel speed (m/s along the path)
   landNoise: 4.2, landDrop: 1.8, // standing drop from > landDrop m = thud guards can hear (crouch = silent hang-drop)
 };
 
@@ -48,25 +47,71 @@ export function coopGeom(c) {
   return { dx, dz, base: P(-0.45), step: P(-1.15), hang: P(-0.4), edge: P(0.35), land: P(0.65) };
 }
 
+// Vertical grapple lines: the hook bites the top lip of a wall (or the gantry rail) and the rope hangs straight down the
+// face. Every line is two-way: stand at the FOOT ring (ground, facing the wall) -> GRAPPLE up; stand at the TOP ring
+// (just back from the lip) -> RAPPEL down. No swings, no lateral arcs - you only ever move up / down the face.
+//   x,z  = foot spot (where you stand / hang, `wall` m off the face)   a = facing INTO the wall
+//   y0   = foot floor height   top = floor up top   lip = height the claw bites (roof edge or rail top)
+//   land = how far past the face you end up on top
 export const LINKS = [
-  { name: 'SHED HOOK', from: { x: -5.0, y: 3, z: -6.0, r: 0.9 }, to: { x: 2.3, y: 3.4, z: -2.9 }, c: { x: -1.4, y: 0.7, z: -4.6 }, hook: { x: 2.0, y: 4.7, z: -3.4, base: 3.4 } },
-  { name: 'BARRACKS HOOK', from: { x: 2.5, y: 3.4, z: -3.05, r: 0.75 }, to: { x: -5.4, y: 3, z: -6.0 }, c: { x: -1.6, y: 0.8, z: -4.4 }, hook: { x: -5.0, y: 4.3, z: -6.7, base: 3 } },
-  { name: 'GANTRY HOOK', from: { x: 12.1, y: 2.2, z: 0.6, r: 0.9 }, to: { x: 12, y: 3.4, z: -2.8 }, c: { x: 12, y: 4.6, z: -0.6 }, hook: { x: 12, y: 4.7, z: -2.26, base: 3.4 } },
-  { name: 'WEST SWITCH DROP', from: { x: 6.5, y: 3.4, z: -2.8, r: 0.65 }, to: { x: 6.5, y: 0, z: -5.0 }, c: { x: 6.5, y: 4.6, z: -4.7 }, hook: { x: 6.5, y: 4.6, z: -3.34, base: 3.4 } },
-  { name: 'WEST SWITCH LINE', from: { x: 8.6, y: 0, z: -4.6, r: 0.85 }, to: { x: 7.3, y: 3.4, z: -2.8 }, c: { x: 7.4, y: 5.2, z: -4.2 }, hook: { x: 6.5, y: 4.6, z: -3.34, base: 3.4 } },
-  { name: 'EAST SWITCH DROP', from: { x: 16.5, y: 3.4, z: -2.8, r: 0.65 }, to: { x: 16.5, y: 0, z: -5.0 }, c: { x: 16.5, y: 4.6, z: -4.7 }, hook: { x: 16.5, y: 4.6, z: -3.34, base: 3.4 } },
-  { name: 'EAST SWITCH LINE', from: { x: 14.4, y: 0, z: -4.6, r: 0.85 }, to: { x: 15.7, y: 3.4, z: -2.8 }, c: { x: 15.6, y: 5.2, z: -4.2 }, hook: { x: 16.5, y: 4.6, z: -3.34, base: 3.4 } },
+  { name: 'SHED WEST WALL', x: 1.42, z: -2.9, a: 0, y0: 0, top: 3.4, lip: 3.46, wall: 0.38, land: 0.55 },
+  { name: 'BARRACKS NORTH WALL', x: -6.6, z: -8.88, a: Math.PI / 2, y0: 0, top: 3, lip: 3.06, wall: 0.38, land: 0.6 },
+  { name: 'GANTRY WEST LINE', x: 6.5, z: -3.78, a: Math.PI / 2, y0: 0, top: 3.4, lip: 4.32, wall: 0.38, land: 0.62, rail: 1 },
+  { name: 'GANTRY SOUTH LINE', x: 12, z: -1.82, a: -Math.PI / 2, y0: 0, top: 3.4, lip: 4.32, wall: 0.38, land: 0.62, rail: 1 },
+  { name: 'GANTRY EAST LINE', x: 16.5, z: -3.78, a: Math.PI / 2, y0: 0, top: 3.4, lip: 4.32, wall: 0.38, land: 0.62, rail: 1 },
 ];
-// bezier position along a link (u 0..1); start = where the player actually fired from
-export function linkPos(L, s, u, out) {
-  const a = (1 - u) * (1 - u), b = 2 * u * (1 - u), c = u * u;
-  out.x = a * s.x + b * L.c.x + c * L.to.x; out.y = a * s.y + b * L.c.y + c * L.to.y; out.z = a * s.z + b * L.c.z + c * L.to.z;
-  return out;
+// Slow, deliberate timings (seconds). UP: square up -> wind + throw -> claw bites, tug test -> hand-over-hand climb
+// (pull, settle, pull...) -> mantle over the lip. DOWN: face the drop at the lip -> kneel + clamp the claw, feed the rope
+// down -> turn your back to the drop, step back over the edge -> controlled bounding drops down the face -> land.
+export const GRAPPLE = {
+  up: { sq: 0.5, throw: 1.05, set: 0.8, mantle: 1.0 }, upRate: 0.62, upStep: 0.34, // climb m/s, metres per hand pull
+  dn: { sq: 0.5, set: 1.2, over: 1.3, land: 0.4 }, dnRate: 0.95, dnStep: 0.62,   // rappel m/s, metres per bound
+  flyFrom: 0.48, // fraction of the throw phase spent winding (claw spinning under the hand) before it flies
+  hangDrop: 1.55, // feet this far under the lip = hands on it (end of the climb / start of the rappel)
+};
+const UP_ORDER = ['sq', 'throw', 'set', 'climb', 'mantle'], DN_ORDER = ['sq', 'set', 'over', 'drop', 'land'];
+for (const L of LINKS) {
+  L.dx = Math.cos(L.a); L.dz = Math.sin(L.a);
+  L.face = { x: L.x + L.dx * L.wall, z: L.z + L.dz * L.wall };
+  L.anchor = { x: L.face.x + L.dx * 0.03, y: L.lip, z: L.face.z + L.dz * 0.03 }; // claw over the lip
+  L.rope = { x: L.face.x - L.dx * 0.07, z: L.face.z - L.dz * 0.07 };              // rope hangs just off the face
+  L.foot = { x: L.x, y: L.y0, z: L.z };
+  L.landP = { x: L.face.x + L.dx * L.land, y: L.top, z: L.face.z + L.dz * L.land };
+  L.hang = Math.max(L.y0 + 0.4, L.lip - GRAPPLE.hangDrop);
+  const run = L.hang - L.y0;
+  L.upT = { ...GRAPPLE.up, climb: run / GRAPPLE.upRate }; L.dnT = { ...GRAPPLE.dn, drop: run / GRAPPLE.dnRate };
+  L.upDur = UP_ORDER.reduce((a, k) => a + L.upT[k], 0); L.dnDur = DN_ORDER.reduce((a, k) => a + L.dnT[k], 0);
+  L.upSteps = Math.max(1, Math.round(run / GRAPPLE.upStep)); L.dnSteps = Math.max(1, Math.round(run / GRAPPLE.dnStep));
 }
-for (const L of LINKS) { // approximate path length -> reel time; hook flight first
-  let len = 0, p = { x: 0, y: 0, z: 0 }, q = { ...L.from };
-  for (let i = 1; i <= 16; i++) { linkPos(L, L.from, i / 16, p); len += Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z); q = { ...p }; }
-  L.len = len; L.reelT = Math.max(0.9, len / TRAV.ropeSpeed); L.dur = TRAV.fireT + L.reelT; L.up = L.to.y > L.from.y + 0.2;
+// which phase of a grapple (up = true) / rappel we're in at time t: { ph, u (0..1 inside the phase), t }
+export function grapplePhase(L, up, t) {
+  const order = up ? UP_ORDER : DN_ORDER, T = up ? L.upT : L.dnT; let acc = 0;
+  for (const k of order) { if (t < acc + T[k]) return { ph: k, u: (t - acc) / T[k], t }; acc += T[k]; }
+  return { ph: order[order.length - 1], u: 1, t, done: true };
+}
+const ss = (v) => { v = Math.max(0, Math.min(1, v)); return v * v * (3 - 2 * v); };
+// stepped progress 0..1 over n beats: each beat eases in + out, so motion comes in deliberate pulls / bounds
+export function beats(u, n, hold = 0.25) { const f = u * n, i = Math.min(n - 1, Math.floor(f)), k = f - i; return (i + ss(k / (1 - hold))) / n; }
+/** body position along a vertical grapple. s = where the move started (x,y,z). Returns out with an extra `.off` (push-off). */
+export function grapplePos(L, up, t, s, out) {
+  const P = grapplePhase(L, up, t), u = P.u; out.off = 0;
+  if (up) {
+    if (P.ph === 'sq') { const k = ss(u); out.x = s.x + (L.foot.x - s.x) * k; out.z = s.z + (L.foot.z - s.z) * k; out.y = s.y; }
+    else if (P.ph === 'throw' || P.ph === 'set') { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0; }
+    else if (P.ph === 'climb') { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0 + (L.hang - L.y0) * beats(u, L.upSteps); }
+    else { const vy = ss(u / 0.6), vh = ss((u - 0.35) / 0.65);
+      out.y = L.hang + (L.top - L.hang) * vy; out.x = L.foot.x + (L.landP.x - L.foot.x) * vh; out.z = L.foot.z + (L.landP.z - L.foot.z) * vh; }
+  } else {
+    if (P.ph === 'sq') { const k = ss(u); out.x = s.x + (L.landP.x - s.x) * k; out.z = s.z + (L.landP.z - s.z) * k; out.y = s.y; }
+    else if (P.ph === 'set') { out.x = L.landP.x; out.z = L.landP.z; out.y = L.top; }
+    else if (P.ph === 'over') { const k = (u - 0.3) / 0.7, vh = ss(k / 0.6), vy = ss((k - 0.35) / 0.65); // turn around, back over the edge, lower onto the rope
+      out.x = L.landP.x + (L.foot.x - L.landP.x) * vh; out.z = L.landP.z + (L.foot.z - L.landP.z) * vh; out.y = L.top + (L.hang - L.top) * vy; }
+    else if (P.ph === 'drop') { const n = L.dnSteps, f = u * n, k = f - Math.min(n - 1, Math.floor(f));
+      out.x = L.foot.x; out.z = L.foot.z; out.y = L.hang - (L.hang - L.y0) * beats(u, n, 0.3);
+      out.off = Math.sin(Math.PI * Math.min(1, k / 0.7)) * 0.22; } // kick off the wall each bound, swing back in to plant
+    else { out.x = L.foot.x; out.z = L.foot.z; out.y = L.y0; }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- meshes
@@ -132,37 +177,37 @@ export function buildTraversal(scene, { walls, hazardMat }) {
     dec.rotation.x = -Math.PI / 2; dec.rotation.z = -c.a - Math.PI / 2; dec.position.set(g.base.x - g.dx * 0.25, 0.04, g.base.z - g.dz * 0.25); scene.add(dec);
     hot.push({ mesh: dec, kind: 'coop', i });
   });
-  // grapple hooks (deduped) + launch rings
-  const hookMat = basic(0xff8a2a), seen = new Map();
+  // grapple walls: orange anchor plate + scuffed boot-mark stripe down the face, foot ring on the ground, top ring
+  // behind the lip, small glow over the anchor
+  const hookMat = basic(0xff8a2a), scuff = basic(0x1a1612, 0.55), seen = [];
   const ringMat = () => new THREE.MeshBasicMaterial({ color: 0xff9a40, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
   LINKS.forEach((L, i) => {
-    const k = `${L.hook.x},${L.hook.z}`;
-    if (!seen.has(k)) {
-      const h = L.hook, ph = h.y + 0.12 - h.base;
-      boxAt(scene, 0.09, ph, 0.09, metal, h.x, h.base + ph / 2, h.z);
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.035, 4, 8), hookMat); ring.position.set(h.x, h.y, h.z); ring.rotation.x = Math.PI / 2; scene.add(ring);
-      const glow = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), basic(0xffc070, 0.9)); glow.position.set(h.x, h.y + 0.22, h.z); scene.add(glow);
-      seen.set(k, { ring, glow });
-    }
-    const f = L.from, rm = ringMat();
-    const ring = new THREE.Mesh(new THREE.RingGeometry(f.r - 0.1, f.r, 16), rm); ring.rotation.x = -Math.PI / 2; ring.position.set(f.x, f.y + 0.03, f.z); scene.add(ring);
-    const a = Math.atan2(L.hook.z - f.z, L.hook.x - f.x);
-    const ch = chevron(f.x + Math.cos(a) * 0.35, f.y, f.z + Math.sin(a) * 0.35, a, rm);
-    hot.push({ mesh: ring, kind: 'link', i, extra: ch, hook: seen.get(k) });
+    const tx = -L.dz, tz = L.dx, A = L.anchor;
+    // anchor plate bolted at the lip (on the rail: a clamp bar)
+    boxAt(scene, Math.abs(L.dx) * 0.05 + Math.abs(tx) * 0.34, L.rail ? 0.06 : 0.12, Math.abs(L.dz) * 0.05 + Math.abs(tz) * 0.34, hookMat, L.face.x - L.dx * 0.02, A.y - (L.rail ? 0.03 : 0.08), L.face.z - L.dz * 0.02);
+    if (!L.rail) for (let y = L.y0 + 0.35; y < L.top - 0.3; y += 0.42) // boot scuffs: tells you this face takes a rope
+      boxAt(scene, Math.abs(L.dx) * 0.012 + Math.abs(tx) * 0.16, 0.06, Math.abs(L.dz) * 0.012 + Math.abs(tz) * 0.16, scuff, L.face.x - L.dx * 0.012 + tx * ((y * 7) % 0.1 - 0.05), y, L.face.z - L.dz * 0.012 + tz * ((y * 7) % 0.1 - 0.05));
+    const glow = new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0), basic(0xffc070, 0.9)); glow.position.set(L.face.x - L.dx * 0.12, A.y + 0.22, L.face.z - L.dz * 0.12); scene.add(glow);
+    seen.push({ glow });
+    const ring = (p, r) => { const m = new THREE.Mesh(new THREE.RingGeometry(r - 0.1, r, 16), ringMat()); m.rotation.x = -Math.PI / 2; m.position.set(p.x, p.y + 0.03, p.z); scene.add(m); return m; };
+    const bot = ring({ x: L.foot.x - L.dx * 0.12, y: L.y0, z: L.foot.z - L.dz * 0.12 }, 0.62), top = ring(L.landP, 0.52);
+    const ch = chevron(L.foot.x + L.dx * 0.2, L.y0, L.foot.z + L.dz * 0.2, L.a, bot.material);
+    const chT = chevron(L.landP.x - L.dx * 0.28, L.top, L.landP.z - L.dz * 0.28, L.a + Math.PI, top.material);
+    hot.push({ mesh: bot, kind: 'link', i, extra: ch }, { mesh: top, kind: 'linkTop', i, extra: chT });
   });
   let t = 0;
   return {
-    hookFor: (i) => LINKS[i].hook,
+    anchorFor: (i) => LINKS[i].anchor,
     // near = { kind, i } of whatever ACT would use right now (or null): brighten it
     tick(dt, near) {
       t += dt;
       for (const h of hot) {
         const on = near && near.kind === h.kind && near.i === h.i;
-        if (h.kind === 'link') { h.mesh.material.opacity = on ? 0.85 : 0.28 + 0.1 * Math.sin(t * 2 + h.i); }
+        if (h.kind === 'link' || h.kind === 'linkTop') { h.mesh.material.opacity = on ? 0.85 : 0.28 + 0.1 * Math.sin(t * 2 + h.i); }
         else if (h.kind === 'climb') h.mesh.material = on ? cueHot : cue;
         else h.mesh.material.opacity = on ? 1 : 0.55;
       }
-      for (const { glow } of seen.values()) { glow.rotation.y += dt * 2; glow.material.opacity = 0.6 + 0.35 * Math.sin(t * 3); }
+      for (const { glow } of seen) { glow.rotation.y += dt * 2; glow.material.opacity = 0.6 + 0.35 * Math.sin(t * 3); }
     },
   };
 }
