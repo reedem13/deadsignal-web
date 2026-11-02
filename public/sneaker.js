@@ -331,7 +331,7 @@ export function makeSneaker(scene, opts = {}) {
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09) };
+    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07) };
   // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
   // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
   // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
@@ -520,6 +520,8 @@ export function makeSneaker(scene, opts = {}) {
         a.wr.rotation.z = mix(a.wr.rotation.z, 0, k);
       }
     }
+    // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw)
+    applyTrav(dt, s);
     if (holstered) {
       const out = aimK > 0.35 || (armK > 0.5 && tdK < 0.3);
       holstered.visible = !out; drawn.visible = out;
@@ -534,6 +536,82 @@ export function makeSneaker(scene, opts = {}) {
     rig.rotation.x = roll * (1 - flat); // bank into turns from the feet
     aimHad = !!s.aimAt;
     solveShoulderAim(s, aimK, pk);
+  }
+  // ---------------------------------------------------------------- traversal poses
+  // s.trav = { k, p, ph }: k = climb | hang | mantle | kneel | lift | pull | throw, p = 0..1 progress, ph = climb phase.
+  // Each builder starts from the finished base pose and overrides only the joints it owns; switching kinds cross-fades
+  // over ~0.16s, entering / leaving eases on the W.trav spring. Joint vector (JN floats) - see readPose().
+  const JN = 26, trCur = new Float32Array(JN), trFrom = new Float32Array(JN), trTgt = new Float32Array(JN), trOut = new Float32Array(JN);
+  let trLast = null, trKind = null, trXf = 1;
+  function readPose(o) {
+    o[0] = hips.position.y; o[1] = torso.rotation.z; o[2] = torso.rotation.x; o[3] = headPivot.rotation.z; let j = 4;
+    for (const a of arms) { o[j++] = a.sh.rotation.x; o[j++] = a.sh.rotation.y; o[j++] = a.sh.rotation.z; o[j++] = a.el.rotation.z; o[j++] = a.el.rotation.x; o[j++] = a.wr.rotation.z; }
+    for (const lg of legs) { o[j++] = lg.hip.rotation.z; o[j++] = lg.hip.rotation.x; o[j++] = lg.knee.rotation.z; o[j++] = lg.knee.rotation.x; o[j++] = lg.ankle.rotation.z; }
+  }
+  function writePose(o) {
+    hips.position.y = o[0]; torso.rotation.z = o[1]; torso.rotation.x = o[2]; headPivot.rotation.z = o[3]; let j = 4;
+    for (const a of arms) { a.sh.rotation.x = o[j++]; a.sh.rotation.y = o[j++]; a.sh.rotation.z = o[j++]; a.el.rotation.z = o[j++]; a.el.rotation.x = o[j++]; a.wr.rotation.z = o[j++]; }
+    for (const lg of legs) { lg.hip.rotation.z = o[j++]; lg.hip.rotation.x = o[j++]; lg.knee.rotation.z = o[j++]; lg.knee.rotation.x = o[j++]; lg.ankle.rotation.z = o[j++]; }
+  }
+  // setters on a pose vector. arm(i: 0 = left, 1 = right), leg(i)
+  const setArm = (o, i, shx, shy, shz, elz, wrz = 0) => { const j = 4 + i * 6; o[j] = shx; o[j + 1] = shy; o[j + 2] = shz; o[j + 3] = elz; o[j + 4] = 0; o[j + 5] = wrz; };
+  const setLeg = (o, i, th, kn, ank = null, hx = 0) => { const j = 16 + i * 5; o[j] = th; o[j + 1] = hx; o[j + 2] = kn; o[j + 3] = 0; o[j + 4] = ank ?? -(th + kn); };
+  const setBody = (o, hy, tz, hz, tx = 0) => { o[0] = hy; o[1] = tz; o[2] = tx; o[3] = hz; };
+  const P = { a: new Float32Array(JN), b: new Float32Array(JN) };
+  const blendInto = (o, a, b, k) => { for (let i = 0; i < JN; i++) o[i] = mix(a[i], b[i], k); };
+  const KNEEL = (o) => { setBody(o, 0.5, -0.3, 0.35); for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(o, i, 0, sd * 0.5, 0.8, 1.15, -0.3); }
+    setLeg(o, 0, 1.45, -1.5); setLeg(o, 1, -0.05, -1.55, 0.9); };
+  const HANG = (o, ph) => { const sw = Math.sin(ph); setBody(o, 0.92, 0.06, 0.45);
+    for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(o, i, -sd * 0.16, 0, 2.95, 0.22); }
+    setLeg(o, 0, 0.32 + 0.22 * sw, -0.55, -0.1); setLeg(o, 1, 0.32 - 0.22 * sw, -0.75, -0.1); };
+  const CLIMB = (o, ph) => { const sn = Math.sin(ph); setBody(o, 0.86, -0.08, 0.35);
+    setArm(o, 0, 0.12, 0, 2.55 + 0.35 * sn, 0.42 - 0.27 * sn); setArm(o, 1, -0.12, 0, 2.55 - 0.35 * sn, 0.42 + 0.27 * sn);
+    setLeg(o, 0, 0.55 - 0.45 * sn, -(0.4 + 0.5 - 0.5 * sn), null, 0.06); setLeg(o, 1, 0.55 + 0.45 * sn, -(0.4 + 0.5 + 0.5 * sn), null, -0.06); };
+  function travTarget(tr, o) { // fills o, returns the pose weight (fades for moves that end standing)
+    const p = clamp(tr.p ?? 0, 0, 1), pa = Math.min(1, p / 0.45);
+    switch (tr.k) {
+      case 'climb': CLIMB(o, tr.ph ?? 0); return 1;
+      case 'hang': HANG(o, tr.ph ?? performance.now() / 333); return 1;
+      case 'kneel': KNEEL(o); return 1;
+      case 'mantle': { // hands on the lip -> push over with knees tucked -> stand up
+        P.a.set(o); P.b.set(o);
+        setBody(P.a, 0.9, -0.2, 0.5); setArm(P.a, 0, 0.1, 0, mix(2.7, 1.6, pa), mix(0.3, 1.0, pa)); setArm(P.a, 1, -0.1, 0, mix(2.7, 1.6, pa), mix(0.3, 1.0, pa));
+        setLeg(P.a, 0, 1.0, -1.6); setLeg(P.a, 1, 0.2, -0.5);
+        setBody(P.b, 0.72, -0.75, 0.7); setArm(P.b, 0, 0.05, 0, 0.35, 0.15); setArm(P.b, 1, -0.05, 0, 0.35, 0.15);
+        setLeg(P.b, 0, 1.4, -2.0); setLeg(P.b, 1, 1.0, -1.6);
+        blendInto(o, P.a, P.b, sstep((p - 0.3) / 0.32)); return 1 - sstep((p - 0.78) / 0.22);
+      }
+      case 'lift': { // booster: kneel with cupped hands -> stand up driving the hands overhead -> lower
+        P.a.set(o); P.b.set(o); KNEEL(P.a);
+        setBody(P.b, 0.9, -0.05, 0.5); for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(P.b, i, -sd * 0.1, sd * 0.3, 2.45, 0.55); }
+        setLeg(P.b, 0, 0.3, -0.35); setLeg(P.b, 1, -0.15, -0.15);
+        blendInto(o, P.a, P.b, sstep((p - 0.25) / 0.4)); return 1 - sstep((p - 0.86) / 0.14);
+      }
+      case 'pull': { // on the roof edge facing out: kneel, lean over, reach down -> haul back
+        P.a.set(o); P.b.set(o); KNEEL(P.a); KNEEL(P.b);
+        setBody(P.a, 0.5, -1.1, 1.05); for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(P.a, i, -sd * 0.05, sd * 0.15, 1.55, 0.1); }
+        setBody(P.b, 0.55, -0.35, 0.45); for (let i = 0; i < 2; i++) { const sd = i ? 1 : -1; setArm(P.b, i, 0, sd * 0.3, 1.25, 1.6); }
+        blendInto(o, P.a, P.b, sstep((p - 0.2) / 0.55)); return 1 - sstep((p - 0.86) / 0.14);
+      }
+      case 'throw': { // grapple: right arm winds up and slings the hook up at the anchor (legs keep their base pose)
+        const k = sstep(p / 0.45);
+        setArm(o, 1, -0.05, 0, mix(1.0, 2.7, k), mix(1.5, 0.1, k), 0); setArm(o, 0, 0.05, 0, 0.7, 1.0); return 1;
+      }
+    }
+    return 0;
+  }
+  function applyTrav(dt, s) {
+    const trK = sstep(damp(W.trav, s.trav && !s.dead ? 1 : 0, dt));
+    if (s.trav) trLast = s.trav;
+    if (trK < 0.001 || !trLast) { trKind = null; return; }
+    readPose(trCur); trTgt.set(trCur);
+    const w = travTarget(trLast, trTgt);
+    if (trKind !== trLast.k) { if (trKind === null) { trFrom.set(trTgt); trXf = 1; } else { trFrom.set(trOut); trXf = 0; } trKind = trLast.k; }
+    trXf = Math.min(1, trXf + dt / 0.16);
+    const xf = sstep(trXf), k = trK * w;
+    for (let i = 0; i < JN; i++) { trOut[i] = mix(trFrom[i], trTgt[i], xf); trCur[i] = mix(trCur[i], trOut[i], k); }
+    writePose(trCur);
+    hips.position.z *= 1 - k; hips.rotation.y *= 1 - k; torso.rotation.y *= 1 - k;
   }
   // add a yaw / pitch offset to both shoulders. Standing: yaw = shoulder rotation.y (torso up), pitch = rotation.z
   // (arm raise). Prone the torso lies on its front, so world-yaw is carried by rotation.x instead (torso x ~ world down).
@@ -571,7 +649,9 @@ export function makeSneaker(scene, opts = {}) {
   const muzzleWorld = (v) => { if (flash) { g.updateMatrixWorld(true); return flash.getWorldPosition(v); } return v.set(g.position.x, 1.25, g.position.z); };
   // world direction the barrel points (unit); falls back to the body facing
   const muzzleDir = (v) => { if (drawn) { g.updateMatrixWorld(true); drawn.getWorldQuaternion(_q); return v.set(0, -1, 0).applyQuaternion(_q); } return v.set(Math.cos(-g.rotation.y), 0, Math.sin(-g.rotation.y)); };
-  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir };
+  // world position of a hand (side 1 = right, -1 = left) - grapple rope attaches here
+  const handWorld = (v, side = 1) => { g.updateMatrixWorld(true); return arms[side > 0 ? 1 : 0].wr.getWorldPosition(v); };
+  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld };
 }
 
 // enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.

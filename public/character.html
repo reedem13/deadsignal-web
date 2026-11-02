@@ -6,7 +6,7 @@
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script></head>
 <body><canvas id="c"></canvas>
 <div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead|ready|readywalk|aim|crouchaim|proneaim|takedown&amp;spin=0&amp;aimyaw=rad)<br>
-<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><button data-p="ready">ready</button><button data-p="readywalk">ready-walk</button><button data-p="aim">aim</button><button data-p="crouchaim">crouch-aim</button><button data-p="proneaim">prone-aim</button><button data-p="takedown">takedown</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
+<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><button data-p="ready">ready</button><button data-p="readywalk">ready-walk</button><button data-p="aim">aim</button><button data-p="crouchaim">crouch-aim</button><button data-p="proneaim">prone-aim</button><button data-p="takedown">takedown</button><br>CLIMB: <button data-p="climb">ladder</button><button data-p="hang">rope</button><button data-p="mantle">mantle</button><button data-p="kneel">kneel</button><button data-p="lift">boost-lift</button><button data-p="pull">pull-up</button><button data-p="throw">grapple-throw</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
 <script type="module">
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
@@ -41,6 +41,13 @@ function loop(now) {
   for (const m of [...P, ...E]) m.g.visible = pair.includes(m) && !(qs.get('one') && m === pair[1]);
   if (qs.get('one')) pair[0].g.position.set(0, 0, 0); else { pair[0].g.position.set(px, 0, pz); pair[1].g.position.set(-px, 0, -pz); }
   shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; }
+  // traversal poses (?p=0..1 freezes progress, else loops every 2s)
+  const TRV = ['climb', 'hang', 'mantle', 'kneel', 'lift', 'pull', 'throw'];
+  if (TRV.includes(pose)) {
+    const tp = qs.has('p') ? +qs.get('p') : (now / 2000) % 1;
+    for (const m of [...P, ...E]) m.update(dt, { trav: { k: pose, p: tp, ph: now / 250 } });
+    r.render(scene, cam); requestAnimationFrame(loop); return;
+  }
   const s = { armed: /ready|aim/.test(pose), moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead',
     aim: /aim/.test(pose), shot };
   // ?aimyaw=<rad> (aim poses): lock target 4m out at that angle off the facing -> arms turn at the shoulders toward it
