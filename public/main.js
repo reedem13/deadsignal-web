@@ -5,7 +5,8 @@
 // Netcode: listen-server style. Host simulates guards, alert, door, extract & win. Each client owns its own
 // movement (sent 20x/s); host broadcasts world state 15x/s. Messages go through server.js (WebSocket relay).
 // Combat: ACT behind a guard = TAKEDOWN (choke + knife, guard stays down). Otherwise ACT = switch if on a pad, else fire
-// the handgun (F always fires). Limited ammo + cooldown, auto-aims at the nearest guard in front, gunshots are loud.
+// the handgun - but ONLY while the pistol is drawn. G / GUN button draws or holsters it (missions start holstered); while
+// holstered neither ACT nor F can fire. Limited ammo + cooldown, auto-aims at the nearest guard in front, gunshots are loud.
 // The host is authoritative for guard deaths: guests send 'td' / 'sh' requests, the host applies them and broadcasts.
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
@@ -81,12 +82,13 @@ let solo = false;
 let roomCode = '';
 let peerConnected = false;
 // c = low (crouched OR prone; this is what older clients read as "crouch"), p = prone, tun = tunnel index or -1
-// combat: td = active takedown { g, t } or null, ammo, cd = fire cooldown, gunT = seconds the pistol stays drawn, shot = shot counter (recoil)
+// combat: td = active takedown { g, t } or null, eq = pistol drawn (in hand) vs holstered, ammo, cd = fire cooldown,
+// gunT = seconds the aim pose is held after a shot, shot = shot counter (recoil)
 const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0,
-  td: null, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0 };
+  td: null, eq: false, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0 };
 const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0, nvx: 0, nvz: 0, pt: 0,
-  td: -1, gd: 0, shot: 0 };
-function resetLoadout() { me.td = null; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; other.td = -1; other.gd = 0; }
+  td: -1, gd: 0, eq: 0, shot: 0 };
+function resetLoadout() { me.td = null; me.eq = false; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; other.td = -1; other.gd = 0; other.eq = 0; syncGunButton(); }
 const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play';
@@ -343,7 +345,8 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyC' || e.code === 'ControlLeft') toggleCrouch();
   if (e.code === 'KeyZ' || e.code === 'KeyX') toggleProne();
   if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) doInteract(); }
-  if (e.code === 'KeyF' && !e.repeat) { unlockAudio(); if (role && world.phase === 'play' && !me.td) fireGun(); }
+  if (e.code === 'KeyF' && !e.repeat) { unlockAudio(); if (role && world.phase === 'play' && !me.td) { if (me.eq) fireGun(); else holsterHint(); } }
+  if (e.code === 'KeyG' && !e.repeat) { unlockAudio(); toggleGun(); }
 });
 addEventListener('keyup', (e) => input.keys.delete(e.code));
 addEventListener('blur', () => input.keys.clear());
@@ -369,6 +372,7 @@ zone.addEventListener('pointerup', endStick); zone.addEventListener('pointercanc
 $('btnCrouch').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleCrouch(); });
 $('btnProne').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleProne(); });
 $('btnAct').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); doInteract(); });
+$('btnGun').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleGun(); });
 document.addEventListener('touchmove', (e) => { if (!e.target.closest('.panel')) e.preventDefault(); }, { passive: false });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
@@ -388,17 +392,30 @@ function toggleProne() {
   else { me.p = true; me.c = true; }
   syncStanceButtons();
 }
+// pistol: G / GUN button draws or holsters it. Holstered = ACT can only take down / use, F does nothing (no accidental shots).
+function syncGunButton() { const b = $('btnGun'); if (!b) return; b.classList.toggle('on', me.eq); b.textContent = me.eq ? 'HOLSTER' : 'GUN'; }
+function toggleGun() {
+  if (!role || world.phase !== 'play' || me.td) return;
+  me.eq = !me.eq;
+  if (me.eq) { me.cd = Math.max(me.cd, 0.25); beep(520, 0.03, 'square', 0.05); setTimeout(() => beep(780, 0.03, 'square', 0.05), 60); } // draw: slide click, brief settle
+  else { me.gunT = 0; beep(300, 0.05, 'triangle', 0.06); }
+  toast(me.eq ? 'P-9 DRAWN' : 'P-9 HOLSTERED', 600, me.eq ? '#ffd27f' : '#9fd9b0');
+  syncGunButton();
+  if (role === 'guest') sendPlayer(); else if (peerConnected) sendState();
+}
+let hintT = 0;
+function holsterHint() { const now = performance.now(); if (now - hintT < 1500) return; hintT = now; toast(isTouch ? 'Holstered - tap GUN to draw' : 'Holstered - G to draw', 900, '#ccc'); }
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
-// ACT priority: takedown (only from behind) > door switch > fire handgun
+// ACT priority: takedown (only from behind) > door switch > fire handgun (only if drawn)
 const nearSwitch = () => SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
-function actMode() { return takedownTarget(me) >= 0 ? 'td' : nearSwitch() ? 'use' : 'fire'; }
+function actMode() { return takedownTarget(me) >= 0 ? 'td' : nearSwitch() ? 'use' : me.eq ? 'fire' : 'none'; }
 function doInteract() {
   if (!role || world.phase !== 'play' || me.td) return;
   flash($('btnAct'));
   const gi = takedownTarget(me);
   if (gi >= 0) { startTakedown(gi); return; }
   if (nearSwitch()) { beep(660, 0.08); if (role === 'host') armSwitch(0); else net.relay({ t: 'i' }); return; }
-  fireGun();
+  if (me.eq) fireGun();
 }
 
 // ---------------------------------------------------------------- combat: takedown + handgun
@@ -433,7 +450,7 @@ function hostTakedown(gi, pidx) {
   return true;
 }
 function fireGun() {
-  if (me.cd > 0) return;
+  if (!me.eq || me.cd > 0) return;
   if (me.ammo <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
   me.ammo--; me.cd = GUN.cooldown; me.gunT = GUN.drawTime; me.shot++;
   // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
@@ -657,12 +674,13 @@ function sendState() {
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0)]), // st[0]: p i c s h(eld) d(ead)
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo, k: world.kills,
-    // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = pistol drawn (older clients ignore)
-    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0] });
+    // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = aiming (just fired), h[9] = pistol drawn
+    // (older clients ignore the extras)
+    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0] });
 }
 const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
 function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
-  td: tdProg(), gd: me.gunT > 0 ? 1 : 0 }); }
+  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0 }); }
 // partner fired: tracer + recoil on their model (host also applies the hit)
 function remoteShot(d) { other.shot++; other.gd = 1; gunFx(otherMesh, d.ex, d.ez, d.g >= 0); gunSound(0.6); }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
@@ -677,7 +695,7 @@ function netSample(o, x, z, vx, vz) {
 }
 
 function onGameMsg(d) {
-  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; other.td = d.td ?? -1; other.gd = d.gd || 0; }
+  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; other.td = d.td ?? -1; other.gd = d.gd || 0; other.eq = d.eq ?? (other.gd ? 1 : 0); }
   else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
     const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
     const ok = g && alive(g) && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
@@ -692,7 +710,7 @@ function onGameMsg(d) {
     d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; });
     Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1, kills: d.k || 0 });
     solo = d.solo;
-    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4]; other.td = d.h[7] ?? -1; other.gd = d.h[8] || 0;
+    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4]; other.td = d.h[7] ?? -1; other.gd = d.h[8] || 0; other.eq = d.h[9] ?? (other.gd ? 1 : 0);
   } else if (d.t === 'tp' && role === 'guest') {
     me.x = d.x; me.z = d.z; me.tun = -1; stopMe(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
@@ -870,7 +888,7 @@ function render(dt) {
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
   meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe,
-    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.gunT > 0, shot: me.shot });
+    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.gunT > 0, armed: me.eq, shot: me.shot });
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
   if (dt > 0) { const vNet = Math.hypot(other.nvx, other.nvz), vScr = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt;
@@ -879,7 +897,7 @@ function render(dt) {
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
   otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 ? otherSpeed : 0,
-    crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd, shot: other.shot });
+    crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd, armed: !!other.eq, shot: other.shot });
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -960,7 +978,10 @@ function updateHud() {
   }
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
-  $('ammo').textContent = 'P-9 ' + '|'.repeat(me.ammo) + (me.ammo ? '' : 'EMPTY') + ' ' + me.ammo + '/' + GUN.ammo + (world.kills ? '  KILLS ' + world.kills : '');
+  const ammoTxt = 'P-9 ' + (me.eq ? '|'.repeat(me.ammo) + (me.ammo ? '' : 'EMPTY') + ' ' + me.ammo + '/' + GUN.ammo
+    : 'HOLSTERED ' + me.ammo + '/' + GUN.ammo + (isTouch ? '' : '  [G] draw')) + (world.kills ? '  KILLS ' + world.kills : '');
+  const ammoEl = $('ammo'); if (ammoEl.textContent !== ammoTxt) ammoEl.textContent = ammoTxt;
+  ammoEl.classList.toggle('holstered', !me.eq);
   const mode = world.phase === 'play' && !me.td ? actMode() : 'none';
   const act = $('btnAct'), label = mode === 'td' ? 'TAKE DOWN' : mode === 'use' ? 'USE' : mode === 'fire' ? 'FIRE' : 'ACT';
   if (act.textContent !== label) act.textContent = label;
@@ -991,4 +1012,4 @@ requestAnimationFrame(loop);
 // debug hook for automated tests
 window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
-  doInteract, fireGun, takedownTarget, actMode, TD, GUN };
+  doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN };

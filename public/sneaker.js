@@ -4,7 +4,8 @@
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
 // respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
-// Combat overlays (layered on top of the base pose): aim (handgun drawn, two-hand grip, recoil on s.shot change),
+// Combat overlays (layered on top of the base pose): armed (s.armed: pistol out of the holster, carried low-ready in the
+// right hand; false = holstered on the thigh), aim (handgun up, two-hand grip, recoil on s.shot change),
 // takedown (attacker: choke hold from behind + knife jabs, s.takedown = 0..1 progress) and held (victim: head back,
 // clawing at the arm, knees buckle, s.held = 0..1 progress -> then dead).
 import * as THREE from 'three';
@@ -330,7 +331,7 @@ export function makeSneaker(scene, opts = {}) {
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06) };
+    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1) };
   let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0;
   const bump = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return Math.sin(u * Math.PI); }; // 0 -> 1 -> 0 over [a,b]
   const mix = (a, b, k) => a + (b - a) * k;
@@ -353,6 +354,7 @@ export function makeSneaker(scene, opts = {}) {
     const tdK = sstep(damp(W.td, s.takedown != null && !s.dead ? 1 : 0, dt));
     const heldK = sstep(damp(W.held, s.held != null && !s.dead ? 1 : 0, dt));
     const aimK = sstep(damp(W.aim, s.aim && s.takedown == null && !s.dead ? 1 : 0, dt));
+    const armK = sstep(damp(W.armed, s.armed && s.takedown == null && !s.dead ? 1 : 0, dt)); // pistol in hand (low ready)
     if (s.shot && s.shot !== lastShot) { recoil = 1; flashT = 0.07; lastShot = s.shot; }
     recoil = Math.max(0, recoil - dt * 7); flashT = Math.max(0, flashT - dt);
     // takedown: attacker sinks into a braced half-crouch; victim's knees give out as the hold finishes
@@ -450,6 +452,15 @@ export function makeSneaker(scene, opts = {}) {
       for (const a of arms) a.el.rotation.x = 0;
     }
     for (const a of arms) a.sh.rotation.y = 0;
+    // ---- LOW READY (pistol drawn, not aiming): right forearm brought forward, muzzle angled at the floor ahead.
+    // Fades out when prone (crawl arms win) and under the full aim pose.
+    const readyK = armK * (1 - pk) * (1 - aimK);
+    if (readyK > 0.001) {
+      const Rr = arms[1], k = readyK;
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, 0.38 + Rr.sh.rotation.z * 0.25, k); Rr.sh.rotation.x = mix(Rr.sh.rotation.x, 0.1, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.75, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, 0.15, k);
+    }
     // ---- HANDGUN AIM: right arm straight out along the facing, left hand cups the grip (Weaver-ish). Compensates the
     // torso lean so the barrel stays level in crouch. Prone: arm reaches forward past the head (rig is laid on its front).
     if (aimK > 0.001) {
@@ -500,7 +511,7 @@ export function makeSneaker(scene, opts = {}) {
       }
     }
     if (holstered) {
-      const out = aimK > 0.35;
+      const out = aimK > 0.35 || (armK > 0.5 && tdK < 0.3);
       holstered.visible = !out; drawn.visible = out;
       knife.visible = tdK > 0.3 && tdP > 0.12 && tdP < 0.95 && !out;
       flash.visible = flashT > 0 && out; flash.rotation.y = t * 40;
