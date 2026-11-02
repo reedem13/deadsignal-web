@@ -331,7 +331,13 @@ export function makeSneaker(scene, opts = {}) {
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1) };
+    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09) };
+  // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
+  // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
+  // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
+  // the arms toward it. The laser in main.js only ever reads the barrel (muzzleWorld + muzzleDir) - it never aims itself.
+  const aimGoal = [0, 0], AIM_MAX = [1.1, 0.6];
+  let aimHad = false;
   let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0;
   const bump = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return Math.sin(u * Math.PI); }; // 0 -> 1 -> 0 over [a,b]
   const mix = (a, b, k) => a + (b - a) * k;
@@ -376,6 +382,8 @@ export function makeSneaker(scene, opts = {}) {
     const yaw = g.rotation.y; let yawRate = 0;
     if (prevYaw !== null && dt > 0) { let d = yaw - prevYaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; yawRate = d / dt; }
     prevYaw = yaw;
+    // body snapped onto the target (shot with auto-aim): carry the arms' current world aim over so they don't flick
+    if (s.aimAt && aimHad && Math.abs(yawRate * dt) > 0.15) { W.aYaw.x -= yawRate * dt; aimGoal[0] -= yawRate * dt; }
     const roll = damp(W.roll, clamp(-yawRate * spd * 0.012, -0.12, 0.12) * (1 - proneK), dt);
     const idle = damp(W.idle, 1 - moveK, dt) * (1 - deadK);
     const breathe = Math.sin(t * 1.7) * idle, sway = Math.sin(t * 0.55) * idle;
@@ -473,7 +481,9 @@ export function makeSneaker(scene, opts = {}) {
       L.sh.rotation.x = mix(L.sh.rotation.x, pk * 0.5, k);
       L.el.rotation.z = mix(L.el.rotation.z, 0.35 + recoil * 0.2, k); L.el.rotation.x = mix(L.el.rotation.x, 0, k);
       torso.rotation.y = mix(torso.rotation.y, -0.12 * (1 - pk), k); // blade the body a touch
-    }
+      // shoulder aim offsets (yaw, pitch) on top of the pose, same delta on both shoulders
+      shoulderAim(damp(W.aYaw, aimGoal[0], dt) * k, damp(W.aPitch, aimGoal[1], dt) * k, pk);
+    } else { damp(W.aYaw, 0, dt); damp(W.aPitch, 0, dt); }
     // ---- TAKEDOWN (attacker, from behind): reach in, hook the left forearm across the guard's throat, two knife jabs
     // with the right hand, then lower him down.
     if (tdK > 0.001) {
@@ -522,11 +532,46 @@ export function makeSneaker(scene, opts = {}) {
     inner.position.y = mix(deadK * 0.16, 0.14, pk);
     inner.position.x = mix(deadK * 0.1, -0.78, pk);
     rig.rotation.x = roll * (1 - flat); // bank into turns from the feet
+    aimHad = !!s.aimAt;
+    solveShoulderAim(s, aimK, pk);
+  }
+  // add a yaw / pitch offset to both shoulders. Standing: yaw = shoulder rotation.y (torso up), pitch = rotation.z
+  // (arm raise). Prone the torso lies on its front, so world-yaw is carried by rotation.x instead (torso x ~ world down).
+  function shoulderAim(yo, po, pk) {
+    for (const a of arms) { a.sh.rotation.y += yo * (1 - pk); a.sh.rotation.x -= yo * pk; a.sh.rotation.z += po; }
+  }
+  const _m = new THREE.Vector3(), _d = new THREE.Vector3(), _q = new THREE.Quaternion(), _tgt = new THREE.Vector3();
+  const barrel = () => { g.updateMatrixWorld(true); flash.getWorldPosition(_m); drawn.getWorldQuaternion(_q); return _d.set(0, -1, 0).applyQuaternion(_q); };
+  // barrel error vs muzzle -> target, as [yaw, elevation] (world yaw sign matches rotation.y)
+  const aimErr = () => {
+    const d = barrel(), tx = _tgt.x - _m.x, ty = _tgt.y - _m.y, tz = _tgt.z - _m.z;
+    let ey = Math.atan2(-tz, tx) - Math.atan2(-d.z, d.x); while (ey > Math.PI) ey -= 2 * Math.PI; while (ey < -Math.PI) ey += 2 * Math.PI;
+    return [ey, Math.atan2(ty, Math.hypot(tx, tz)) - Math.atan2(d.y, Math.hypot(d.x, d.z))];
+  };
+  // Solve the shoulder offsets that put the barrel on target: measure the finished pose, probe each offset a little
+  // (numeric 2x2 Jacobian, so it stays right in crouch / prone / blading), Newton step -> aimGoal for the next frame.
+  function solveShoulderAim(s, aimK, pk) {
+    if (!drawn || aimK < 0.5 || s.dead) { aimGoal[0] = aimGoal[1] = 0; return; }
+    if (s.aimAt) _tgt.set(s.aimAt.x, s.aimAt.y, s.aimAt.z);
+    else { barrel(); const a = -g.rotation.y; _tgt.set(g.position.x + Math.cos(a) * 10, _m.y, g.position.z + Math.sin(a) * 10); } // dead ahead, level
+    if (recoil > 0.05) return; // let the kick play out instead of fighting it
+    const e0 = aimErr(), eps = 0.02, k = aimK;
+    shoulderAim(eps * k, 0, pk); const e1 = aimErr(); shoulderAim(-eps * k, 0, pk);
+    shoulderAim(0, eps * k, pk); const e2 = aimErr(); shoulderAim(0, -eps * k, pk);
+    g.updateMatrixWorld(true);
+    // columns = d(err)/d(offset) (err falls as the offset closes it, hence the minus)
+    const a11 = -(e1[0] - e0[0]) / eps, a21 = -(e1[1] - e0[1]) / eps, a12 = -(e2[0] - e0[0]) / eps, a22 = -(e2[1] - e0[1]) / eps;
+    const det = a11 * a22 - a12 * a21; if (Math.abs(det) < 1e-4) return;
+    const dy = (a22 * e0[0] - a12 * e0[1]) / det, dp = (a11 * e0[1] - a21 * e0[0]) / det;
+    aimGoal[0] = clamp(W.aYaw.x + clamp(dy, -0.5, 0.5), -AIM_MAX[0], AIM_MAX[0]);
+    aimGoal[1] = clamp(W.aPitch.x + clamp(dp, -0.5, 0.5), -AIM_MAX[1], AIM_MAX[1]);
   }
   update(0, {});
   // world position of the pistol muzzle (for tracers); falls back to chest height in front of the body
   const muzzleWorld = (v) => { if (flash) { g.updateMatrixWorld(true); return flash.getWorldPosition(v); } return v.set(g.position.x, 1.25, g.position.z); };
-  return { g, inner, update, materials: M, head: headPivot, muzzleWorld };
+  // world direction the barrel points (unit); falls back to the body facing
+  const muzzleDir = (v) => { if (drawn) { g.updateMatrixWorld(true); drawn.getWorldQuaternion(_q); return v.set(0, -1, 0).applyQuaternion(_q); } return v.set(Math.cos(-g.rotation.y), 0, Math.sin(-g.rotation.y)); };
+  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir };
 }
 
 // enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.

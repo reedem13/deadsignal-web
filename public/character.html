@@ -5,7 +5,7 @@
 #ui{position:fixed;left:8px;top:8px}button{font:inherit;margin:2px;padding:6px 10px;background:#223;color:#cfd;border:1px solid #456}</style>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script></head>
 <body><canvas id="c"></canvas>
-<div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead|ready|readywalk|aim|crouchaim|proneaim|takedown&amp;spin=0)<br>
+<div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead|ready|readywalk|aim|crouchaim|proneaim|takedown&amp;spin=0&amp;aimyaw=rad)<br>
 <button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><button data-p="ready">ready</button><button data-p="readywalk">ready-walk</button><button data-p="aim">aim</button><button data-p="crouchaim">crouch-aim</button><button data-p="proneaim">prone-aim</button><button data-p="takedown">takedown</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
 <script type="module">
 import * as THREE from 'three';
@@ -43,7 +43,9 @@ function loop(now) {
   shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; }
   const s = { armed: /ready|aim/.test(pose), moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead',
     aim: /aim/.test(pose), shot };
-  for (const m of [...P, ...E]) m.update(dt, s);
+  // ?aimyaw=<rad> (aim poses): lock target 4m out at that angle off the facing -> arms turn at the shoulders toward it
+  const ay = qs.has('aimyaw') ? +qs.get('aimyaw') : null;
+  for (const m of [...P, ...E]) m.update(dt, ay == null || !s.aim ? s : { ...s, aimAt: { x: m.g.position.x + Math.cos(ay) * 4, y: 1.0, z: m.g.position.z + Math.sin(ay) * 4 } });
   r.render(scene, cam); requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);

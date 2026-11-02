@@ -341,22 +341,25 @@ function laserGuardHit(x, z, a, maxD) {
   }
   return best;
 }
-// show / aim a laser. lockX/lockZ (optional) = auto-aim target to snap the beam onto.
-function updateLaser(L, mesh, show, x, z, a, dt, lockX, lockZ) {
+// show a laser. It is rigidly attached to the pistol: starts at the muzzle and runs along the barrel (mesh.muzzleDir)
+// to the first wall / guard / floor in that line. Auto-aim never steers the beam - it turns the arms at the shoulders
+// (sneaker.js, s.aimAt) and the beam just follows the gun.
+function updateLaser(L, mesh, show, dt) {
   L.on = show ? Math.min(1, L.on + dt * 6) : 0;
   L.beam.visible = L.dot.visible = L.core.visible = L.on > 0.05;
   if (!L.beam.visible) return;
-  mesh.muzzleWorld(_lz);
-  let ex, ez, ey = _lz.y;
-  if (lockX != null) { ex = lockX; ez = lockZ; ey = Math.max(0.35, Math.min(1.2, _lz.y)); }
-  else {
+  mesh.muzzleWorld(_lz); mesh.muzzleDir(_ld);
+  const hl = Math.hypot(_ld.x, _ld.z);
+  let dist = GUN.range; // along the beam (3D)
+  if (_ld.y < -1e-3) dist = Math.min(dist, (_lz.y - 0.02) / -_ld.y); // floor
+  if (hl > 0.05) {
+    const a = Math.atan2(_ld.z, _ld.x), x = _lz.x, z = _lz.z, hr = dist * hl; // horizontal reach
     // anything taller than the beam stops it (so a crouched / prone laser lands on crates instead of passing through)
-    const bx = x + Math.cos(a) * GUN.range, bz = z + Math.sin(a) * GUN.range; let tm = 1;
+    const bx = x + Math.cos(a) * hr, bz = z + Math.sin(a) * hr; let tm = 1;
     for (const b of solids()) { if (b.h < _lz.y) continue; const t = segT(x, z, bx, bz, b); if (t !== null && t > 0.01 && t < tm) tm = t; }
-    const gd = laserGuardHit(x, z, a, GUN.range * tm);
-    ex = x + Math.cos(a) * gd; ez = z + Math.sin(a) * gd;
+    dist = laserGuardHit(x, z, a, hr * tm) / hl;
   }
-  _ld.set(ex - _lz.x, ey - _lz.y, ez - _lz.z);
+  _ld.multiplyScalar(dist);
   const len = Math.max(0.05, _ld.length() * L.on); // beam "extends" over ~0.15s on draw
   L.beam.scale.set(len, 1, 1);
   L.beam.position.copy(_lz).addScaledVector(_ld.normalize(), len / 2);
@@ -366,6 +369,13 @@ function updateLaser(L, mesh, show, x, z, a, dt, lockX, lockZ) {
   cp.setXYZ(1, _lz.x + _ld.x * len, _lz.y + _ld.y * len, _lz.z + _ld.z * len); cp.needsUpdate = true;
   L.dot.position.copy(_lz).addScaledVector(_ld, len); L.dot.visible = L.on > 0.95;
   L.dot.rotation.y += dt * 8;
+}
+// auto-aim point for a player's arms: the lock target's chest, at about barrel height so the arms stay near level
+const _am = new THREE.Vector3();
+function aimPoint(p, mesh, on) {
+  const i = on ? autoTarget(p) : -1; if (i < 0) return null;
+  const g = world.guards[i]; mesh.muzzleWorld(_am);
+  return { x: g.rx ?? g.x, y: Math.max(0.45, Math.min(1.15, _am.y)), z: g.rz ?? g.z };
 }
 const myLaser = makeLaser(), otherLaser = makeLaser();
 
@@ -509,17 +519,18 @@ function hostTakedown(gi, pidx) {
   return true;
 }
 // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
-function autoTarget() {
-  const cone = me.tun >= 0 ? GUN.fpsCone : GUN.cone;
+function autoTarget(p = me) {
+  const cone = p.tun >= 0 ? GUN.fpsCone : GUN.cone;
+  const px = p.x, pz = p.z, pa = p.a;
   let tgt = -1, best = 1e9;
   world.guards.forEach((g, i) => {
     if (g.st === 'dead') return;
     const gx = g.rx ?? g.x, gz = g.rz ?? g.z; // guest: use the smoothed on-screen guard
-    const dx = gx - me.x, dz = gz - me.z, d = Math.hypot(dx, dz);
+    const dx = gx - px, dz = gz - pz, d = Math.hypot(dx, dz);
     if (d > GUN.range) return;
-    const off = Math.abs(angDiff(Math.atan2(dz, dx), me.a));
+    const off = Math.abs(angDiff(Math.atan2(dz, dx), pa));
     if (off > cone && d > 1.0) return;
-    if (!clearShot(me.x, me.z, gx, gz)) return;
+    if (!clearShot(px, pz, gx, gz)) return;
     const score = d + off * 8; if (score < best) { best = score; tgt = i; }
   });
   return tgt;
@@ -958,7 +969,10 @@ function render(dt) {
   other.ra = lerpA(other.ra, other.a, k);
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
-  meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe,
+  // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
+  const play = world.phase === 'play';
+  const myAim = aimPoint(me, meMesh, me.eq && !me.td && play && !deadMe);
+  meMesh.update(dt, { aimAt: myAim, moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe,
     takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.eq || me.gunT > 0, armed: me.eq, shot: me.shot }); // drawn = always in the forward aim stance
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
@@ -967,13 +981,12 @@ function render(dt) {
   otherPX = other.rx; otherPZ = other.rz;
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
-  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 ? otherSpeed : 0,
+  const otherAim = aimPoint({ x: other.rx, z: other.rz, a: other.ra, tun: tunnelAt(other.rx, other.rz) }, otherMesh, peerConnected && !!other.eq && other.td < 0 && play && !deadOther);
+  otherMesh.update(dt, { aimAt: otherAim, moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 ? otherSpeed : 0,
     crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd || !!other.eq, armed: !!other.eq, shot: other.shot });
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
-  { const play = world.phase === 'play';
-    const lockI = me.eq && !me.td && play ? autoTarget() : -1, lg = lockI >= 0 ? world.guards[lockI] : null;
-    updateLaser(myLaser, meMesh, me.eq && !me.td && play && !deadMe, me.x, me.z, me.a, dt, lg ? (lg.rx ?? lg.x) : null, lg ? (lg.rz ?? lg.z) : null);
-    updateLaser(otherLaser, otherMesh, peerConnected && !!other.eq && other.td < 0 && play && !deadOther, other.rx, other.rz, other.ra, dt); }
+  updateLaser(myLaser, meMesh, me.eq && !me.td && play && !deadMe, dt);
+  updateLaser(otherLaser, otherMesh, peerConnected && !!other.eq && other.td < 0 && play && !deadOther, dt);
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -1088,4 +1101,4 @@ requestAnimationFrame(loop);
 // debug hook for automated tests
 window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
-  doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN };
+  doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget };
