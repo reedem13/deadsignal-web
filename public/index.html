@@ -17,6 +17,7 @@
 <canvas id="game"></canvas>
 
 <!-- HUD -->
+<div id="fpsVignette"></div>
 <div id="hud" class="hidden">
   <div id="hudTop">
     <div id="roomInfo"><span id="roomCode">----</span> <span id="peerStatus" class="bad">waiting</span> <span id="ping"></span>
@@ -29,6 +30,7 @@
   <div id="stickZone"><div id="stickBase" class="hidden"><div id="stickKnob"></div></div></div>
   <div id="buttons">
     <button id="btnCrouch" class="act">CROUCH</button>
+    <button id="btnProne" class="act">PRONE</button>
     <button id="btnAct" class="act">ACT</button>
   </div>
   <div id="stance">WALK</div>
@@ -46,8 +48,9 @@
   </div>
   <div id="lobbyMsg"></div>
   <div class="help">
-    <b>Phone:</b> left thumb = move (push to edge = run, loud) &middot; CROUCH = slow &amp; quiet, hides behind crates &middot; ACT = press a door switch<br>
-    <b>Keyboard:</b> WASD/arrows move &middot; Shift run &middot; C crouch &middot; E/Space act
+    <b>Phone:</b> left thumb = move (push to edge = run, loud) &middot; CROUCH = slow &amp; quiet, hides behind crates &middot; PRONE = crawl, very hard to spot &middot; ACT = press a door switch<br>
+    <b>Keyboard:</b> WASD/arrows move &middot; Shift run &middot; C crouch &middot; Z/X prone &middot; E/Space act<br>
+    <b>Tunnels</b> (yellow-striped mouths): crawl in to switch to first person &mdash; up/W forward, left/right turn. Guards can't follow.
   </div>
 </div>
 

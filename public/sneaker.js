@@ -2,6 +2,8 @@
 // Built from boxes/cones in a joint hierarchy so it is easy to tweak and cheap on phones (~45 boxes, ~600 tris).
 // Textures are tiny (32-64px) CanvasTextures drawn at load with NearestFilter = intentionally crunchy.
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
+// Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
+// respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------- tiny seeded RNG so textures are identical every load
@@ -38,10 +40,14 @@ const px = (x, c, X, Y, w = 1, h = 1) => { x.fillStyle = c; x.fillRect(X, Y, w, 
 // colours sampled from the reference sheets
 const OLIVE = [104, 114, 74], OLIVE_DK = [80, 90, 58], BLACK = [34, 35, 36], SKIN = [206, 162, 120], HAIR = [42, 34, 28], BOOT = [44, 45, 46];
 
-let TEX = null;
-function textures() {
-  if (TEX) return TEX;
-  TEX = {
+// enemy (guard) palette: slate fatigues, black kit, gunmetal helmet, black balaclava
+const SLATE = [96, 104, 116], SLATE_DK = [64, 70, 82], MASK = [30, 30, 33], HELM = [86, 94, 88];
+
+const TEX = {};
+function textures(kit = 'player') {
+  if (TEX[kit]) return TEX[kit];
+  if (kit === 'enemy') return (TEX.enemy = enemyTextures());
+  TEX.player = {
     suit: canvasTex(64, (x, S) => {
       facets(x, S, OLIVE, 11, 5, 0.26);
       const r = rng(5); // darker camo blotches
@@ -91,7 +97,64 @@ function textures() {
       px(x, shade(SKIN, 1), 0, S - 9, S, 9); for (let i = 0; i < S; i += 8) px(x, shade(SKIN, 0.7), i, S - 9, 1, 9);
     }),
   };
-  return TEX;
+  return TEX.player;
+}
+
+function enemyTextures() {
+  return {
+    suit: canvasTex(64, (x, S) => { // slate urban camo: facets + dark angular blotches + a few light chips
+      facets(x, S, SLATE, 211, 5, 0.24);
+      const r = rng(17);
+      for (let i = 0; i < 7; i++) { x.fillStyle = shade(SLATE_DK, 0.85 + r() * 0.2); x.beginPath();
+        const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 20, cy + (r() - 0.5) * 20); x.fill(); }
+      for (let i = 0; i < 10; i++) px(x, shade(SLATE, 1.3), r() * S | 0, r() * S | 0, 2, 1);
+    }),
+    suitFront: canvasTex(64, (x, S) => { // armoured vest front: plate outline + magazine pouch row
+      facets(x, S, SLATE, 223, 5, 0.24);
+      px(x, shade(MASK, 1.2), 8, 4, 48, 40); // vest plate
+      px(x, shade(MASK, 1.6), 8, 4, 48, 1); px(x, shade(MASK, 1.6), 8, 43, 48, 1);
+      for (let i = 0; i < 3; i++) { px(x, shade(MASK, 0.8), 12 + i * 14, 24, 11, 16); px(x, shade(MASK, 1.9), 12 + i * 14, 24, 11, 1); }
+      px(x, '#7a1414', 28, 8, 8, 4); // red unit tab
+    }),
+    gear: canvasTex(32, (x, S) => {
+      facets(x, S, [28, 29, 31], 231, 3, 0.25, 0.06);
+      px(x, shade(MASK, 1.8), 0, 1, S, 1); px(x, shade(MASK, 1.8), 0, S - 2, S, 1);
+      for (let i = 1; i < S; i += 3) { px(x, shade(MASK, 0.6), i, 3); px(x, shade(MASK, 0.6), i, S - 4); }
+    }),
+    pouch: canvasTex(32, (x, S) => {
+      facets(x, S, [32, 33, 35], 241, 3, 0.3, 0.06);
+      px(x, shade(MASK, 0.5), 2, 11, S - 4, 2); px(x, shade(MASK, 1.9), 2, 13, S - 4, 1);
+      px(x, '#5b5e62', 14, 8, 4, 4);
+    }),
+    pad: canvasTex(32, (x, S) => { facets(x, S, [44, 46, 50], 251, 2, 0.35, 0.05); px(x, '#151515', 0, 0, S, 2); px(x, '#151515', 0, S - 2, S, 2); }),
+    boot: canvasTex(32, (x, S) => {
+      facets(x, S, [36, 36, 38], 261, 3, 0.25, 0.06);
+      px(x, '#141415', 0, S - 8, S, 8); for (let i = 0; i < S; i += 4) px(x, '#29292a', i, S - 6, 2, 3);
+      for (let y = 4; y < S - 10; y += 5) px(x, '#4a4b4c', 10, y, 12, 1);
+    }),
+    // "skin" slot = balaclava knit (neck, sides/back of head) so no skin shows anywhere
+    skin: canvasTex(32, (x, S) => { facets(x, S, MASK, 271, 3, 0.2, 0.1); for (let y = 1; y < S; y += 3) px(x, shade(MASK, 0.7), 0, y, S, 1); }),
+    hair: canvasTex(32, (x, S) => facets(x, S, MASK, 281, 3, 0.2, 0.1)),
+    // front of head: fully masked. knit balaclava, goggle strap band, respirator seat - no eyes/nose/mouth
+    face: canvasTex(32, (x, S) => {
+      facets(x, S, MASK, 291, 3, 0.18, 0.1);
+      for (let y = 1; y < S; y += 3) px(x, shade(MASK, 0.75), 0, y, S, 1); // knit rows
+      px(x, '#141416', 0, 10, S, 9); // goggle gasket band
+      px(x, '#3a3c40', 0, 10, S, 1); px(x, '#3a3c40', 0, 18, S, 1);
+      px(x, '#3d3f42', 9, 21, 14, 10); px(x, '#56595d', 10, 22, 12, 1); // respirator seat
+      for (let i = 0; i < 4; i++) px(x, '#1a1b1d', 11 + i * 3, 25, 2, 5);
+    }),
+    glove: canvasTex(32, (x, S) => { facets(x, S, [26, 27, 29], 301, 3, 0.25, 0.06); for (let i = 0; i < S; i += 8) px(x, '#3a3b3d', i, S - 9, 1, 9); }),
+    helmet: canvasTex(32, (x, S) => {
+      facets(x, S, HELM, 311, 3, 0.3, 0.08);
+      const r = rng(31); for (let i = 0; i < 14; i++) px(x, shade(HELM, 0.6 + r() * 0.3), r() * S | 0, r() * S | 0, 2, 1); // scuffs
+      px(x, shade(HELM, 0.55), 0, S - 3, S, 3); // rim shadow
+    }),
+    lens: canvasTex(16, (x, S) => { // opaque mirrored lens, red glint - nothing behind it shows
+      x.fillStyle = '#1a0606'; x.fillRect(0, 0, S, S); x.fillStyle = '#5a1010'; x.fillRect(0, 0, S, S / 2);
+      px(x, '#ff6a4a', 3, 3, 3, 2); px(x, '#ffd0b0', 4, 3, 1, 1);
+    }),
+  };
 }
 
 // ---------------------------------------------------------------- build helpers
@@ -107,7 +170,8 @@ const THIGH = 0.42, SHIN = 0.4, ANKLE = 0.1, HIP_Y = THIGH + SHIN + ANKLE; // 0.
  * opts.tint = optional subtle suit tint. Returns { g, inner, update(dt, state) }.
  */
 export function makeSneaker(scene, opts = {}) {
-  const T = textures();
+  const enemy = opts.kit === 'enemy';
+  const T = textures(enemy ? 'enemy' : 'player');
   const L = (map, color = 0xffffff) => new THREE.MeshLambertMaterial({ map, color, flatShading: true });
   const suitTint = opts.tint ?? 0xffffff;
   const M = {
@@ -117,6 +181,7 @@ export function makeSneaker(scene, opts = {}) {
     accent: new THREE.MeshBasicMaterial({ color: opts.accent ?? 0x6fb0ff }),
     patch: new THREE.MeshLambertMaterial({ color: new THREE.Color(opts.accent ?? 0x6fb0ff).multiplyScalar(0.55), flatShading: true }),
   };
+  if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); }
   const suitFrontMat = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
   const torsoMats = [suitFrontMat, M.suit, M.suit, M.suit, M.suit, M.suit];
@@ -178,17 +243,20 @@ export function makeSneaker(scene, opts = {}) {
   const neck = pivot(torso, 0.01, 0.52, 0);
   at(box(0.09, 0.06, 0.1, M.skin), 0, 0.0, 0, neck);
   const headPivot = pivot(neck, 0, 0.03, 0);
-  at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, headPivot);
-  at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, 0.11, headPivot); at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, -0.11, headPivot); // ears
-  at(box(0.22, 0.06, 0.22, M.hair), 0.0, 0.27, 0, headPivot); // hair cap
-  at(box(0.05, 0.16, 0.22, M.hair), -0.1, 0.17, 0, headPivot); // back of hair
-  const spike = new THREE.ConeGeometry(0.05, 0.12, 4);
-  const r = rng(77);
-  for (let i = 0; i < 9; i++) { // short spiky hair: random-ish tilted 4-sided cones
-    const s = at(new THREE.Mesh(spike, M.hair), -0.08 + (i % 3) * 0.075 + (r() - 0.5) * 0.02, 0.31, -0.075 + Math.floor(i / 3) * 0.075, headPivot);
-    s.rotation.set((r() - 0.5) * 0.9, r() * 3, -0.5 + (r() - 0.5) * 0.6); s.scale.setScalar(0.8 + r() * 0.5);
+  if (enemy) buildEnemyHead(headPivot, M, headMats);
+  else {
+    at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, headPivot);
+    at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, 0.11, headPivot); at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, -0.11, headPivot); // ears
+    at(box(0.22, 0.06, 0.22, M.hair), 0.0, 0.27, 0, headPivot); // hair cap
+    at(box(0.05, 0.16, 0.22, M.hair), -0.1, 0.17, 0, headPivot); // back of hair
+    const spike = new THREE.ConeGeometry(0.05, 0.12, 4);
+    const r = rng(77);
+    for (let i = 0; i < 9; i++) { // short spiky hair: random-ish tilted 4-sided cones
+      const s = at(new THREE.Mesh(spike, M.hair), -0.08 + (i % 3) * 0.075 + (r() - 0.5) * 0.02, 0.31, -0.075 + Math.floor(i / 3) * 0.075, headPivot);
+      s.rotation.set((r() - 0.5) * 0.9, r() * 3, -0.5 + (r() - 0.5) * 0.6); s.scale.setScalar(0.8 + r() * 0.5);
+    }
+    for (let i = 0; i < 4; i++) { const s = at(new THREE.Mesh(spike, M.hair), 0.11, 0.26, -0.075 + i * 0.05, headPivot); s.rotation.set(0, 0, -1.2); s.scale.setScalar(0.6); }
   }
-  for (let i = 0; i < 4; i++) { const s = at(new THREE.Mesh(spike, M.hair), 0.11, 0.26, -0.075 + i * 0.05, headPivot); s.rotation.set(0, 0, -1.2); s.scale.setScalar(0.6); }
 
   // --- arms
   const arms = [];
@@ -206,6 +274,15 @@ export function makeSneaker(scene, opts = {}) {
     arms.push({ sh, el, wr, side });
   }
 
+  if (enemy) { // slung carbine across the vest (low-poly: receiver, barrel, mag, stock)
+    const rifle = pivot(torso, 0.19, 0.28, 0); rifle.rotation.x = 0.75;
+    at(box(0.05, 0.07, 0.36, M.gear), 0, 0, 0, rifle);
+    at(box(0.025, 0.025, 0.2, M.metal), 0, 0.01, 0.27, rifle);
+    at(box(0.04, 0.11, 0.05, M.pouch), 0, -0.08, 0.06, rifle);
+    at(box(0.04, 0.07, 0.14, M.gear), 0, -0.01, -0.24, rifle);
+    at(box(0.03, 0.03, 0.06, M.metal), 0, 0.055, 0.02, rifle); // optic
+  }
+
   scene.add(g);
 
   // ---------------------------------------------------------------- pose / animation
@@ -213,14 +290,16 @@ export function makeSneaker(scene, opts = {}) {
     const c = clamp((h - ANKLE - THIGH * Math.cos(t)) / SHIN, -1, 1);
     return -Math.acos(c) - t;
   };
-  let phase = 0, crouchK = 0, moveK = 0, runK = 0, deadK = 0;
+  let phase = 0, crouchK = 0, moveK = 0, runK = 0, deadK = 0, proneK = 0;
+  const mix = (a, b, k) => a + (b - a) * k;
   function update(dt, s) {
     const lerp = (a, b, k) => a + (b - a) * Math.min(1, k * dt);
-    crouchK = lerp(crouchK, s.crouch ? 1 : 0, 10);
+    crouchK = lerp(crouchK, s.crouch && !s.prone ? 1 : 0, 10);
+    proneK = lerp(proneK, s.prone && !s.dead ? 1 : 0, 6);
     moveK = lerp(moveK, s.moving && !s.dead ? 1 : 0, 10);
     runK = lerp(runK, s.run ? 1 : 0, 6);
     deadK = lerp(deadK, s.dead ? 1 : 0, 6);
-    const stride = s.crouch ? 6.5 : s.run ? 11 : 8.5;
+    const stride = s.prone ? 4.2 : s.crouch ? 6.5 : s.run ? 11 : 8.5;
     phase += dt * stride * moveK;
     const sw = Math.sin(phase), cw = Math.cos(phase), t = performance.now() / 1000;
 
@@ -254,12 +333,69 @@ export function makeSneaker(scene, opts = {}) {
       a.el.rotation.z = 0.15 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.0 + moveK * 0.2;
       a.wr.rotation.z = crouchK * -0.2;
     }
-    // death: topple forward onto the ground (game-over screen)
-    inner.rotation.z = -deadK * Math.PI / 2;
-    inner.position.y = deadK * 0.16;
-    inner.position.x = deadK * 0.1;
+    // PRONE: blend every joint toward a belly-down pose, then lay the whole rig flat (head forward along +x).
+    // Commando crawl while moving: one knee drawn up and out to the side while the opposite arm reaches forward.
+    const pk = proneK;
+    if (pk > 0.001) {
+      const crawl = moveK * pk, cs = Math.sin(phase);
+      hips.position.y = mix(hips.position.y, HIP_Y, pk);
+      hips.rotation.y = mix(hips.rotation.y, 0, pk);
+      hips.rotation.x = crawl * cs * 0.12; // hips roll side to side
+      torso.rotation.z = mix(torso.rotation.z, 0.14, pk); // chest propped up a little on the elbows
+      torso.rotation.y = mix(torso.rotation.y, crawl * cs * 0.1, pk);
+      torso.rotation.x = -crawl * cs * 0.08;
+      headPivot.rotation.z = mix(headPivot.rotation.z, 1.2, pk); // chin up, eyes forward
+      for (const lg of legs) {
+        const draw = 0.12 + crawl * Math.max(0, lg.side * cs) * 1.1; // 0 = straight leg, 1 = knee pulled up beside the hip
+        lg.hip.rotation.z = mix(lg.hip.rotation.z, 0.05, pk);
+        lg.knee.rotation.z = mix(lg.knee.rotation.z, 0, pk);
+        lg.ankle.rotation.z = mix(lg.ankle.rotation.z, -1.1, pk); // toes dug in
+        lg.hip.rotation.x = mix(lg.hip.rotation.x, -lg.side * 1.25 * draw, pk);
+        lg.knee.rotation.x = mix(0, lg.side * 1.5 * draw, pk);
+      }
+      for (const a of arms) {
+        const reach = crawl * Math.max(0, -a.side * cs); // opposite arm to the drawn knee reaches forward
+        a.sh.rotation.z = mix(a.sh.rotation.z, 0, pk);
+        a.el.rotation.z = mix(a.el.rotation.z, 0, pk);
+        a.wr.rotation.z = mix(a.wr.rotation.z, 0, pk);
+        a.sh.rotation.x = mix(a.sh.rotation.x, -a.side * (1.3 + 1.3 * reach), pk); // elbows out to the sides
+        a.el.rotation.x = mix(0, -a.side * 1.8 * (1 - reach), pk); // forearms forward, hands near the head
+      }
+    } else {
+      hips.rotation.x = 0; torso.rotation.x = 0;
+      for (const lg of legs) lg.knee.rotation.x = 0;
+      for (const a of arms) a.el.rotation.x = 0;
+    }
+    // lay flat (prone) / topple forward (death, game-over screen). Rig pivots at the feet, so shift it back to stay centred.
+    const flat = Math.max(deadK, pk);
+    inner.rotation.z = -flat * Math.PI / 2;
+    inner.position.y = mix(deadK * 0.16, 0.14, pk);
+    inner.position.x = mix(deadK * 0.1, -0.78, pk);
   }
   update(0, {});
-  return { g, inner, update, materials: M };
+  return { g, inner, update, materials: M, head: headPivot };
+}
+
+// enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.
+function buildEnemyHead(hp, M, headMats) {
+  at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, hp); // balaclava-covered head
+  at(box(0.04, 0.07, 0.04, M.skin), -0.01, 0.12, 0.11, hp); at(box(0.04, 0.07, 0.04, M.skin), -0.01, 0.12, -0.11, hp); // covered ears
+  at(box(0.27, 0.13, 0.26, M.helmet), 0.0, 0.29, 0, hp); // helmet shell
+  at(box(0.2, 0.05, 0.2, M.helmet), -0.005, 0.375, 0, hp); // crown
+  at(box(0.3, 0.025, 0.29, M.helmet), 0.01, 0.225, 0, hp); // brim
+  at(box(0.06, 0.13, 0.27, M.helmet), -0.12, 0.17, 0, hp); // neck guard
+  at(box(0.03, 0.05, 0.07, M.metal), 0.145, 0.3, 0, hp); // NVG mount
+  at(box(0.02, 0.055, 0.215, M.gear), 0.115, 0.17, 0, hp); // goggle frame
+  for (const z of [-0.05, 0.05]) at(box(0.025, 0.045, 0.075, M.lens), 0.13, 0.17, z, hp); // lenses (opaque)
+  const resp = at(box(0.06, 0.08, 0.09, M.pouch), 0.13, 0.055, 0, hp); // respirator
+  resp.rotation.z = -0.2;
+  const filt = new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6);
+  for (const z of [-0.07, 0.07]) { const f = at(new THREE.Mesh(filt, M.gear), 0.13, 0.04, z, hp); f.rotation.set(Math.PI / 2, 0, 0.5 * Math.sign(z)); }
+  at(box(0.03, 0.02, 0.24, M.gear), 0.03, 0.2, 0, hp); // chin strap / headset band
+}
+
+/** Guard model: same rig + PS1 texture pipeline as the sneaker, enemy kit (fully masked face). */
+export function makeEnemy(scene, opts = {}) {
+  return makeSneaker(scene, { accent: 0xff3a2a, scale: 0.97, ...opts, kit: 'enemy' });
 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));

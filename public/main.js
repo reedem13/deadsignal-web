@@ -1,9 +1,11 @@
 // Project Deadsignal - browser co-op stealth prototype.
 // Camera choice: fixed angled top-down follow cam (north is always up) - easiest to read & control on phones.
+// Tunnels: roofed crawlspaces (TUNNELS below) link map sections. Inside one the LOCAL camera switches to first person;
+// each client decides that for its own player only. Guards can't enter, see or catch you inside a tunnel.
 // Netcode: listen-server style. Host simulates guards, alert, door, extract & win. Each client owns its own
 // movement (sent 20x/s); host broadcasts world state 15x/s. Messages go through server.js (WebSocket relay).
 import * as THREE from 'three';
-import { makeSneaker } from './sneaker.js';
+import { makeSneaker, makeEnemy } from './sneaker.js';
 
 // ---------------------------------------------------------------- level data (greybox yard)
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
@@ -11,13 +13,38 @@ const WALLS = [
   // outer fence
   B(0, -15.5, 42, 1, 2.5, 'wall'), B(0, 15.5, 42, 1, 2.5, 'wall'), B(-20.5, 0, 1, 32, 2.5, 'wall'), B(20.5, 0, 1, 32, 2.5, 'wall'),
   // extraction compound (north-east), door between the two switches
-  B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -11.75, 0.5, 7, 2.5, 'wall'),
+  B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -13.925, 0.5, 2.65, 2.5, 'wall'), B(4.25, -9.325, 0.5, 2.15, 2.5, 'wall'), // gap = T3 drain
   B(11.5, -8.25, 3, 0.5, 2.5, 'door'),
   // cover: building (tall) and crates (low: crouch behind them to break line of sight)
-  B(-8, -6, 6, 5, 3, 'building'),
+  // barracks (tall), split by the T2 crawlspace that runs through it east-west
+  B(-8, -7.8, 6, 1.4, 3, 'building'), B(-8, -4.2, 6, 1.4, 3, 'building'),
   B(0, 1, 2, 2, 1), B(-4, 8, 1.5, 1.5, 1), B(7, 6, 3, 1.5, 1), B(12, 2, 2, 4, 2.2, 'building'), B(-14, 0, 2, 2, 1),
   B(-2, -4, 1.5, 3, 1), B(16, 8, 2, 2, 1), B(-11, 12, 1.2, 2.5, 1), B(9, -3, 1.5, 1.5, 1),
 ];
+// ---- TUNNELS: interior volumes (x1..x2, z1..z2) are the FPS trigger + guard no-go zones. axis = direction of travel.
+// Side walls (kind 'tunnel', tall enough to block sight) are generated into WALLS; both ends are open mouths.
+const TUNNEL_H = 1.25, TUNNEL_WALL = 0.3;
+const TUNNELS = [
+  { name: 'WEST CULVERT', x1: -19.8, x2: -18.2, z1: -3, z2: 9.5, axis: 'z', roof: 0.2 },      // spawn yard <-> north-west yard
+  { name: 'BARRACKS CRAWLSPACE', x1: -11.6, x2: -4.4, z1: -6.8, z2: -5.2, axis: 'x', roof: 1.75 }, // under/through the barracks
+  { name: 'COMPOUND DRAIN', x1: 0.6, x2: 7.6, z1: -12.3, z2: -10.7, axis: 'x', roof: 0.2 },  // west yard <-> inside the extraction compound
+];
+for (const t of TUNNELS) {
+  const W = TUNNEL_WALL, h = TUNNEL_H + 0.2;
+  if (t.axis === 'z') WALLS.push({ x1: t.x1 - W, x2: t.x1, z1: t.z1, z2: t.z2, h, kind: 'tunnel' }, { x1: t.x2, x2: t.x2 + W, z1: t.z1, z2: t.z2, h, kind: 'tunnel' });
+  else WALLS.push({ x1: t.x1, x2: t.x2, z1: t.z1 - W, z2: t.z1, h, kind: 'tunnel' }, { x1: t.x1, x2: t.x2, z1: t.z2, z2: t.z2 + W, h, kind: 'tunnel' });
+}
+// index of the tunnel containing (x,z), or -1. inset shrinks the volume at the open ends (hysteresis for the camera switch).
+function tunnelAt(x, z, inset = 0) {
+  for (let i = 0; i < TUNNELS.length; i++) {
+    const t = TUNNELS[i], ix = t.axis === 'x' ? inset : 0, iz = t.axis === 'z' ? inset : 0;
+    if (x > t.x1 + ix && x < t.x2 - ix && z > t.z1 + iz && z < t.z2 - iz) return i;
+  }
+  return -1;
+}
+// guards treat tunnel interiors (+ a lip at each mouth) as solid so they never crawl in after you
+const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0), x2: t.x2 + (t.axis === 'x' ? 0.3 : 0),
+  z1: t.z1 - (t.axis === 'z' ? 0.3 : 0), z2: t.z2 + (t.axis === 'z' ? 0.3 : 0), h: 0, kind: 'block' }));
 const SWITCHES = [{ x: 6.5, z: -6.6 }, { x: 16.5, z: -6.6 }]; // 10 units apart -> one person can't hit both in time
 const EXTRACT = { x: 16, z: -12, r: 2.2 };
 const SPAWNS = [{ x: -17, z: 13 }, { x: -15.5, z: 13.2 }];
@@ -27,9 +54,9 @@ const GUARD_PATHS = [
   [[-17, -1], [-17, -12], [-2, -12], [-2, -7], [-2, -12], [-17, -12]],
 ];
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
-const SPEED = { crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.8, investigate: 2.6, chase: 4.6 };
+const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.8, investigate: 2.6, chase: 4.6 };
 const NOISE = { run: 6, walk: 2.2 };
-const SIGHT = { stand: 9, crouch: 6, fovHalf: 0.62 };
+const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
 
 // ---------------------------------------------------------------- params / state
@@ -42,8 +69,9 @@ let role = null;          // 'host' | 'guest'
 let solo = false;
 let roomCode = '';
 let peerConnected = false;
-const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, run: false, moving: false };
-const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0 };
+// c = low (crouched OR prone; this is what older clients read as "crouch"), p = prone, tun = tunnel index or -1
+const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1 };
+const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0 };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play';
 
@@ -61,8 +89,9 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; };
 const solids = () => WALLS.filter((w) => !(w.kind === 'door' && world.door));
 
-function collide(p, r) {
-  for (let it = 0; it < 2; it++) for (const b of solids()) {
+function collide(p, r, guard = false) {
+  const boxes = guard ? solids().concat(GUARD_BLOCKS) : solids();
+  for (let it = 0; it < 2; it++) for (const b of boxes) {
     const cx = clamp(p.x, b.x1, b.x2), cz = clamp(p.z, b.z1, b.z2);
     const dx = p.x - cx, dz = p.z - cz, d2 = dx * dx + dz * dz;
     if (d2 >= r * r) continue;
@@ -91,7 +120,7 @@ function moveToward(o, tx, tz, speed, dt, r = 0.45) {
   if (d < 0.15) return true;
   const s = Math.min(d, speed * dt);
   const px = o.x, pz = o.z;
-  o.x += (dx / d) * s; o.z += (dz / d) * s; collide(o, r);
+  o.x += (dx / d) * s; o.z += (dz / d) * s; collide(o, r, true);
   turnToward(o, Math.atan2(dz, dx), dt * 6);
   if (Math.hypot(o.x - px, o.z - pz) < s * 0.2) o.stuck = (o.stuck || 0) + dt; else o.stuck = 0;
   return false;
@@ -116,12 +145,58 @@ const grid = new THREE.GridHelper(42, 21, 0x35503f, 0x2d4236); grid.position.y =
 const compoundFloor = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.5), mat(0x2f3a44));
 compoundFloor.rotation.x = -Math.PI / 2; compoundFloor.position.set(12.25, 0.02, -11.75); scene.add(compoundFloor);
 
-const COLORS = { wall: 0x56636b, building: 0x4a5866, crate: 0x7a6440, door: 0x9a2a2a };
+const COLORS = { wall: 0x56636b, building: 0x4a5866, crate: 0x7a6440, door: 0x9a2a2a, tunnel: 0x3a4246 };
+// crunchy 32px textures for the tunnels (same PS1 vibe as the characters)
+function pixTex(size, draw, rep = [1, 1]) {
+  const c = document.createElement('canvas'); c.width = c.height = size; const x = c.getContext('2d'); draw(x, size);
+  const t = new THREE.CanvasTexture(c); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...rep); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+let seed = 7; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+const concreteTex = pixTex(32, (x, S) => {
+  x.fillStyle = '#4a5054'; x.fillRect(0, 0, S, S);
+  for (let i = 0; i < 260; i++) { const v = 60 + rnd() * 40 | 0; x.fillStyle = `rgb(${v},${v + 4},${v + 6})`; x.fillRect(rnd() * S | 0, rnd() * S | 0, 1, 1); }
+  x.fillStyle = '#2c3134'; x.fillRect(0, 15, S, 1); x.fillRect(15, 0, 1, 15); x.fillRect(5, 16, 1, 16); // panel seams
+  x.fillStyle = 'rgba(30,45,30,.5)'; x.fillRect(20, 20, 6, 12); // damp stain
+});
+const hazardTex = pixTex(16, (x, S) => { for (let i = -S; i < S * 2; i += 8) { x.fillStyle = '#d8b028'; x.beginPath(); x.moveTo(i, 0); x.lineTo(i + 4, 0); x.lineTo(i + 4 - S, S); x.lineTo(i - S, S); x.fill(); } }, [3, 1]);
+// tiled copy of the concrete so long tunnel pieces keep 1 texel ~ 5cm instead of stretching one 32px tile
+const tiled = (u, v) => { const t = concreteTex.clone(); t.repeat.set(Math.max(1, Math.round(u)), Math.max(1, Math.round(v))); t.needsUpdate = true; return t; };
+const concreteMat = (color, u, v) => new THREE.MeshLambertMaterial({ map: tiled(u, v), color, flatShading: true });
 let doorMesh = null;
 for (const w of WALLS) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1, w.h, w.z2 - w.z1), mat(COLORS[w.kind]));
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1, w.h, w.z2 - w.z1), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(COLORS[w.kind]));
   m.position.set((w.x1 + w.x2) / 2, w.h / 2, (w.z1 + w.z2) / 2); scene.add(m);
   if (w.kind === 'door') doorMesh = m;
+}
+// tunnel dressing: dark floor, roof slab, hazard-striped mouth frames, dim ceiling lamps with fake light pools
+const hazardMat = new THREE.MeshLambertMaterial({ map: hazardTex, color: 0xffffff, flatShading: true });
+const mouthMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false });
+const lampMat = new THREE.MeshBasicMaterial({ color: 0xffc860 });
+const poolMat = new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending });
+for (const t of TUNNELS) {
+  const W = TUNNEL_WALL, cx = (t.x1 + t.x2) / 2, cz = (t.z1 + t.z2) / 2, lx = t.x2 - t.x1, lz = t.z2 - t.z1, along = t.axis === 'x';
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(lx, lz), concreteMat(0x3a4246, lx / 1.6, lz / 1.6)); fl.rotation.x = -Math.PI / 2; fl.position.set(cx, 0.03, cz); scene.add(fl);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(lx + (along ? 0 : 2 * W), t.roof, lz + (along ? 2 * W : 0)), t.roof > 1 ? mat(COLORS.building) : concreteMat(0x8a9296, (along ? lx : lz) / 1.6, 1));
+  roof.position.set(cx, TUNNEL_H + t.roof / 2, cz); scene.add(roof);
+  for (const end of [-1, 1]) { // mouth frame at each open end + dark "throat" decal on the ground outside
+    const ex = along ? (end < 0 ? t.x1 : t.x2) : cx, ez = along ? cz : (end < 0 ? t.z1 : t.z2);
+    const span = (along ? lz : lx) + 2 * W + 0.2;
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(along ? 0.18 : span, 0.22, along ? span : 0.18), hazardMat);
+    lintel.position.set(ex + (along ? end * 0.05 : 0), TUNNEL_H + 0.05, ez + (along ? 0 : end * 0.05)); scene.add(lintel);
+    for (const sd of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(along ? 0.2 : 0.22, TUNNEL_H + 0.2, along ? 0.22 : 0.2), hazardMat);
+      post.position.set(ex + (along ? end * 0.05 : sd * (lx / 2 + W / 2)), (TUNNEL_H + 0.2) / 2, ez + (along ? sd * (lz / 2 + W / 2) : end * 0.05)); scene.add(post);
+    }
+    const throat = new THREE.Mesh(new THREE.PlaneGeometry(along ? 0.9 : lx, along ? lz : 0.9), mouthMat); throat.rotation.x = -Math.PI / 2;
+    throat.position.set(ex + (along ? end * 0.45 : 0), 0.035, ez + (along ? 0 : end * 0.45)); scene.add(throat);
+  }
+  const len = along ? lx : lz;
+  for (let d = 1.5; d < len - 0.5; d += 3) {
+    const lx0 = along ? t.x1 + d : cx, lz0 = along ? cz : t.z1 + d;
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.06, 0.25), lampMat); lamp.position.set(lx0, TUNNEL_H - 0.04, lz0); scene.add(lamp);
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(0.75, 8), poolMat); pool.rotation.x = -Math.PI / 2; pool.position.set(lx0, 0.04, lz0); scene.add(pool);
+  }
 }
 const switchMeshes = SWITCHES.map((s) => {
   const g = new THREE.Group();
@@ -135,20 +210,12 @@ const switchMeshes = SWITCHES.map((s) => {
 const extractMesh = new THREE.Mesh(new THREE.RingGeometry(EXTRACT.r - 0.3, EXTRACT.r, 24), new THREE.MeshBasicMaterial({ color: 0x40ff80, transparent: true, opacity: 0.7, side: THREE.DoubleSide }));
 extractMesh.rotation.x = -Math.PI / 2; extractMesh.position.set(EXTRACT.x, 0.05, EXTRACT.z); scene.add(extractMesh);
 
-function makeCharacter(bodyColor, headColor) {
-  const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
-  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.6), mat(0x223028)); legs.position.y = 0.3; inner.add(legs);
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.6, 0.75), mat(bodyColor)); body.position.y = 0.9; inner.add(body);
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.38, 0.4), mat(headColor)); head.position.y = 1.4; inner.add(head);
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.2), mat(0x111111)); nose.position.set(0.28, 1.42, 0); inner.add(nose);
-  scene.add(g); return { g, inner };
-}
 function marker(color) { // little floating triangle so you can find each other
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.4, 3), new THREE.MeshBasicMaterial({ color }));
   m.rotation.x = Math.PI; return m;
 }
 // Players: olive "sneaker" (see sneaker.js). P1 = host (blue accents), P2 = guest (green accents + slightly warmer suit).
-// Guards keep the greybox makeCharacter() above until they get their own model.
+// Guards use the enemy kit of the same rig (sneaker.js makeEnemy): slate fatigues, helmet, balaclava, goggles, respirator.
 const PLAYER_LOOK = [{ accent: 0x6fb0ff, tint: 0xffffff }, { accent: 0x7fff8f, tint: 0xf0e6cf }];
 const meMesh = makeSneaker(scene, PLAYER_LOOK[0]);
 const otherMesh = makeSneaker(scene, PLAYER_LOOK[1]);
@@ -172,13 +239,13 @@ function textSprite(txt, color) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false })); s.scale.set(1.1, 1.1, 1); s.position.y = 2.4; return s;
 }
 const guardMeshes = GUARD_PATHS.map(() => {
-  const ch = makeCharacter(0x6d4a3a, 0x9b8a6a);
+  const ch = makeEnemy(scene);
   const coneMat = new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
   const cone = new THREE.Mesh(new THREE.CircleGeometry(1, 18, -SIGHT.fovHalf, SIGHT.fovHalf * 2), coneMat);
   cone.rotation.x = -Math.PI / 2; cone.position.y = 0.06;
   const coneHolder = new THREE.Group(); coneHolder.add(cone); ch.g.add(coneHolder);
   const q = textSprite('?', '#ffe066'), ex = textSprite('!', '#ff4040'); ch.g.add(q, ex);
-  return { ...ch, cone, coneMat, coneHolder, q, ex };
+  return { ...ch, cone, coneMat, coneHolder, q, ex, spd: 0, px: 0, pz: 0 };
 });
 
 function resize() {
@@ -205,6 +272,7 @@ addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   input.keys.add(e.code);
   if (e.code === 'KeyC' || e.code === 'ControlLeft') toggleCrouch();
+  if (e.code === 'KeyZ' || e.code === 'KeyX') toggleProne();
   if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); doInteract(); }
 });
 addEventListener('keyup', (e) => input.keys.delete(e.code));
@@ -229,12 +297,25 @@ zone.addEventListener('pointermove', (e) => {
 const endStick = (e) => { if (e.pointerId !== stickId) return; stickId = null; input.jx = input.jz = 0; base.classList.add('hidden'); };
 zone.addEventListener('pointerup', endStick); zone.addEventListener('pointercancel', endStick);
 $('btnCrouch').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleCrouch(); });
+$('btnProne').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleProne(); });
 $('btnAct').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); doInteract(); });
 document.addEventListener('touchmove', (e) => { if (!e.target.closest('.panel')) e.preventDefault(); }, { passive: false });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
 
-function toggleCrouch() { me.c = !me.c; $('btnCrouch').classList.toggle('on', me.c); }
+// stance: stand <-> crouch (C), anything <-> prone (Z/X). Tunnels are too low to stand in.
+function syncStanceButtons() { $('btnCrouch').classList.toggle('on', me.c && !me.p); $('btnProne').classList.toggle('on', me.p); }
+function toggleCrouch() {
+  if (me.p) me.p = false; // prone -> crouch
+  else if (me.c && me.tun >= 0) toast('Too low to stand', 800, '#ccc');
+  else me.c = !me.c;
+  syncStanceButtons();
+}
+function toggleProne() {
+  if (me.p) me.p = false; // prone -> crouch (stay low)
+  else { me.p = true; me.c = true; }
+  syncStanceButtons();
+}
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
 function doInteract() {
   if (!role || world.phase !== 'play') return;
@@ -255,21 +336,49 @@ function updateLocal(dt) {
   if (k.has('KeyS') || k.has('ArrowDown')) { jz += 1; kb = true; }
   let mag = Math.hypot(jx, jz);
   if (mag > 1) { jx /= mag; jz /= mag; mag = 1; }
-  me.moving = mag > 0.15 && world.phase === 'play';
-  me.run = me.moving && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
-  if (me.moving) {
-    const sp = me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1));
-    me.x += (jx / mag) * sp * dt; me.z += (jz / mag) * sp * dt; collide(me, 0.38);
-    turnToward(me, Math.atan2(jz, jx), dt * 14);
+  const play = world.phase === 'play';
+  const baseSp = () => (me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
+  if (me.tun >= 0) {
+    // FIRST PERSON (inside a tunnel): view-relative tank controls. up/W = crawl forward, down/S = back up, left/right = turn.
+    // fpsLatch: whatever direction you were holding when you entered keeps meaning "forward" until you let go,
+    // so walking in with D doesn't suddenly start spinning you.
+    if (fpsLatch && mag < 0.15) fpsLatch = false;
+    const fwd = fpsLatch ? mag : -jz, turn = fpsLatch ? 0 : jx;
+    if (play) me.a += turn * 2.6 * dt;
+    me.moving = play && Math.abs(fwd) > 0.15; me.run = false;
+    if (me.moving) {
+      const sp = baseSp() * (fwd < 0 ? 0.6 : 1) * Math.sign(fwd);
+      me.x += Math.cos(me.a) * sp * dt; me.z += Math.sin(me.a) * sp * dt; collide(me, 0.38);
+      const t = TUNNELS[me.tun], ax = t.axis === 'x' ? (Math.cos(me.a) >= 0 ? 0 : Math.PI) : (Math.sin(me.a) >= 0 ? Math.PI / 2 : -Math.PI / 2);
+      if (Math.abs(turn) < 0.15 && Math.abs(angDiff(ax, me.a)) < 0.6) turnToward(me, ax, dt * 2.5); // gently line up with the tunnel
+    }
+  } else {
+    me.moving = mag > 0.15 && play;
+    me.run = me.moving && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
+    if (me.moving) {
+      const sp = baseSp();
+      me.x += (jx / mag) * sp * dt; me.z += (jz / mag) * sp * dt; collide(me, 0.38);
+      turnToward(me, Math.atan2(jz, jx), dt * (me.p ? 5 : 14));
+    }
   }
-  $('stance').textContent = me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL';
+  // tunnel state (hysteresis: must be 0.35 inside a mouth to enter, leaves as soon as you're out)
+  const was = me.tun;
+  me.tun = tunnelAt(me.x, me.z, was >= 0 ? 0 : 0.35);
+  if (me.tun >= 0 && was < 0) {
+    fpsLatch = me.moving;
+    if (!me.c) { me.c = true; syncStanceButtons(); }
+    toast(TUNNELS[me.tun].name, 1100, '#ffd27f');
+  }
+  $('stance').textContent = (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
+    + (me.tun >= 0 ? ' · TUNNEL' : '');
 }
+let fpsLatch = false;
 const noiseOf = (p) => (!p.moving ? 0 : p.run ? NOISE.run : p.c ? 0 : NOISE.walk);
 
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
-  const list = [{ x: me.x, z: me.z, c: me.c, noise: noiseOf(me), idx: 0 }];
-  if (peerConnected) list.push({ x: other.x, z: other.z, c: other.c, noise: other.noise, idx: 1 });
+  const list = [{ x: me.x, z: me.z, c: me.c, p: me.p, tun: me.tun, noise: noiseOf(me), idx: 0 }];
+  if (peerConnected) list.push({ x: other.x, z: other.z, c: other.c, p: other.p, tun: tunnelAt(other.x, other.z), noise: other.noise, idx: 1 });
   return list;
 }
 function armSwitch(pi) {
@@ -302,15 +411,15 @@ function hostUpdate(dt) {
     // --- sight
     let seen = null, seenD = 1e9, seenRange = 1;
     for (const p of ps) {
-      if (world.inv[p.idx] > 0) continue;
+      if (world.inv[p.idx] > 0 || p.tun >= 0) continue; // nobody sees into the crawlspaces
       const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz);
-      const range = (p.c ? SIGHT.crouch : SIGHT.stand) + (world.alert > 0 ? 2 : 0);
+      const range = (p.p ? SIGHT.prone : p.c ? SIGHT.crouch : SIGHT.stand) + (world.alert > 0 ? 2 : 0);
       if (d > range) continue;
       if ((Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < SIGHT.fovHalf || d < 1.1) && lineOfSight(g, p) && d < seenD) { seen = p; seenD = d; seenRange = range; }
     }
     if (seen) {
       anySeen = true;
-      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.c ? 0.6 : 1);
+      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.p ? 0.35 : seen.c ? 0.6 : 1);
       g.meter = Math.min(1, g.meter + rate * dt);
       if (g.meter >= 1) { triggerAlert(seen); }
       if (world.alert === 2) { g.st = 'chase'; g.tx = seen.x; g.tz = seen.z; g.give = 8; world.alertT = ALERT_TIME; }
@@ -340,7 +449,7 @@ function hostUpdate(dt) {
       if (g.wait <= 0) { g.st = 'chase'; g.tx = clamp(g.x + (Math.random() - 0.5) * 10, -19, 19); g.tz = clamp(g.z + (Math.random() - 0.5) * 10, -14, 14); g.give = 4; }
     }
     // --- catch
-    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && Math.hypot(p.x - g.x, p.z - g.z) < 0.95) { catchPlayer(p.idx); break; }
+    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && p.tun < 0 && Math.hypot(p.x - g.x, p.z - g.z) < 0.95) { catchPlayer(p.idx); break; }
     if (world.phase !== 'play') return;
   }
   // --- alert phases
@@ -352,7 +461,7 @@ function hostUpdate(dt) {
 }
 function hostRestart() {
   world = freshWorld();
-  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z;
+  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z;
   net.relay({ t: 'tp', x: SPAWNS[1].x, z: SPAWNS[1].z, silent: true });
   sendState();
 }
@@ -364,21 +473,21 @@ function sendState() {
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter)]),
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo,
-    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0] });
+    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0] }); // h[4] = prone (older clients ignore it)
 }
-function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, n: noiseOf(me) }); }
+function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me) }); }
 
 function onGameMsg(d) {
-  if (d.t === 'p' && role === 'host') { other.x = d.x; other.z = d.z; other.a = d.a; other.c = !!d.c; other.noise = d.n || 0; }
+  if (d.t === 'p' && role === 'host') { other.x = d.x; other.z = d.z; other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; }
   else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(1); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
     d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; g.x = a[0]; g.z = a[1]; g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search' }[a[3]]; g.meter = a[4]; });
     Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1 });
     solo = d.solo;
-    other.x = d.h[0]; other.z = d.h[1]; other.a = d.h[2]; other.c = !!d.h[3];
+    other.x = d.h[0]; other.z = d.h[1]; other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4];
   } else if (d.t === 'tp' && role === 'guest') {
-    me.x = d.x; me.z = d.z; if (!d.silent) toast('CAUGHT! Back to start', 1600);
+    me.x = d.x; me.z = d.z; me.tun = -1; if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
 }
 
@@ -428,7 +537,7 @@ function setPeer(v) {
 function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false;
-  me.c = false; $('btnCrouch').classList.remove('on'); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
+  me.c = false; me.p = false; me.tun = -1; syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
@@ -525,6 +634,8 @@ function drawRadar() {
   rc.fillStyle = world.alert === 2 ? 'rgba(90,10,10,0.9)' : 'rgba(0,30,18,0.9)'; rc.fillRect(0, 0, W, H);
   rc.fillStyle = '#3c7a55';
   for (const b of solids()) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
+  rc.fillStyle = 'rgba(216,176,40,0.35)'; // tunnels
+  for (const t of TUNNELS) rc.fillRect(X(t.x1), Z(t.z1), (t.x2 - t.x1) * sx, (t.z2 - t.z1) * sz);
   rc.strokeStyle = '#7fff9f'; rc.beginPath(); rc.arc(X(EXTRACT.x), Z(EXTRACT.z), EXTRACT.r * sx, 0, 7); rc.stroke();
   for (const g of world.guards) {
     rc.fillStyle = 'rgba(255,224,102,0.35)'; rc.beginPath(); rc.moveTo(X(g.rx), Z(g.rz));
@@ -536,6 +647,9 @@ function drawRadar() {
 }
 
 // ---------------------------------------------------------------- render
+const topCam = new THREE.Vector3(me.x, 15, me.z + 9), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
+const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
+let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12;
 const lerpA = (a, b, t) => a + angDiff(b, a) * t;
 function render(dt) {
   const k = Math.min(1, dt * 12);
@@ -543,18 +657,21 @@ function render(dt) {
   other.rx += (other.x - other.rx) * k; other.rz += (other.z - other.rz) * k; other.ra = lerpA(other.ra, other.a, k);
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
-  meMesh.update(dt, { moving: me.moving, run: me.run, crouch: me.c, dead: deadMe });
+  meMesh.update(dt, { moving: me.moving, run: me.run, crouch: me.c && !me.p, prone: me.p, dead: deadMe });
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   if (dt > 0) { const v = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt; otherSpeed += (Math.min(v, 8) - otherSpeed) * Math.min(1, dt * 8); }
   otherPX = other.rx; otherPZ = other.rz;
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
-  otherMesh.update(dt, { moving: otherSpeed > 0.6 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, crouch: other.c, dead: deadOther });
+  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, crouch: other.c && !other.p, prone: other.p, dead: deadOther });
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { g.rx += (g.x - g.rx) * k; g.rz += (g.z - g.rz) * k; g.ra = lerpA(g.ra, g.a, k); }
     const m = guardMeshes[i];
     m.g.position.set(g.rx, 0, g.rz); m.g.rotation.y = -g.ra;
+    if (dt > 0) { const v = Math.hypot(g.rx - m.px, g.rz - m.pz) / dt; m.spd += (Math.min(v, 8) - m.spd) * Math.min(1, dt * 8); }
+    m.px = g.rx; m.pz = g.rz;
+    m.update(dt, { moving: m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4 });
     const range = SIGHT.stand + (world.alert > 0 ? 2 : 0);
     m.cone.scale.set(range, range, 1);
     m.coneMat.color.setHex(world.alert === 2 ? 0xff3030 : g.meter > 0.3 ? 0xffa030 : 0xffe066);
@@ -570,14 +687,34 @@ function render(dt) {
     s.light.material.color.setHex(world.door ? 0x40ff80 : armed ? 0xffd040 : 0x660000);
   });
   extractMesh.material.opacity = world.door ? 0.5 + 0.4 * Math.sin(performance.now() / 200) : 0.25;
-  // camera: angled top-down follow, zoomed out a bit more in portrait
+  // camera: angled top-down follow (zoomed out a bit more in portrait), blended into FIRST PERSON while MY player is in a tunnel.
+  // Purely local: each client only looks at its own me.tun, so the partner's camera is never affected.
   const zoom = (camera.aspect < 1 ? 1.35 + (1 - camera.aspect) * 0.7 : 1) * 1.25;
-  const camDist = Math.hypot(15, 9) * zoom; scene.fog.near = camDist + 4; scene.fog.far = camDist + 30;
-  const tx = me.x, tz = me.z;
-  camera.position.x += (tx - camera.position.x) * Math.min(1, dt * 6);
-  camera.position.z += (tz + 9 * zoom - camera.position.z) * Math.min(1, dt * 6);
-  camera.position.y = 15 * zoom;
-  camera.lookAt(camera.position.x, 0, camera.position.z - 9 * zoom - 0.5);
+  const camDist = Math.hypot(15, 9) * zoom;
+  topCam.x += (me.x - topCam.x) * Math.min(1, dt * 6);
+  topCam.z += (me.z + 9 * zoom - topCam.z) * Math.min(1, dt * 6);
+  topCam.y = 15 * zoom;
+  topLook.set(topCam.x, 0, topCam.z - 9 * zoom - 0.5);
+  fpsK += ((role && me.tun >= 0 ? 1 : 0) - fpsK) * Math.min(1, dt * 4.5);
+  if (fpsK < 0.002) fpsK = 0; if (fpsK > 0.998) fpsK = 1;
+  const f = fpsK * fpsK * (3 - 2 * fpsK); // smoothstep
+  camYaw = lerpA(camYaw, me.a, Math.min(1, dt * 12));
+  eyeH += ((me.p ? 0.3 : 0.92) - eyeH) * Math.min(1, dt * 6);
+  eyeF += ((me.p ? 0.42 : 0.12) - eyeF) * Math.min(1, dt * 6);
+  const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
+  fpsEye.set(me.x + cy * eyeF, eyeH, me.z + sy * eyeF);
+  fpsLook.set(fpsEye.x + cy * 4, eyeH - 0.15, fpsEye.z + sy * 4);
+  camera.position.lerpVectors(topCam, fpsEye, f);
+  camLook.lerpVectors(topLook, fpsLook, f);
+  camera.lookAt(camLook);
+  const fov = 40 + 32 * f;
+  if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.near = 0.1 - 0.06 * f; camera.updateProjectionMatrix(); }
+  scene.fog.near = THREE.MathUtils.lerp(camDist + 4, 0.6, f); scene.fog.far = THREE.MathUtils.lerp(camDist + 30, 17, f);
+  scene.fog.color.lerpColors(SKY, TUNNEL_FOG, f); scene.background.copy(scene.fog.color);
+  meMesh.g.visible = f < 0.6; // don't render my own head in first person
+  markers[0].visible = f < 0.5;
+  if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
+  $('fpsVignette').style.opacity = f.toFixed(2);
   renderer.render(scene, camera);
 }
 
@@ -604,7 +741,7 @@ function updateHud() {
 
 // ---------------------------------------------------------------- main loop
 let last = performance.now(), sendAcc = 0, stateAcc = 0, pingAcc = 0;
-camera.position.set(me.x, 15, me.z + 9);
+camera.position.copy(topCam);
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (role) {
@@ -622,4 +759,5 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // debug hook for automated tests
-window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net };
+window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
+  TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch };

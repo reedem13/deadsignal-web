@@ -54,11 +54,16 @@ input#codeInput { width: 130px; font: inherit; font-size: 26px; text-align: cent
   border: 2px solid rgba(127, 217, 154, .6); background: rgba(20, 60, 40, .25); }
 #stickKnob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(127, 217, 154, .65); }
 #buttons { position: absolute; right: calc(14px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom));
-  display: flex; flex-direction: column; gap: 14px; pointer-events: auto; }
-button.act { width: 86px; height: 86px; border-radius: 50%; font-size: 14px; background: rgba(19, 49, 42, .7); }
+  display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+button.act { width: 78px; height: 78px; border-radius: 50%; font-size: 14px; background: rgba(19, 49, 42, .7); }
 button.act.on { background: #2f8f5a; color: #fff; }
 button.act.flash { background: #d8c040; color: #111; }
 #stance { position: absolute; left: calc(10px + env(safe-area-inset-left)); bottom: calc(8px + env(safe-area-inset-bottom));
   font-size: 13px; background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 4px; }
 body.desktop #stickZone, body.desktop #buttons { display: none; }
 @media (max-width: 500px) { #alertBanner { font-size: 15px; letter-spacing: 1px; } #roomInfo { font-size: 12px; } #radar { width: 112px; height: 84px; } #objective { top: calc(96px + env(safe-area-inset-top)); font-size: 12px; padding: 0 8px; } }
+/* first-person tunnel view: dark vignette + hide the follow-cam marker clutter */
+#fpsVignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0;
+  background: radial-gradient(ellipse at 50% 55%, rgba(0,0,0,0) 45%, rgba(0,0,0,.75) 100%); }
+body.fps #stance { color: #ffd27f; }
+@media (max-height: 420px) { button.act { width: 64px; height: 64px; font-size: 12px; } #buttons { gap: 8px; } }
