@@ -1,4 +1,4 @@
-// Olive "sneaker" player character - procedural low-poly PS1-style rig.
+// "Sneaker" player character (Night Ops / Ash Fox / olive kits) - procedural low-poly PS1-style rig.
 // Built from boxes/cones in a joint hierarchy so it is easy to tweak and cheap on phones (~45 boxes, ~600 tris).
 // Textures are tiny (32-64px) CanvasTextures drawn at load with NearestFilter = intentionally crunchy.
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
@@ -47,52 +47,87 @@ const OLIVE = [104, 114, 74], OLIVE_DK = [80, 90, 58], BLACK = [34, 35, 36], SKI
 // enemy (guard) palette: slate fatigues, black kit, gunmetal helmet, black balaclava
 const SLATE = [96, 104, 116], SLATE_DK = [64, 70, 82], MASK = [30, 30, 33], HELM = [86, 94, 88];
 
+// PLAYER SUIT KITS (same rig, swappable at runtime via setKit):
+//  'night' = NIGHT OPS (P1 default): charcoal / near-black sneak suit, olive webbing + pouches, olive neck gaiter, dark spiky hair.
+//  'ash'   = ASH FOX  (P2 default): slate blue-grey suit, black webbing with vivid blue stripes, ash-blonde swept undercut.
+//  'player' = legacy olive sneaker (character.html / old look).
+const KITS = {
+  player: { suit: OLIVE, suitDk: OLIVE_DK, camo: 6, web: BLACK, webStripe: null, pouch: BLACK, pad: [52, 53, 55], hair: HAIR, trim: [60, 62, 64], hairStyle: 'spiky', gaiter: null },
+  night: { suit: [46, 48, 52], suitDk: [30, 31, 35], camo: 5, web: [74, 84, 50], webStripe: null, pouch: [66, 76, 46], pad: [38, 39, 42], hair: [30, 25, 21],
+    trim: [86, 98, 58], hairStyle: 'spiky', gaiter: [70, 80, 50], seam: [22, 23, 26] },
+  ash: { suit: [88, 104, 128], suitDk: [66, 78, 98], camo: 4, web: [28, 30, 34], webStripe: [40, 120, 255], pouch: [30, 32, 36], pad: [40, 44, 52], hair: [236, 200, 128],
+    trim: [40, 120, 255], hairStyle: 'swept', gaiter: null, seam: [50, 60, 78] },
+};
 const TEX = {};
 function textures(kit = 'player') {
   if (TEX[kit]) return TEX[kit];
   if (kit === 'enemy') return (TEX.enemy = enemyTextures());
-  TEX.player = {
+  const K = KITS[kit] || KITS.player, SU = K.suit, SD = K.suitDk, WB = K.web, HR = K.hair, seed = kit === 'player' ? 0 : kit === 'night' ? 400 : 800;
+  const swept = K.hairStyle === 'swept';
+  TEX[kit] = {
     suit: canvasTex(64, (x, S) => {
-      facets(x, S, OLIVE, 11, 5, 0.26);
-      const r = rng(5); // darker camo blotches
-      for (let i = 0; i < 6; i++) { x.fillStyle = shade(OLIVE_DK, 0.9 + r() * 0.2); x.beginPath();
+      facets(x, S, SU, 11 + seed, 5, 0.26);
+      const r = rng(5 + seed); // darker angular blotches (subtle on the stealth suits)
+      for (let i = 0; i < K.camo; i++) { x.fillStyle = shade(SD, 0.9 + r() * 0.2); x.beginPath();
         const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 22, cy + (r() - 0.5) * 22); x.fill(); }
+      if (K.seam) { px(x, shade(K.seam, 1), 0, 20, S, 1); px(x, shade(K.seam, 1), 0, 44, S, 1); px(x, shade(SU, 1.25), 0, 21, S, 1); } // panel seams
     }),
     suitFront: canvasTex(64, (x, S) => { // torso front: zipper + chest seams
-      facets(x, S, OLIVE, 23, 5, 0.26);
-      px(x, shade(OLIVE_DK, 0.7), 31, 0, 2, S); px(x, shade(OLIVE, 1.25), 31, 0, 1, S);
-      for (let y = 2; y < S; y += 4) px(x, shade(OLIVE_DK, 0.55), 32, y, 1, 1);
-      px(x, shade(OLIVE_DK, 0.8), 6, 26, 20, 1); px(x, shade(OLIVE_DK, 0.8), 38, 26, 20, 1);
+      facets(x, S, SU, 23 + seed, 5, 0.26);
+      px(x, shade(SD, 0.7), 31, 0, 2, S); px(x, shade(SU, 1.35), 31, 0, 1, S);
+      for (let y = 2; y < S; y += 4) px(x, shade(SD, 0.55), 32, y, 1, 1);
+      px(x, shade(SD, 0.8), 6, 26, 20, 1); px(x, shade(SD, 0.8), 38, 26, 20, 1);
+      if (K.seam) { px(x, shade(K.seam, 1), 4, 44, 24, 1); px(x, shade(K.seam, 1), 36, 44, 24, 1); }
     }),
-    gear: canvasTex(32, (x, S) => { // black webbing: dark with stitched edges
+    gear: canvasTex(32, (x, S) => { // small hardware: always black (gun frame, knife handle, antenna, cuffs)
       facets(x, S, BLACK, 31, 3, 0.25, 0.06);
       px(x, shade(BLACK, 1.7), 0, 1, S, 1); px(x, shade(BLACK, 1.7), 0, S - 2, S, 1);
       for (let i = 1; i < S; i += 3) { px(x, shade(BLACK, 0.6), i, 3); px(x, shade(BLACK, 0.6), i, S - 4); }
     }),
+    web: canvasTex(32, (x, S) => { // harness / belt / leg straps: kit webbing colour with stitched edges (+ optional accent stripe)
+      facets(x, S, WB, 33 + seed, 3, 0.25, 0.06);
+      px(x, shade(WB, 1.6), 0, 1, S, 1); px(x, shade(WB, 1.6), 0, S - 2, S, 1);
+      for (let i = 1; i < S; i += 3) { px(x, shade(WB, 0.6), i, 3); px(x, shade(WB, 0.6), i, S - 4); px(x, shade(WB, 0.6), 3, i); px(x, shade(WB, 0.6), S - 4, i); }
+      if (K.webStripe) { px(x, shade(K.webStripe, 1), 6, 6, S - 12, S - 12); px(x, shade(K.webStripe, 1.3), 6, 6, S - 12, 2); }
+    }),
     pouch: canvasTex(32, (x, S) => { // pouch / radio face: flap line + snap
-      facets(x, S, BLACK, 41, 3, 0.3, 0.06);
-      px(x, shade(BLACK, 0.5), 2, 11, S - 4, 2); px(x, shade(BLACK, 1.8), 2, 13, S - 4, 1);
+      const PB = K.pouch; facets(x, S, PB, 41 + seed, 3, 0.3, 0.06);
+      px(x, shade(PB, 0.5), 2, 11, S - 4, 2); px(x, shade(PB, 1.8), 2, 13, S - 4, 1);
       px(x, '#6b6d6e', 14, 8, 4, 4); px(x, '#2a2a2a', 15, 9, 2, 2);
     }),
-    pad: canvasTex(32, (x, S) => { facets(x, S, [52, 53, 55], 51, 2, 0.35, 0.05); px(x, '#1c1c1c', 0, 0, S, 2); px(x, '#1c1c1c', 0, S - 2, S, 2); }),
+    pad: canvasTex(32, (x, S) => { facets(x, S, K.pad, 51 + seed, 2, 0.35, 0.05); px(x, '#1c1c1c', 0, 0, S, 2); px(x, '#1c1c1c', 0, S - 2, S, 2);
+      px(x, shade(K.pad, 1.5), 4, 8, S - 8, 1); px(x, shade(K.pad, 0.7), 4, 20, S - 8, 1); }), // moulded ridge
+    trim: canvasTex(16, (x, S) => { facets(x, S, K.trim, 55 + seed, 2, 0.25, 0.06); px(x, shade(K.trim, 0.6), 0, S - 2, S, 2); }),
+    gaiter: canvasTex(32, (x, S) => { // knit neck gaiter: horizontal rib rows + loose fold line
+      const GC = K.gaiter || SD; facets(x, S, GC, 57 + seed, 3, 0.3, 0.12);
+      for (let y = 1; y < S; y += 3) px(x, shade(GC, 0.72), 0, y, S, 1);
+      px(x, shade(GC, 1.35), 0, 9, S, 1); px(x, shade(GC, 0.5), 0, 10, S, 1);
+    }),
     boot: canvasTex(32, (x, S) => {
       facets(x, S, BOOT, 61, 3, 0.25, 0.06);
       px(x, '#18191a', 0, S - 8, S, 8); for (let i = 0; i < S; i += 4) px(x, '#2e2f30', i, S - 6, 2, 3); // lugged sole
       for (let y = 4; y < S - 10; y += 5) px(x, '#5a5b5c', 10, y, 12, 1); // laces
     }),
     skin: canvasTex(32, (x, S) => facets(x, S, SKIN, 71, 2, 0.16, 0.05)),
+    // shaved undercut sides (ash): skin with a dark-blonde stubble wash
+    stubble: canvasTex(32, (x, S) => { facets(x, S, SKIN, 73, 2, 0.16, 0.05); const r = rng(13);
+      x.fillStyle = 'rgba(150,128,92,0.35)'; x.fillRect(0, 0, S, S * 0.6); for (let i = 0; i < 50; i++) px(x, shade(HR, 0.55 + r() * 0.2), r() * S | 0, r() * S * 0.6 | 0); }),
     hair: canvasTex(32, (x, S) => {
-      facets(x, S, HAIR, 81, 4, 0.4, 0.1);
-      const r = rng(9); for (let i = 0; i < 40; i++) px(x, shade(HAIR, 0.5 + r() * 0.9), r() * S | 0, r() * S | 0, 1, 2 + (r() * 4 | 0));
+      facets(x, S, HR, 81 + seed, 4, swept ? 0.3 : 0.4, 0.1);
+      const r = rng(9 + seed); for (let i = 0; i < 40; i++) px(x, shade(HR, (swept ? 0.7 : 0.5) + r() * (swept ? 0.6 : 0.9)), r() * S | 0, r() * S | 0, swept ? 2 + (r() * 4 | 0) : 1, swept ? 1 : 2 + (r() * 4 | 0));
     }),
     face: canvasTex(32, (x, S) => { // front of head: fringe, brows, eyes, nose shadow, mouth (stern sneaker look)
       facets(x, S, SKIN, 91, 2, 0.14, 0.05);
-      px(x, shade(HAIR, 1), 0, 0, S, 5); for (let i = 0; i < S; i += 3) px(x, shade(HAIR, 1.1), i, 5, 2, 1 + ((i * 7) % 4)); // spiky fringe
+      if (swept) { // swept fringe: thick on the right, tapering diagonally across the forehead to the left temple
+        for (let i = 0; i < S; i++) px(x, shade(HR, 0.95 + ((i * 5) % 3) * 0.12), i, 0, 1, Math.max(2, 8 - (i * 6 / S | 0)));
+        for (let i = 2; i < S; i += 4) px(x, shade(HR, 0.75), i, 2, 1, 3);
+      } else { px(x, shade(HR, 1), 0, 0, S, 5); for (let i = 0; i < S; i += 3) px(x, shade(HR, 1.1), i, 5, 2, 1 + ((i * 7) % 4)); } // spiky fringe
+      const brow = swept ? '#6e5a3e' : '#2b211b';
       px(x, shade(SKIN, 0.82), 0, 13, 7, 9); px(x, shade(SKIN, 0.82), 25, 13, 7, 9); // cheek shading
-      px(x, '#2b211b', 6, 11, 8, 2); px(x, '#2b211b', 18, 11, 8, 2); // brows (angled)
-      px(x, '#2b211b', 12, 12, 2, 1); px(x, '#2b211b', 18, 12, 2, 1);
+      px(x, brow, 6, 11, 8, 2); px(x, brow, 18, 11, 8, 2); // brows (angled)
+      px(x, brow, 12, 12, 2, 1); px(x, brow, 18, 12, 2, 1);
       px(x, '#e8dcc8', 8, 14, 5, 2); px(x, '#e8dcc8', 19, 14, 5, 2); // eyes
-      px(x, '#1d2a30', 10, 14, 2, 2); px(x, '#1d2a30', 20, 14, 2, 2);
+      const iris = swept ? '#2c4a66' : '#1d2a30'; px(x, iris, 10, 14, 2, 2); px(x, iris, 20, 14, 2, 2);
       px(x, shade(SKIN, 0.72), 15, 15, 2, 6); px(x, shade(SKIN, 0.62), 14, 20, 4, 1); // nose
       px(x, '#7a4e3c', 12, 24, 8, 1); px(x, shade(SKIN, 0.85), 11, 27, 10, 2); // mouth + chin shadow
     }),
@@ -107,8 +142,9 @@ function textures(kit = 'player') {
       px(x, shade(SKIN, 1), 0, S - 9, S, 9); for (let i = 0; i < S; i += 8) px(x, shade(SKIN, 0.7), i, S - 9, 1, 9);
     }),
   };
-  return TEX.player;
+  return TEX[kit];
 }
+export const PLAYER_KITS = ['night', 'ash', 'player'];
 
 function enemyTextures() {
   return {
@@ -176,27 +212,32 @@ function pivot(parent, x, y, z) { const p = new THREE.Group(); p.position.set(x,
 const THIGH = 0.42, SHIN = 0.4, ANKLE = 0.1, HIP_Y = THIGH + SHIN + ANKLE; // 0.92
 
 /**
- * Build one sneaker. opts.accent = hex colour for P1/P2 accents (shoulder patch, radio LED, marker),
- * opts.tint = optional subtle suit tint. Returns { g, inner, update(dt, state) }.
+ * Build one sneaker. opts.kit = 'night' (Night Ops, default) | 'ash' (Ash Fox) | 'player' (legacy olive) | 'enemy'.
+ * opts.accent = hex colour for P1/P2 accents (shoulder patch, radio LED, marker),
+ * opts.tint = optional subtle suit tint. Returns { g, inner, update(dt, state), setKit(kit) }.
  */
 export function makeSneaker(scene, opts = {}) {
   const enemy = opts.kit === 'enemy';
-  const T = textures(enemy ? 'enemy' : 'player');
+  let kit = enemy ? 'enemy' : KITS[opts.kit] ? opts.kit : 'night';
+  const T = textures(kit);
   const L = (map, color = 0xffffff) => new THREE.MeshLambertMaterial({ map, color, flatShading: true });
   const suitTint = opts.tint ?? 0xffffff;
   const M = {
     suit: L(T.suit, suitTint), gear: L(T.gear), pouch: L(T.pouch), pad: L(T.pad), boot: L(T.boot),
     skin: L(T.skin), hair: L(T.hair), glove: L(T.glove),
+    web: L(T.web ?? T.gear), trim: L(T.trim ?? T.gear), gaiter: L(T.gaiter ?? T.skin), face: L(T.face), headSide: L(T.skin),
     metal: new THREE.MeshLambertMaterial({ color: 0x6b6d6e, flatShading: true }),
     accent: new THREE.MeshBasicMaterial({ color: opts.accent ?? 0x6fb0ff }),
     patch: new THREE.MeshLambertMaterial({ color: new THREE.Color(opts.accent ?? 0x6fb0ff).multiplyScalar(0.55), flatShading: true }),
   };
   if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); }
   else { M.gun = L(T.gun); M.blade = L(T.blade); }
-  const suitFrontMat = L(T.suitFront, suitTint);
+  const suitFrontMat = M.suitFront = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
   const torsoMats = [suitFrontMat, M.suit, M.suit, M.suit, M.suit, M.suit];
-  const headMats = [L(T.face), M.skin, M.hair, M.skin, M.skin, M.skin];
+  const headMats = enemy ? [M.face, M.skin, M.hair, M.skin, M.skin, M.skin] : [M.face, M.headSide, M.hair, M.skin, M.headSide, M.headSide];
+  const kitParts = { night: [], ash: [], player: [] }; // per-kit extra meshes (hair style, gaiter, trims) toggled by setKit
+  const part = (k, mesh) => { kitParts[k].push(mesh); return mesh; };
 
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
   const rig = new THREE.Group(); rig.scale.setScalar(opts.scale ?? 0.93); inner.add(rig);
@@ -205,7 +246,7 @@ export function makeSneaker(scene, opts = {}) {
   const hips = pivot(rig, 0, HIP_Y, 0);
   at(box(0.24, 0.18, 0.4, M.suit), 0, -0.02, 0, hips);
   // belt + pouches + buckle
-  at(box(0.28, 0.08, 0.44, M.gear), 0, 0.07, 0, hips);
+  at(box(0.28, 0.08, 0.44, M.web), 0, 0.07, 0, hips);
   at(box(0.03, 0.06, 0.08, M.metal), 0.145, 0.07, 0, hips);
   for (const z of [-0.16, -0.08, 0.08, 0.16]) at(box(0.06, 0.1, 0.07, M.pouch), 0.15, 0.05, z, hips);
   at(box(0.07, 0.1, 0.08, M.pouch), -0.15, 0.05, 0.12, hips);
@@ -218,8 +259,8 @@ export function makeSneaker(scene, opts = {}) {
     at(box(0.21, THIGH, 0.19, M.suit), 0, -THIGH / 2, 0, hip);
     if (side === 1) { // thigh holster with two straps on the right leg
       at(box(0.14, 0.2, 0.06, M.pouch), 0.01, -0.2, 0.12, hip);
-      at(box(0.06, 0.28, 0.04, M.gear), 0.02, -0.12, 0.15, hip);
-      at(box(0.22, 0.04, 0.21, M.gear), 0, -0.14, 0, hip); at(box(0.22, 0.04, 0.21, M.gear), 0, -0.3, 0, hip);
+      at(box(0.06, 0.28, 0.04, M.web), 0.02, -0.12, 0.15, hip);
+      at(box(0.22, 0.04, 0.21, M.web), 0, -0.14, 0, hip); at(box(0.22, 0.04, 0.21, M.web), 0, -0.3, 0, hip);
       if (!enemy) { // holstered pistol: slide sunk in the holster, grip + hammer sticking out the top, angled back
         holstered = pivot(hip, 0.0, -0.08, 0.15);
         at(box(0.05, 0.2, 0.035, M.gun), 0.02, -0.08, 0, holstered); // slide (mostly inside the holster)
@@ -230,9 +271,11 @@ export function makeSneaker(scene, opts = {}) {
     const knee = pivot(hip, 0, -THIGH, 0);
     at(box(0.18, SHIN, 0.17, M.suit), 0, -SHIN / 2, 0, knee);
     at(box(0.07, 0.15, 0.17, M.pad), 0.1, -0.04, 0, knee); // knee pad
+    if (!enemy) { const kp = at(box(0.04, 0.1, 0.12, M.pad), 0.135, -0.04, 0, knee); kp.rotation.z = 0.15; } // sharper moulded cap
     at(box(0.19, 0.06, 0.18, M.suit), 0, -SHIN + 0.04, 0, knee); // trouser cuff over boot
     const ankle = pivot(knee, 0, -SHIN, 0);
     at(box(0.19, 0.16, 0.17, M.boot), 0, -0.02, 0, ankle); // boot shaft
+    if (!enemy) at(box(0.2, 0.035, 0.18, M.trim), 0, 0.06, 0, ankle); // ankle band (olive on Night Ops, blue on Ash Fox)
     at(box(0.3, 0.09, 0.18, M.boot), 0.05, -ANKLE + 0.045, 0, ankle); // boot foot
     legs.push({ hip, knee, ankle, side });
   }
@@ -244,13 +287,16 @@ export function makeSneaker(scene, opts = {}) {
   at(box(0.2, 0.08, 0.2, M.suit), 0.01, 0.49, 0, torso); // high collar
   // harness: two shoulder straps front + back, chest strap, buckles
   for (const z of [-0.11, 0.11]) {
-    at(box(0.02, 0.44, 0.05, M.gear), 0.145, 0.24, z, torso);
-    at(box(0.02, 0.44, 0.05, M.gear), -0.145, 0.24, z, torso);
-    at(box(0.3, 0.02, 0.05, M.gear), 0, 0.465, z, torso);
+    at(box(0.02, 0.44, 0.05, M.web), 0.145, 0.24, z, torso);
+    at(box(0.02, 0.44, 0.05, M.web), -0.145, 0.24, z, torso);
+    at(box(0.3, 0.02, 0.05, M.web), 0, 0.465, z, torso);
     at(box(0.025, 0.04, 0.04, M.metal), 0.155, 0.3, z, torso);
   }
-  at(box(0.02, 0.04, 0.3, M.gear), 0.15, 0.36, 0, torso);
-  at(box(0.02, 0.18, 0.1, M.gear), -0.15, 0.3, 0, torso); // back X-panel
+  at(box(0.02, 0.04, 0.3, M.web), 0.15, 0.36, 0, torso);
+  at(box(0.02, 0.18, 0.1, M.web), -0.15, 0.3, 0, torso); // back X-panel
+  if (!enemy) { // Ash Fox: accent stripe round the high collar
+    part('ash', at(box(0.205, 0.015, 0.205, M.trim), 0.01, 0.515, 0, torso));
+  }
   // chest radio on the right strap + antenna + LED (P1/P2 accent)
   at(box(0.06, 0.14, 0.09, M.pouch), 0.17, 0.33, 0.13, torso);
   const ant = at(new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.16, 3), M.gear), 0.17, 0.48, 0.16, torso);
@@ -265,15 +311,34 @@ export function makeSneaker(scene, opts = {}) {
   else {
     at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, headPivot);
     at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, 0.11, headPivot); at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, -0.11, headPivot); // ears
-    at(box(0.22, 0.06, 0.22, M.hair), 0.0, 0.27, 0, headPivot); // hair cap
-    at(box(0.05, 0.16, 0.22, M.hair), -0.1, 0.17, 0, headPivot); // back of hair
+    // SPIKY (olive + Night Ops): short dark spikes, full cap
+    const spikyParts = [];
+    const sp = (m) => (spikyParts.push(m), m);
+    sp(at(box(0.22, 0.06, 0.22, M.hair), 0.0, 0.27, 0, headPivot)); // hair cap
+    sp(at(box(0.05, 0.16, 0.22, M.hair), -0.1, 0.17, 0, headPivot)); // back of hair
     const spike = new THREE.ConeGeometry(0.05, 0.12, 4);
     const r = rng(77);
     for (let i = 0; i < 9; i++) { // short spiky hair: random-ish tilted 4-sided cones
-      const s = at(new THREE.Mesh(spike, M.hair), -0.08 + (i % 3) * 0.075 + (r() - 0.5) * 0.02, 0.31, -0.075 + Math.floor(i / 3) * 0.075, headPivot);
+      const s = sp(at(new THREE.Mesh(spike, M.hair), -0.08 + (i % 3) * 0.075 + (r() - 0.5) * 0.02, 0.31, -0.075 + Math.floor(i / 3) * 0.075, headPivot));
       s.rotation.set((r() - 0.5) * 0.9, r() * 3, -0.5 + (r() - 0.5) * 0.6); s.scale.setScalar(0.8 + r() * 0.5);
     }
-    for (let i = 0; i < 4; i++) { const s = at(new THREE.Mesh(spike, M.hair), 0.11, 0.26, -0.075 + i * 0.05, headPivot); s.rotation.set(0, 0, -1.2); s.scale.setScalar(0.6); }
+    for (let i = 0; i < 4; i++) { const s = sp(at(new THREE.Mesh(spike, M.hair), 0.11, 0.26, -0.075 + i * 0.05, headPivot)); s.rotation.set(0, 0, -1.2); s.scale.setScalar(0.6); }
+    for (const m of spikyParts) { part('night', m); kitParts.player.push(m); }
+    // NIGHT OPS neck gaiter: knit tube bunched round the neck + rolled top edge under the jaw. Face stays open.
+    part('night', at(box(0.17, 0.085, 0.19, M.gaiter), 0.0, -0.005, 0, neck));
+    part('night', at(box(0.15, 0.03, 0.17, M.gaiter), 0.005, 0.045, 0, neck));
+    const drape = part('night', at(box(0.05, 0.08, 0.15, M.gaiter), 0.075, -0.03, 0, neck)); drape.rotation.z = -0.25; // slack fold at the throat
+    // ASH FOX swept undercut: shaved sides (stubble texture on head sides), long top swept up + over to the right,
+    // a fringe strand falling across the left of the forehead. Low-poly boxes + flat wedges.
+    const ashHair = (mesh, x, y, z, rx = 0, ry = 0, rz = 0) => { const m = part('ash', at(mesh, x, y, z, headPivot)); m.rotation.set(rx, ry, rz); return m; };
+    ashHair(box(0.24, 0.06, 0.17, M.hair), 0.005, 0.285, 0.015); // top slab (narrower than the head = undercut)
+    ashHair(box(0.22, 0.09, 0.13, M.hair), 0.02, 0.33, 0.04, -0.35); // swept volume, rising to the right
+    ashHair(box(0.18, 0.06, 0.09, M.hair), 0.03, 0.37, 0.09, -0.7); // crest rolling over the right side
+    ashHair(box(0.09, 0.13, 0.17, M.hair), 0.1, 0.315, 0.03, -0.2, 0, 0.3); // tall front quiff
+    ashHair(box(0.035, 0.06, 0.14, M.hair), 0.12, 0.245, -0.035, 0.45); // fringe strand down to the left temple
+    ashHair(box(0.05, 0.11, 0.18, M.hair), -0.095, 0.24, 0.01); // back (above the shaved nape)
+    const wedge = new THREE.ConeGeometry(0.045, 0.14, 4);
+    for (let i = 0; i < 4; i++) { const w = ashHair(new THREE.Mesh(wedge, M.hair), -0.07 + i * 0.055, 0.35, 0.1, 1.15, 0, 0.15); w.scale.set(1, 1, 0.55); } // swept tips over the right ear
   }
 
   // --- arms
@@ -283,8 +348,10 @@ export function makeSneaker(scene, opts = {}) {
     at(box(0.17, 0.12, 0.13, M.suit), 0, -0.02, 0, sh); // shoulder cap
     at(box(0.13, 0.3, 0.12, M.suit), 0, -0.17, 0, sh);
     at(box(0.08, 0.08, 0.02, M.patch), 0, -0.1, side * 0.065, sh); // sleeve patch (P1/P2 accent)
+    if (!enemy) { const sp = at(box(0.13, 0.04, 0.15, M.pad), 0.0, 0.05, side * 0.01, sh); sp.rotation.x = -side * 0.25; } // shoulder plate
     const el = pivot(sh, 0, -0.32, 0);
     at(box(0.12, 0.26, 0.11, M.suit), 0, -0.12, 0, el);
+    if (!enemy) at(box(0.05, 0.08, 0.1, M.pad), -0.06, -0.01, 0, el); // elbow pad
     at(box(0.13, 0.06, 0.12, M.gear), 0, -0.24, 0, el); // glove cuff
     const wr = pivot(el, 0, -0.27, 0);
     at(box(0.11, 0.12, 0.08, M.glove), 0.01, -0.06, 0, wr);
@@ -685,7 +752,20 @@ export function makeSneaker(scene, opts = {}) {
   const muzzleDir = (v) => { if (drawn) { g.updateMatrixWorld(true); drawn.getWorldQuaternion(_q); return v.set(0, -1, 0).applyQuaternion(_q); } return v.set(Math.cos(-g.rotation.y), 0, Math.sin(-g.rotation.y)); };
   // world position of a hand (side 1 = right, -1 = left) - grapple rope attaches here
   const handWorld = (v, side = 1) => { g.updateMatrixWorld(true); return arms[side > 0 ? 1 : 0].wr.getWorldPosition(v); };
-  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld };
+  // swap the suit kit in place (same rig / meshes): re-point material maps + toggle the kit's hair / gaiter / trims
+  const MAPS = { suit: 'suit', suitFront: 'suitFront', gear: 'gear', web: 'web', pouch: 'pouch', pad: 'pad', boot: 'boot', skin: 'skin', hair: 'hair',
+    glove: 'glove', face: 'face', trim: 'trim', gaiter: 'gaiter', gun: 'gun', blade: 'blade' };
+  function setKit(k) {
+    if (enemy || !KITS[k]) return kit;
+    const TT = textures(k);
+    for (const [m, t] of Object.entries(MAPS)) if (M[m] && TT[t]) { M[m].map = TT[t]; M[m].needsUpdate = true; }
+    M.headSide.map = KITS[k].hairStyle === 'swept' ? TT.stubble : TT.skin; M.headSide.needsUpdate = true;
+    const on = new Set(kitParts[k]);
+    for (const list of Object.values(kitParts)) for (const m of list) m.visible = on.has(m);
+    kit = k; return kit;
+  }
+  if (!enemy) setKit(kit);
+  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld, setKit, get kit() { return kit; } };
 }
 
 // enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.

@@ -16,7 +16,7 @@ const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181a);
 scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
 const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
 const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
-const P = [makeSneaker(scene, { accent: 0x6fb0ff }), makeSneaker(scene, { accent: 0x7fff8f, tint: 0xf0e6cf })];
+const P = [makeSneaker(scene, { kit: qs.get('k1') || 'night', accent: 0x9fd060 }), makeSneaker(scene, { kit: qs.get('k2') || 'ash', accent: 0x2f8cff })];
 const E = [makeEnemy(scene), makeEnemy(scene)];
 let who = qs.get('who') || 'player';
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshLambertMaterial({ color: 0x26352e })); floor.rotation.x = -Math.PI / 2; scene.add(floor);

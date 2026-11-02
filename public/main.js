@@ -330,15 +330,18 @@ function marker(color) { // little floating triangle so you can find each other
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.4, 3), new THREE.MeshBasicMaterial({ color }));
   m.rotation.x = Math.PI; return m;
 }
-// Players: olive "sneaker" (see sneaker.js). P1 = host (blue accents), P2 = guest (green accents + slightly warmer suit).
+// Players (see sneaker.js kits): P1 = host = NIGHT OPS (charcoal suit, olive webbing + gaiter, dark spiky hair, olive accents),
+// P2 = guest = ASH FOX (slate blue-grey suit, vivid blue straps, ash-blonde swept undercut, blue accents).
 // Guards use the enemy kit of the same rig (sneaker.js makeEnemy): slate fatigues, helmet, balaclava, goggles, respirator.
-const PLAYER_LOOK = [{ accent: 0x6fb0ff, tint: 0xffffff }, { accent: 0x7fff8f, tint: 0xf0e6cf }];
+const PLAYER_LOOK = [{ kit: 'night', accent: 0x9fd060, tint: 0xffffff }, { kit: 'ash', accent: 0x2f8cff, tint: 0xffffff }];
 const meMesh = makeSneaker(scene, PLAYER_LOOK[0]);
 const otherMesh = makeSneaker(scene, PLAYER_LOOK[1]);
 const markers = [meMesh, otherMesh].map((ch, i) => { const m = marker(PLAYER_LOOK[i].accent); m.position.y = 2.1; ch.g.add(m); return m; });
-function applyPlayerLooks() { // my character always uses my slot's look (host = P1, guest = P2)
-  const mine = role === 'guest' ? 1 : 0;
+let otherLook = 1;
+function applyPlayerLooks() { // my character always uses my slot's suit (host = P1 Night Ops, guest = P2 Ash Fox)
+  const mine = role === 'guest' ? 1 : 0; otherLook = 1 - mine;
   [[meMesh, mine], [otherMesh, 1 - mine]].forEach(([ch, i], k) => {
+    ch.setKit(PLAYER_LOOK[i].kit);
     ch.materials.accent.color.setHex(PLAYER_LOOK[i].accent);
     ch.materials.patch.color.setHex(PLAYER_LOOK[i].accent).multiplyScalar(0.55);
     ch.materials.suit.color.setHex(PLAYER_LOOK[i].tint);
@@ -1398,7 +1401,7 @@ function drawRadar() {
     rc.arc(X(g.rx), Z(g.rz), SIGHT.stand * sx, g.ra - SIGHT.fovHalf, g.ra + SIGHT.fovHalf); rc.fill();
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
   }
-  if (peerConnected) { rc.fillStyle = '#7fff8f'; rc.fillRect(X(other.rx) - 3, Z(other.rz) - 3, 6, 6); }
+  if (peerConnected) { rc.fillStyle = '#' + PLAYER_LOOK[otherLook].accent.toString(16).padStart(6, '0'); rc.fillRect(X(other.rx) - 3, Z(other.rz) - 3, 6, 6); }
   rc.fillStyle = '#ffffff'; rc.fillRect(X(me.x) - 3, Z(me.z) - 3, 6, 6);
 }
 
