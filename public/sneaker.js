@@ -314,6 +314,16 @@ function enemyTextures() {
       for (let i = 0; i < S; i += 6) px(x, shade(HELM, 0.75), i, 0, 3, S * 0.4); // cover weave
       px(x, shade(HELM, 0.55), 0, S - 6, S, 6); // rim shadow
     }),
+    // FAMAS polymer furniture (64px): near-black grey plastic, moulded panel lines, cooling-vent slots on the lower half
+    // (handguard), lighter worn edges + a few scuffs. Shared by every part of the rifle so the batch stays one draw.
+    rifle: canvasTex(64, (x, S) => {
+      facets(x, S, [74, 78, 78], 331, 4, 0.2, 0.05);
+      px(x, '#8a8e8c', 0, 0, S, 2); px(x, '#26282a', 0, S - 2, S, 2); // lit top edge / shadowed bottom edge
+      for (let i = 4; i < S - 4; i += 6) { px(x, '#1a1b1c', i, 38, 3, 10); px(x, '#5a5e5e', i + 3, 38, 1, 10); } // vents
+      px(x, '#2e3030', 0, 30, S, 1); px(x, '#9a9e9c', 0, 31, S, 1); // panel seam
+      const r = rng(37); for (let i = 0; i < 26; i++) px(x, '#a0a4a2', r() * S | 0, r() * 28 | 0, 2 + (r() * 3 | 0), 1); // scuffs
+      px(x, '#3c3f40', 20, 8, 22, 14); px(x, '#5c6060', 22, 10, 18, 2); // moulded cheek / logo panel
+    }),
     lens: canvasTex(32, (x, S) => { // opaque mirrored lens, red glint - nothing behind it shows
       x.fillStyle = '#1a0606'; x.fillRect(0, 0, S, S); x.fillStyle = '#5a1010'; x.fillRect(0, 0, S, S / 2);
       px(x, '#ff6a4a', 6, 6, 6, 4); px(x, '#ffd0b0', 8, 6, 2, 2);
@@ -639,15 +649,37 @@ export function makeSneaker(scene, opts = {}) {
     drawn.visible = knife.visible = false;
   }
 
-  if (enemy) { // slung carbine across the vest: receiver, barrel + handguard, mag, stock, optic
-    const rifle = pivot(torso, 0.22, 0.28, 0); rifle.rotation.x = 0.75;
-    add(rifle, boxG(0.05, 0.07, 0.36), M.gear);
-    add(rifle, new THREE.CylinderGeometry(0.03, 0.03, 0.16, 6), M.gear, 0, 0.005, 0.24, { r: [Math.PI / 2, 0, 0] });
-    add(rifle, new THREE.CylinderGeometry(0.011, 0.011, 0.14, 5), M.metal, 0, 0.005, 0.36, { r: [Math.PI / 2, 0, 0] });
-    add(rifle, shaped(0.04, 0.12, 0.05, [1, 2, 1], (v, nx, ny, nz) => { if (ny < 0) v.z += 0.012 * -ny; }), M.pouch, 0, -0.08, 0.06);
-    add(rifle, shaped(0.04, 0.08, 0.15, [1, 1, 2], (v, nx, ny, nz) => { if (nz < 0 && ny < 0) v.y += 0.02; }), M.gear, 0, -0.01, -0.25);
-    add(rifle, new THREE.CylinderGeometry(0.018, 0.018, 0.08, 6), M.metal, 0, 0.06, 0.02, { r: [Math.PI / 2, 0, 0] }); // optic
-    add(rifle, boxG(0.03, 0.04, 0.05), M.gear, 0, -0.05, -0.08); // grip
+  // ENEMY FAMAS (original low-poly bullpup inspired by the MGS1 guards' rifle). Pivot = butt plate, so recoil climb
+  // rotates the gun about the shoulder pocket. Rifle-local: +x = barrel, +y = up, +z = right. ~0.8 m long.
+  // Parts: rubber butt pad + stock, long receiver with the magazine BEHIND the grip (bullpup), cheek rest, the signature
+  // full-length carrying handle (rear post, long top bar with sights, front post), charging lever under it, big
+  // full-hand trigger guard, vented handguard, folded bipod legs along its sides, barrel + grenade-ring flash hider.
+  let rifle = null, rflash = null;
+  const RIFLE = { grip: [0.4, -0.05, 0], fore: [0.56, -0.045, 0], muzzle: 0.8 };
+  if (enemy) {
+    M.rifle = L(T.rifle);
+    rifle = pivot(torso, 0.08, 0.24, 0.16); rifle.scale.setScalar(1.1); // a touch oversized so it reads from the top-down camera
+    const R = (geo, m, x, y, z, o) => add(rifle, geo, m, x, y, z, o);
+    R(shaped(0.1, 0.105, 0.05, [2, 2, 1], (v, nx, ny) => { if (nx < 0 && ny < 0) v.x += 0.01; if (ny > 0.9 && nx > 0) v.y -= 0.01; }), M.rifle, 0.055, -0.022, 0); // stock
+    R(boxG(0.016, 0.112, 0.056), M.gear, 0.006, -0.022, 0); // rubber butt pad
+    R(shaped(0.38, 0.075, 0.052, [4, 1, 1], (v, nx, ny) => { if (nx > 0.4 && ny < 0) v.y += 0.008 * (nx - 0.4); }), M.rifle, 0.28, 0.002, 0); // receiver
+    R(shaped(0.14, 0.018, 0.046, [2, 1, 1], (v, nx, ny) => { if (Math.abs(nx) > 0.9) v.y -= 0.005; }), M.rifle, 0.14, 0.048, 0); // cheek rest
+    R(shaped(0.42, 0.022, 0.03, [4, 1, 1], (v, nx, ny) => { if (ny > 0) v.y += 0.004 * (1 - nx * nx); }), M.rifle, 0.33, 0.112, 0); // carry handle bar
+    R(shaped(0.05, 0.07, 0.03, [1, 2, 1], (v, nx, ny) => { if (ny > 0) v.x -= 0.008 * nx; }), M.rifle, 0.145, 0.072, 0); // rear post
+    R(shaped(0.04, 0.085, 0.03, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.x += 0.01; }), M.rifle, 0.52, 0.066, 0); // front post
+    R(boxG(0.026, 0.016, 0.022), M.gear, 0.16, 0.13, 0); R(boxG(0.012, 0.022, 0.012), M.gear, 0.53, 0.132, 0); // sights
+    R(boxG(0.07, 0.014, 0.014), M.metal, 0.3, 0.05, 0.014); R(boxG(0.014, 0.03, 0.014), M.metal, 0.335, 0.062, 0.014); // charging lever
+    R(shaped(0.045, 0.125, 0.028, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.x += 0.014 * -ny; }), M.gear, 0.24, -0.095, 0); // magazine (behind the grip)
+    R(boxG(0.06, 0.02, 0.05), M.rifle, 0.24, -0.04, 0); // mag well lip
+    R(shaped(0.042, 0.1, 0.036, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.x -= 0.022 * -ny; }), M.rifle, 0.405, -0.082, 0); // pistol grip, raked back
+    R(boxG(0.14, 0.012, 0.03), M.rifle, 0.42, -0.137, 0); R(boxG(0.012, 0.1, 0.028), M.rifle, 0.488, -0.088, 0); // full-hand trigger guard
+    R(shaped(0.17, 0.064, 0.054, [3, 1, 1], (v, nx, ny) => { if (nx > 0.5) { v.y *= 1 - 0.18 * (nx - 0.5); v.z *= 1 - 0.12 * (nx - 0.5); } }), M.rifle, 0.555, -0.004, 0); // handguard
+    for (const z of [-0.031, 0.031]) R(boxG(0.2, 0.011, 0.01), M.metal, 0.6, -0.03, z); // folded bipod legs
+    R(boxG(0.03, 0.022, 0.07), M.gear, 0.665, -0.026, 0); // bipod hinge block
+    R(new THREE.CylinderGeometry(0.012, 0.012, 0.13, 6), M.metal, 0.7, 0.0, 0, { r: [0, 0, -Math.PI / 2] }); // barrel
+    R(new THREE.CylinderGeometry(0.019, 0.017, 0.045, 7), M.gear, 0.775, 0.0, 0, { r: [0, 0, -Math.PI / 2] }); // flash hider / grenade ring
+    rflash = new THREE.Mesh(new THREE.OctahedronGeometry(0.1, 0), new THREE.MeshBasicMaterial({ color: 0xffd060, transparent: true, opacity: 0.95, depthWrite: false }));
+    rflash.position.set(RIFLE.muzzle + 0.07, 0, 0); rflash.scale.set(2.0, 0.8, 0.8); rflash.visible = false; rifle.add(rflash);
   }
 
   B.flush(kitParts);
@@ -663,14 +695,14 @@ export function makeSneaker(scene, opts = {}) {
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07) };
+    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07), raim: K(0.09) };
   // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
   // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
   // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
   // the arms toward it. The laser in main.js only ever reads the barrel (muzzleWorld + muzzleDir) - it never aims itself.
   const aimGoal = [0, 0], AIM_MAX = [1.1, 0.6];
   let aimHad = false;
-  let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0;
+  let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0, kickYaw = 0;
   const bump = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return Math.sin(u * Math.PI); }; // 0 -> 1 -> 0 over [a,b]
   const mix = (a, b, k) => a + (b - a) * k;
   const sstep = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
@@ -682,6 +714,19 @@ export function makeSneaker(scene, opts = {}) {
     return st.x;
   }
   const FALLBACK = { prone: 1.1, crouch: 1.8, run: 5.2, walk: 3.2 };
+  // analytic 2-bone arm IK in the TORSO frame: put the hand (wrist + palm, ~0.33 m below the elbow) on point t.
+  // sh.rotation.y swings the arm's plane toward the target, sh.rotation.z raises the upper arm, el.rotation.z bends.
+  const _rq1 = new THREE.Quaternion(), _rq2 = new THREE.Quaternion(), _rq3 = new THREE.Quaternion(), _re = new THREE.Euler();
+  const _rp1 = new THREE.Vector3(), _rp2 = new THREE.Vector3(), _rv = new THREE.Vector3();
+  const UA = 0.32, FA = 0.33;
+  function armIK(a, t, k, wrz = 0) {
+    const x = t.x - a.sh.position.x, y = t.y - a.sh.position.y, z = t.z - a.sh.position.z;
+    const phi = Math.atan2(-z, x), u = Math.hypot(x, z), d = clamp(Math.hypot(u, y), 0.08, UA + FA - 0.003), al = Math.atan2(u, -y);
+    const beta = Math.PI - Math.acos(clamp((UA * UA + FA * FA - d * d) / (2 * UA * FA), -1, 1));
+    const th = al - Math.acos(clamp((UA * UA + d * d - FA * FA) / (2 * UA * d), -1, 1));
+    a.sh.rotation.x = mix(a.sh.rotation.x, 0, k); a.sh.rotation.y = mix(a.sh.rotation.y, phi, k); a.sh.rotation.z = mix(a.sh.rotation.z, th, k);
+    a.el.rotation.z = mix(a.el.rotation.z, beta, k); a.el.rotation.x = mix(a.el.rotation.x, 0, k); a.wr.rotation.z = mix(a.wr.rotation.z, wrz, k);
+  }
   function update(dt, s) {
     // speed in m/s: real speed from the game if given, else derived from the flags (character.html preview)
     const flagSpd = s.moving && !s.dead ? (s.prone ? FALLBACK.prone : s.crouch ? FALLBACK.crouch : s.run ? FALLBACK.run : FALLBACK.walk) : 0;
@@ -693,8 +738,13 @@ export function makeSneaker(scene, opts = {}) {
     const heldK = sstep(damp(W.held, s.held != null && !s.dead ? 1 : 0, dt));
     const aimK = sstep(damp(W.aim, s.aim && s.takedown == null && !s.dead ? 1 : 0, dt));
     const armK = sstep(damp(W.armed, s.armed && s.takedown == null && !s.dead ? 1 : 0, dt)); // pistol in hand (low ready)
-    if (s.shot && s.shot !== lastShot) { recoil = 1; flashT = 0.07; lastShot = s.shot; }
-    recoil = Math.max(0, recoil - dt * 7); flashT = Math.max(0, flashT - dt);
+    // RECOIL (big + gamey): every shot snaps `recoil` up (stacking for the guards' FAMAS bursts -> muzzle climb), then it
+    // bleeds off. kickYaw = a random sideways throw per shot, scaled by the live recoil so it settles with it.
+    if (s.shot && s.shot !== lastShot) {
+      recoil = Math.min(enemy ? 1.7 : 1.6, recoil + (enemy ? 0.75 : 1));
+      kickYaw = (Math.random() - 0.5) * (enemy ? 0.55 : 0.8); flashT = enemy ? 0.05 : 0.08; lastShot = s.shot;
+    }
+    recoil = Math.max(0, recoil - dt * (enemy ? 4.6 : 3.4)); flashT = Math.max(0, flashT - dt);
     // takedown: attacker sinks into a braced half-crouch; victim's knees give out as the hold finishes
     crouchK = Math.max(crouchK, tdK * 0.45, heldK * sstep((heldP - 0.45) / 0.55) * 0.8);
     const proneK = sstep(damp(W.prone, s.prone && !s.dead ? 1 : 0, dt));
@@ -804,15 +854,18 @@ export function makeSneaker(scene, opts = {}) {
     // ---- HANDGUN AIM: right arm straight out along the facing, left hand cups the grip (Weaver-ish). Compensates the
     // torso lean so the barrel stays level in crouch. Prone: arm reaches forward past the head (rig is laid on its front).
     if (aimK > 0.001) {
-      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.3;
+      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.78; // muzzle flip
       const aimZ = mix(Math.PI / 2 + up, Math.PI - 0.15 - 0.14, pk), aimX = 0;
       Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZ, k); Rr.sh.rotation.y = mix(0, 0.32 * (1 - pk), k); Rr.sh.rotation.x = mix(Rr.sh.rotation.x, aimX, k);
-      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.04 + recoil * 0.35, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
-      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.25, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.04 + recoil * 0.8, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k); // elbow buckles
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.65, k); // wrist snaps up
       L.sh.rotation.z = mix(L.sh.rotation.z, mix(Math.PI / 2 - 0.12 + up, Math.PI - 0.35, pk), k); L.sh.rotation.y = mix(0, -0.62 * (1 - pk), k);
       L.sh.rotation.x = mix(L.sh.rotation.x, pk * 0.5, k);
-      L.el.rotation.z = mix(L.el.rotation.z, 0.35 + recoil * 0.2, k); L.el.rotation.x = mix(L.el.rotation.x, 0, k);
+      L.el.rotation.z = mix(L.el.rotation.z, 0.35 + recoil * 0.55, k); L.el.rotation.x = mix(L.el.rotation.x, 0, k);
       torso.rotation.y = mix(torso.rotation.y, -0.12 * (1 - pk), k); // blade the body a touch
+      // recoil body language: rock back from the waist, head snaps back, guns thrown sideways (settles with the kick)
+      torso.rotation.z += recoil * 0.16 * k * (1 - pk); headPivot.rotation.z += recoil * 0.2 * k;
+      for (const a of arms) a.sh.rotation.y += kickYaw * recoil * 0.45 * k * (1 - pk);
       // shoulder aim offsets (yaw, pitch) on top of the pose, same delta on both shoulders
       shoulderAim(damp(W.aYaw, aimGoal[0], dt) * k, damp(W.aPitch, aimGoal[1], dt) * k, pk);
     } else { damp(W.aYaw, 0, dt); damp(W.aPitch, 0, dt); }
@@ -851,6 +904,38 @@ export function makeSneaker(scene, opts = {}) {
         a.el.rotation.z = mix(a.el.rotation.z, mix(0.2, 2.0, lim), k); a.el.rotation.x = mix(a.el.rotation.x, 0, k);
         a.wr.rotation.z = mix(a.wr.rotation.z, 0, k);
       }
+    }
+    // ---- ENEMY FAMAS: blends slung across the chest (held / dead) <-> low ready (patrol, carried across the body, muzzle
+    // down-left) <-> shouldered (s.rifleAim: stock in the right shoulder, body bladed, barrel held level along the facing
+    // whatever the torso does). Recoil per round: gun driven back into the shoulder + pitched up (stacks over a burst
+    // = cyclic climb) + thrown sideways, torso / head jolt. Both hands ride the rifle via 2-bone IK.
+    if (rifle) {
+      const holdK = (1 - heldK) * (1 - deadK) * (1 - pk);
+      const raimK = sstep(damp(W.raim, s.rifleAim && !s.dead && s.held == null ? 1 : 0, dt)) * holdK, rk = recoil;
+      torso.rotation.y = mix(torso.rotation.y, -0.45, raimK); // blade: left shoulder forward
+      torso.rotation.z = mix(torso.rotation.z, -0.06, raimK) + rk * 0.14 * raimK; // stand tall, rock back on each round
+      headPivot.rotation.z = mix(headPivot.rotation.z, 0.08, raimK) + rk * 0.18 * raimK; headPivot.rotation.y = mix(headPivot.rotation.y, 0.3, raimK);
+      hips.rotation.y = mix(hips.rotation.y, 0, raimK); hips.position.y -= 0.025 * raimK;
+      legs[0].hip.rotation.z += 0.28 * raimK; legs[1].hip.rotation.z -= 0.16 * raimK; // staggered firing stance
+      for (const lg of legs) lg.ankle.rotation.z = -(lg.hip.rotation.z + lg.knee.rotation.z);
+      // pose targets (torso frame)
+      _rq1.setFromEuler(_re.set(0, 1.3, 0.7)); _rp1.set(0.22, 0.12, 0.16); // slung
+      _rq2.setFromEuler(_re.set(0, 0.55, -0.42)); _rp2.set(0.14, 0.3, 0.14); // low ready
+      _rq1.slerp(_rq2, holdK); _rp1.lerp(_rp2, holdK);
+      if (raimK > 0.001) { // aim: desired orientation in the rig frame, expressed in the torso frame (cancels hips + torso)
+        hips.updateMatrix(); torso.updateMatrix();
+        _rq3.copy(hips.quaternion).multiply(torso.quaternion).invert()
+          .multiply(_rq2.setFromEuler(_re.set(0, kickYaw * rk * 0.4, rk * 0.34 - 0.02)));
+        _rp2.set(0.06 - 0.07 * rk, 0.36 + 0.015 * rk, 0.17);
+        _rq1.slerp(_rq3, raimK); _rp1.lerp(_rp2, raimK);
+      }
+      rifle.quaternion.copy(_rq1); rifle.position.copy(_rp1);
+      if (holdK > 0.001) {
+        rifle.updateMatrix();
+        _rv.set(...RIFLE.grip).applyMatrix4(rifle.matrix); armIK(arms[1], _rv, holdK, -0.25);
+        _rv.set(...RIFLE.fore).applyMatrix4(rifle.matrix); armIK(arms[0], _rv, holdK, 0.1);
+      }
+      rflash.visible = flashT > 0 && holdK > 0.5; rflash.rotation.x = t * 40;
     }
     // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw / tug / rope / hookset)
     applyTrav(dt, s);
@@ -1012,9 +1097,11 @@ export function makeSneaker(scene, opts = {}) {
   }
   update(0, {});
   // world position of the pistol muzzle (for tracers); falls back to chest height in front of the body
-  const muzzleWorld = (v) => { if (flash) { g.updateMatrixWorld(true); return flash.getWorldPosition(v); } return v.set(g.position.x, 1.25, g.position.z); };
+  const muzzleWorld = (v) => { if (rflash) { g.updateMatrixWorld(true); return rflash.getWorldPosition(v); }
+    if (flash) { g.updateMatrixWorld(true); return flash.getWorldPosition(v); } return v.set(g.position.x, 1.25, g.position.z); };
   // world direction the barrel points (unit); falls back to the body facing
-  const muzzleDir = (v) => { if (drawn) { g.updateMatrixWorld(true); drawn.getWorldQuaternion(_q); return v.set(0, -1, 0).applyQuaternion(_q); } return v.set(Math.cos(-g.rotation.y), 0, Math.sin(-g.rotation.y)); };
+  const muzzleDir = (v) => { if (rifle) { g.updateMatrixWorld(true); rifle.getWorldQuaternion(_q); return v.set(1, 0, 0).applyQuaternion(_q); }
+    if (drawn) { g.updateMatrixWorld(true); drawn.getWorldQuaternion(_q); return v.set(0, -1, 0).applyQuaternion(_q); } return v.set(Math.cos(-g.rotation.y), 0, Math.sin(-g.rotation.y)); };
   // world position of a hand (side 1 = right, -1 = left) - grapple rope attaches here
   const handWorld = (v, side = 1) => { g.updateMatrixWorld(true); return arms[side > 0 ? 1 : 0].wr.getWorldPosition(v); };
   // swap the suit kit in place (same rig / meshes): re-point material maps + toggle the kit's hair / gaiter / trims

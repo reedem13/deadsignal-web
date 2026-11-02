@@ -18,12 +18,17 @@
 
 <!-- HUD -->
 <div id="fpsVignette"></div>
+<div id="hurtFlash"></div>
 <div id="hud" class="hidden">
   <div id="hudTop">
     <div id="roomInfo"><span id="roomCode">----</span> <span id="peerStatus" class="bad">waiting</span> <span id="ping"></span>
       <button id="btnShare" class="small">Share link</button></div>
     <div id="alertBanner" class="hidden"></div>
     <canvas id="radar" width="160" height="120"></canvas>
+  </div>
+  <div id="hpBox">
+    <div id="hpMe" class="hpRow ok"><span class="hpLbl">LIFE</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+    <div id="hpOther" class="hpRow ok hidden"><span class="hpLbl">P2 LIFE</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
   </div>
   <div id="objective">Reach the door switches</div>
   <div id="toast" class="hidden"></div>

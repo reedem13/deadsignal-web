@@ -79,3 +79,21 @@ button.act.gun { font-size: 12px; }
 button.act.gun.on { background: rgba(140, 100, 20, .85); border-color: #ffd27f; color: #fff; }
 #ammo.holstered { color: #9fbfa8; opacity: .8; }
 @media (max-height: 420px) { button.act { width: 58px; height: 58px; font-size: 11px; } #buttons { gap: 6px; } }
+
+/* LIFE bars (MGS1-style): label over a framed bar; green > 50%, yellow > 25%, red + blink below; pale damage trail */
+#hpBox { position: absolute; top: calc(40px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); display: flex; flex-direction: column; gap: 4px; }
+.hpRow { display: flex; flex-direction: column; gap: 1px; }
+.hpLbl { font-size: 12px; font-weight: bold; letter-spacing: 2px; color: #cfe8d4; text-shadow: 1px 1px 0 #000; }
+.hpBar { position: relative; width: 170px; height: 12px; background: #1a0806; border: 1px solid #c8d8c8; box-shadow: 1px 1px 0 #000, inset 0 0 0 1px #000; image-rendering: pixelated; }
+.hpFill, .hpTrail { position: absolute; left: 1px; top: 1px; bottom: 1px; max-width: calc(100% - 2px); }
+.hpTrail { background: #e8e0c0; opacity: .75; }
+.hpFill { background: linear-gradient(#7dff8a 0 35%, #2fbf48 35% 100%); }
+.hpRow.warn .hpFill { background: linear-gradient(#fff08a 0 35%, #d8b820 35% 100%); }
+.hpRow.crit .hpFill { background: linear-gradient(#ff8a7a 0 35%, #d82020 35% 100%); }
+.hpRow.crit .hpLbl { color: #ff6a5a; animation: blink .4s steps(2) infinite; }
+.hpRow.crit .hpBar { border-color: #ff6a5a; }
+#hpOther .hpBar { width: 120px; height: 9px; }
+#hpOther .hpLbl { font-size: 10px; }
+#hurtFlash { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
+  background: radial-gradient(ellipse at 50% 50%, rgba(255,0,0,0) 35%, rgba(200,0,0,.85) 100%); }
+@media (max-width: 500px) { #hpBox { top: calc(36px + env(safe-area-inset-top)); } .hpBar { width: 112px; } #hpOther .hpBar { width: 84px; } }

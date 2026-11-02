@@ -26,7 +26,7 @@ const spin = qs.get('spin') !== '0';
 document.querySelectorAll('button').forEach((b) => b.onclick = () => { if (b.dataset.p) pose = b.dataset.p; if (b.dataset.w) who = b.dataset.w; });
 function size() { r.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
 addEventListener('resize', size); size();
-let last = performance.now(), tdT = 0, shotT = 0, shot = 0;
+let last = performance.now(), tdT = 0, shotT = 0, shot = 0, eShot = 0, eBurst = 0;
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.5;
   const low = /prone|crawl/.test(pose), dist = +(qs.get('dist') || 5); const ly = qs.has('ly') ? +qs.get('ly') : low ? 0.25 : 0.8; cam.position.set(Math.cos(ang) * dist, qs.has('cy') ? +qs.get('cy') : low ? 1.5 : 1.6, Math.sin(ang) * dist); cam.lookAt(0, ly, 0);
@@ -41,7 +41,9 @@ function loop(now) {
   const pair = who === 'enemy' ? E : who === 'both' ? [P[0], E[0]] : P;
   for (const m of [...P, ...E]) m.g.visible = pair.includes(m) && !(qs.get('one') && m === pair[1]);
   if (qs.get('one')) pair[0].g.position.set(0, 0, 0); else { pair[0].g.position.set(px, 0, pz); pair[1].g.position.set(-px, 0, -pz); }
-  shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; }
+  shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; eBurst = 0; }
+  // guards: 3-round FAMAS burst at the start of each cycle (?p freezes the kick: no shots)
+  if (/aim/.test(pose) && !qs.has('p') && eBurst < 3 && shotT > eBurst * 0.085) { eBurst++; eShot++; }
   // traversal poses (?p=0..1 freezes progress, else loops every 2s)
   const TRV = ['climb', 'hang', 'mantle', 'kneel', 'lift', 'pull', 'throw'];
   if (TRV.includes(pose)) {
@@ -53,7 +55,8 @@ function loop(now) {
     aim: /aim/.test(pose), shot };
   // ?aimyaw=<rad> (aim poses): lock target 4m out at that angle off the facing -> arms turn at the shoulders toward it
   const ay = qs.has('aimyaw') ? +qs.get('aimyaw') : null;
-  for (const m of [...P, ...E]) m.update(dt, ay == null || !s.aim ? s : { ...s, aimAt: { x: m.g.position.x + Math.cos(ay) * 4, y: 1.0, z: m.g.position.z + Math.sin(ay) * 4 } });
+  for (const m of E) m.update(dt, { ...s, armed: false, aim: false, rifleAim: s.aim, shot: eShot });
+  for (const m of P) m.update(dt, ay == null || !s.aim ? s : { ...s, aimAt: { x: m.g.position.x + Math.cos(ay) * 4, y: 1.0, z: m.g.position.z + Math.sin(ay) * 4 } });
   r.render(scene, cam); requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
