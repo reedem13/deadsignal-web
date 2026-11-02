@@ -3,6 +3,7 @@
 // Netcode: listen-server style. Host simulates guards, alert, door, extract & win. Each client owns its own
 // movement (sent 20x/s); host broadcasts world state 15x/s. Messages go through server.js (WebSocket relay).
 import * as THREE from 'three';
+import { makeSneaker } from './sneaker.js';
 
 // ---------------------------------------------------------------- level data (greybox yard)
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
@@ -146,9 +147,22 @@ function marker(color) { // little floating triangle so you can find each other
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.4, 3), new THREE.MeshBasicMaterial({ color }));
   m.rotation.x = Math.PI; return m;
 }
-const meMesh = makeCharacter(0x3a6ea8, 0xd8b090);
-const otherMesh = makeCharacter(0x3f8f4a, 0xd8b090);
-for (const [ch, col] of [[meMesh, 0x6fb0ff], [otherMesh, 0x7fff8f]]) { const m = marker(col); m.position.y = 2.1; ch.g.add(m); }
+// Players: olive "sneaker" (see sneaker.js). P1 = host (blue accents), P2 = guest (green accents + slightly warmer suit).
+// Guards keep the greybox makeCharacter() above until they get their own model.
+const PLAYER_LOOK = [{ accent: 0x6fb0ff, tint: 0xffffff }, { accent: 0x7fff8f, tint: 0xf0e6cf }];
+const meMesh = makeSneaker(scene, PLAYER_LOOK[0]);
+const otherMesh = makeSneaker(scene, PLAYER_LOOK[1]);
+const markers = [meMesh, otherMesh].map((ch, i) => { const m = marker(PLAYER_LOOK[i].accent); m.position.y = 2.1; ch.g.add(m); return m; });
+function applyPlayerLooks() { // my character always uses my slot's look (host = P1, guest = P2)
+  const mine = role === 'guest' ? 1 : 0;
+  [[meMesh, mine], [otherMesh, 1 - mine]].forEach(([ch, i], k) => {
+    ch.materials.accent.color.setHex(PLAYER_LOOK[i].accent);
+    ch.materials.patch.color.setHex(PLAYER_LOOK[i].accent).multiplyScalar(0.55);
+    ch.materials.suit.color.setHex(PLAYER_LOOK[i].tint);
+    markers[k].material.color.setHex(PLAYER_LOOK[i].accent);
+  });
+}
+let otherSpeed = 0, otherPX = other.rx, otherPZ = other.rz;
 
 function textSprite(txt, color) {
   const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
@@ -423,6 +437,7 @@ function enterGame() {
     const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z;
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
   }
+  applyPlayerLooks();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
   history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
 }
@@ -526,12 +541,15 @@ function render(dt) {
   const k = Math.min(1, dt * 12);
   // remote player smoothing
   other.rx += (other.x - other.rx) * k; other.rz += (other.z - other.rz) * k; other.ra = lerpA(other.ra, other.a, k);
-  meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a; meMesh.inner.scale.y = me.c ? 0.6 : 1;
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
-  meMesh.inner.rotation.z = deadMe ? -Math.PI / 2 : 0; meMesh.inner.position.y = deadMe ? 0.3 : 0;
+  meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
+  meMesh.update(dt, { moving: me.moving, run: me.run, crouch: me.c, dead: deadMe });
+  // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
+  if (dt > 0) { const v = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt; otherSpeed += (Math.min(v, 8) - otherSpeed) * Math.min(1, dt * 8); }
+  otherPX = other.rx; otherPZ = other.rz;
   otherMesh.g.visible = peerConnected;
-  otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra; otherMesh.inner.scale.y = other.c ? 0.6 : 1;
-  otherMesh.inner.rotation.z = deadOther ? -Math.PI / 2 : 0; otherMesh.inner.position.y = deadOther ? 0.3 : 0;
+  otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
+  otherMesh.update(dt, { moving: otherSpeed > 0.6 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, crouch: other.c, dead: deadOther });
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { g.rx += (g.x - g.rx) * k; g.rz += (g.z - g.rz) * k; g.ra = lerpA(g.ra, g.a, k); }

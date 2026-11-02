@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deadsignal - sneaker model preview</title>
+<style>html,body{margin:0;height:100%;background:#111;color:#cfd;font:12px monospace;overflow:hidden}canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
+#ui{position:fixed;left:8px;top:8px}button{font:inherit;margin:2px;padding:6px 10px;background:#223;color:#cfd;border:1px solid #456}</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script></head>
+<body><canvas id="c"></canvas>
+<div id="ui">SNEAKER PREVIEW (?pose=idle|walk|run|crouch|crouchwalk|dead&amp;spin=0)<br>
+<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="dead">dead</button></div>
+<script type="module">
+import * as THREE from 'three';
+import { makeSneaker } from './sneaker.js';
+const qs = new URLSearchParams(location.search);
+const r = new THREE.WebGLRenderer({ canvas: c, antialias: false }); r.setPixelRatio(0.5);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181a);
+scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
+const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
+const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
+const p1 = makeSneaker(scene, { accent: 0x6fb0ff }), p2 = makeSneaker(scene, { accent: 0x7fff8f, tint: 0xf0e6cf });
+p1.g.position.z = -0.6; p2.g.position.z = 0.6;
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshLambertMaterial({ color: 0x26352e })); floor.rotation.x = -Math.PI / 2; scene.add(floor);
+let pose = qs.get('pose') || 'idle', ang = +(qs.get('ang') || 0.6);
+const spin = qs.get('spin') !== '0';
+document.querySelectorAll('button').forEach((b) => b.onclick = () => pose = b.dataset.p);
+function size() { r.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
+addEventListener('resize', size); size();
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.5;
+  cam.position.set(Math.cos(ang) * 5, 1.6, Math.sin(ang) * 5); cam.lookAt(0, 0.8, 0);
+  const px = -Math.sin(ang) * 0.6, pz = Math.cos(ang) * 0.6; p1.g.position.set(px, 0, pz); p2.g.position.set(-px, 0, -pz);
+  const s = { moving: /walk|run/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), dead: pose === 'dead' };
+  p1.update(dt, s); p2.update(dt, s);
+  r.render(scene, cam); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+window.__ready = true;
+</script></body></html>
