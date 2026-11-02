@@ -4,7 +4,7 @@
 Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way around.
 
 > Original IP, inspired by PS1-era tactical stealth. No third-party names or assets.
-> Art is greybox placeholders until the Blockbench PS1 models come in.
+> Players use the procedural low-poly olive "sneaker" (`public/sneaker.js`, preview at `/character.html`); guards and the yard are still greybox.
 > **This is the browser test build. The Unreal Engine / Steam build comes later** and will reuse the design, not this code.
 
 ## What's in the slice
