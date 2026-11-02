@@ -4,12 +4,14 @@
 Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way around.
 
 > Original IP, inspired by PS1-era tactical stealth. No third-party names or assets.
-> Players use the procedural low-poly olive "sneaker" (`public/sneaker.js`, preview at `/character.html`); guards and the yard are still greybox.
+> Players use the procedural low-poly olive "sneaker" and guards use the masked slate enemy kit of the same rig (`public/sneaker.js`, preview at `/character.html?who=both`). The yard is still greybox.
 > **This is the browser test build. The Unreal Engine / Steam build comes later** and will reuse the design, not this code.
 
 ## What's in the slice
 - Night yard greybox, 3 patrolling guards with visible sight cones (yellow → orange when suspicious → red on ALERT).
 - **Walk** (makes a small noise), **run** (push the stick all the way / Shift; loud — guards come look), **crouch** (slow, silent, shorter sight range, and you can hide behind low crates).
+- **Prone** (Z/X or PRONE button): belly-down commando crawl. Slowest, silent, guards only spot you from ~3.5 m and much more slowly; hides behind low crates.
+- **Tunnels** (yellow-striped mouths, gold on the radar): West Culvert (spawn yard → north-west yard), Barracks Crawlspace (through the barracks), Compound Drain (west yard → inside the extraction compound; you still need the two-switch door to win). Inside a tunnel your camera goes **first person** (only yours, not your partner's). Up/W crawls forward, left/right turns, down/S backs up. You can't stand up in there. Guards can't enter, see in, or catch you in a tunnel.
 - Guards: patrol → `?` investigate noises/glimpses → `!` ALERT (chase, ~15 s), then CAUTION, then calm. A guard touching you in ALERT sends you back to the start.
 - **Two-person door:** two switch pads by the red door, 10 m apart. Each player stands on one and presses ACT; the presses must land within 2 s of each other. One person can't do it alone.
 - **Extract:** both players inside the green ring behind the door = MISSION COMPLETE (time, alerts, times caught, rank). The host can restart.
@@ -52,6 +54,8 @@ Advanced: the client can talk to a relay on a different host with `?server=wss:/
 | Move | Drag anywhere on the left side (floating stick) | WASD / arrows |
 | Run (loud) | Push the stick to the edge | Hold Shift |
 | Crouch toggle | CROUCH button | C |
+| Prone toggle | PRONE button | Z or X |
+| In a tunnel (1st person) | stick up/down = forward/back, left/right = turn | W/S forward/back, A/D turn |
 | Use switch | ACT button | E / Space |
 
 ## Phone tips / known limits
