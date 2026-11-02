@@ -16,9 +16,11 @@
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, WALKS, RAILS, GANTRY_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal } from './traverse.js';
+import { TRAV, L1, L2, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
 
-// ---------------------------------------------------------------- level data (greybox yard)
+// ---------------------------------------------------------------- level data (vertical relay station - see traverse.js)
+// Three layers: ground (0), L1 catwalks / low roofs (3.2), L2 towers / bridges (6.4). Solid boxes below are walkable on
+// top (crates + buildings); open decks (WALKS) live in traverse.js and have nothing under them but legs.
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
 const WALLS = [
   // outer fence
@@ -26,22 +28,31 @@ const WALLS = [
   // extraction compound (north-east), door between the two switches
   B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -13.925, 0.5, 2.65, 2.5, 'wall'), B(4.25, -9.325, 0.5, 2.15, 2.5, 'wall'), // gap = T3 drain
   B(11.5, -8.25, 3, 0.5, 2.5, 'door'),
-  // cover: building (tall) and crates (low: crouch behind them to break line of sight)
-  // barracks (tall), split by the T2 crawlspace that runs through it east-west
-  B(-8, -7.8, 6, 1.4, 3, 'building'), B(-8, -4.2, 6, 1.4, 3, 'building'),
-  B(0, 1, 2, 2, 1), B(-4, 8, 1.5, 1.5, 1), B(7, 6, 3, 1.5, 1), B(12, 2, 2, 4, 2.2, 'building'), B(-14, 0, 2, 2, 1),
-  B(-2, -4, 1.5, 3, 1), B(16, 8, 2, 2, 1), B(-11, 12, 1.2, 2.5, 1), B(9, -3, 1.5, 1.5, 1),
-  // SIGNAL SHED: too tall to climb solo - co-op boost wall on its south face; its roof joins the gantry (traverse.js)
-  B(3, -2.9, 2.4, 1.6, 3.4, 'building'),
+  // ---- L2 towers (6.4)
+  B(-17.5, -12, 4, 5, L2, 'building'),      // PUMP TOWER (west): scaffold ladder / south-face grapple; pipe bridge east
+  B(-4.25, -13, 3.5, 3, L2, 'building'),    // COMMS HUT: far end of the pipe bridge, rappel off its south face
+  B(0, 2, 4, 1, L2, 'building'), B(0, 4.5, 4, 1, L2, 'building'), // MAST (atrium centre), split by the crawl underpass
+  B(11.25, 3.25, 4.5, 5.5, L2, 'building'), // TANK HOUSE (east): drainpipe, grapples from the tank bridge / balcony
+  B(16.2, -12.4, 4.4, 4.4, L2, 'building'), // EXFIL TOWER (inside the compound): extraction pad on the roof
+  // ---- L1 roofs (3.2)
+  B(-8, -7.8, 6, 1.4, L1, 'building'), B(-8, -4.2, 6, 1.4, L1, 'building'), // barracks, split by the crawlspace
+  B(3, -2.9, 2.4, 1.6, L1, 'building'),     // SIGNAL SHED: co-op boost wall on its south face, roof joins the gantry
+  // ---- crates (low cover; the stacked pairs are mantle steps up to a catwalk)
+  B(-14, 0, 2, 2, 1), B(-13, 6, 1.5, 1.5, 1), B(-10, 11, 1.2, 2.5, 1), B(-4, 11.5, 1.5, 1.5, 1), B(1, 11, 2.4, 1.2, 1),
+  B(8, 10.5, 2.4, 1.2, 1), B(16, 9, 2, 2, 1), B(-2, -4.5, 1.5, 2, 1), B(9, -3, 1.5, 1.5, 1), B(9, -0.6, 1.4, 1.2, 1),
+  B(-4.6, 5.8, 1, 1, 1), B(4.3, 1, 0.8, 0.8, 1),                       // atrium floor cover (under the ring)
+  B(4.4, 8.9, 1.2, 1.2, 2.2), B(4.4, 10.4, 1.2, 1.2, 1),               // steps -> atrium ring (SE)
+  B(12.05, 7.85, 1.1, 1.1, 2.2), B(12.05, 9.15, 1.1, 1.1, 1),          // steps -> tank balcony
 ];
-for (const [x, z] of GANTRY_POSTS) WALLS.push(B(x, z, 0.16, 0.16, 3.4, 'post')); // catwalk legs over the switch lane
+for (const [x, z, h] of DECK_POSTS) WALLS.push(B(x, z, 0.16, 0.16, h, 'post')); // catwalk / bridge legs
 // ---- TUNNELS: interior volumes (x1..x2, z1..z2) are the FPS trigger + guard no-go zones. axis = direction of travel.
 // Side walls (kind 'tunnel', tall enough to block sight) are generated into WALLS; both ends are open mouths.
 const TUNNEL_H = 1.25, TUNNEL_WALL = 0.3;
 const TUNNELS = [
   { name: 'WEST CULVERT', x1: -19.8, x2: -18.2, z1: -3, z2: 9.5, axis: 'z', roof: 0.2 },      // spawn yard <-> north-west yard
-  { name: 'BARRACKS CRAWLSPACE', x1: -11.6, x2: -4.4, z1: -6.8, z2: -5.2, axis: 'x', roof: 1.75 }, // under/through the barracks
+  { name: 'BARRACKS CRAWLSPACE', x1: -11.6, x2: -4.4, z1: -6.8, z2: -5.2, axis: 'x', roof: L1 - TUNNEL_H }, // under/through the barracks
   { name: 'COMPOUND DRAIN', x1: 0.6, x2: 7.6, z1: -12.3, z2: -10.7, axis: 'x', roof: 0.2 },  // west yard <-> inside the extraction compound
+  { name: 'MAST UNDERPASS', x1: -2, x2: 2, z1: 2.5, z2: 4, axis: 'x', roof: L2 - TUNNEL_H },  // through the base of the atrium mast
 ];
 for (const t of TUNNELS) {
   const W = TUNNEL_WALL, h = TUNNEL_H + 0.2;
@@ -59,14 +70,25 @@ function tunnelAt(x, z, inset = 0) {
 // guards treat tunnel interiors (+ a lip at each mouth) as solid so they never crawl in after you
 const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0), x2: t.x2 + (t.axis === 'x' ? 0.3 : 0),
   z1: t.z1 - (t.axis === 'z' ? 0.3 : 0), z2: t.z2 + (t.axis === 'z' ? 0.3 : 0), h: 0, kind: 'block' }));
-const SWITCHES = [{ x: 6.5, z: -6.6 }, { x: 16.5, z: -6.6 }]; // 10 units apart -> one person can't hit both in time
-const EXTRACT = { x: 16, z: -12, r: 2.2 };
+// SWITCHES: y = floor height of the pad. One is on the ground by the red door, the other up on the RELAY PLATFORM (L1).
+const SWITCHES = [{ x: 6.5, z: -6.6, y: 0 }, { x: 17, z: -5.5, y: L1 }]; // ~10.5 apart -> one person can't hit both in time
+const EXTRACT = { x: 16.2, z: -12.4, y: L2, r: 1.8 };  // helipad ring on the EXFIL TOWER roof
 const SPAWNS = [{ x: -17, z: 13 }, { x: -15.5, z: 13.2 }];
-const GUARD_PATHS = [
-  [[-7, 4], [5, 4], [5, 10], [-7, 10]],
-  [[2, -5.2], [19, -5.2]],
-  [[-17, -1], [-17, -12], [-2, -12], [-2, -7], [-2, -12], [-17, -12]],
+// GUARDS: y = the floor a guard lives on. Elevated guards (y > 0) stay on their decks: `area` = the walkable rects they
+// may stand in (overlapping where decks join, so they can walk across the seams); they chase / investigate to the
+// nearest edge, then hold there and use their FAMAS / vertical vision. 5 guards (was 3): 3 of them on decks / roofs; the
+// north yard has no ground guard - it is watched from the L2 overwatch above it.
+const RING_AREA = [{ x1: -7, x2: 5, z1: -1.6, z2: -0.4 }, { x1: -7, x2: 5, z1: 7, z2: 8.2 }, { x1: -7, x2: -5.8, z1: -1.6, z2: 8.2 }, { x1: 3.8, x2: 5, z1: -1.6, z2: 8.2 }];
+const GANTRY_AREA = [{ x1: 4.2, x2: 17.5, z1: -3.3, z2: -2.3 }, { x1: 14.5, x2: 19.6, z1: -7.6, z2: -3.3 }, { x1: 14.5, x2: 17.5, z1: -7.6, z2: -2.3 }];
+const WEST_L2_AREA = [{ x1: -19.5, x2: -15.5, z1: -14.5, z2: -9.5 }, { x1: -16, x2: -5.5, z1: -14, z2: -13 }, { x1: -6, x2: -2.5, z1: -14.5, z2: -11.5 }];
+const GUARDS = [
+  { y: 0, path: [[-3.2, 0.6], [3, 0.6], [3, 6.2], [-3.2, 6.2]] },                                    // atrium floor, around the mast
+  { y: L1, area: RING_AREA, path: [[-6.4, -1], [4.4, -1], [4.4, 7.6], [-6.4, 7.6]] },                // atrium ring catwalk
+  { y: 0, path: [[2, -5.4], [19, -5.4]] },                                                          // switch lane (under the gantry)
+  { y: L1, area: GANTRY_AREA, path: [[5, -2.8], [16, -2.8], [16, -6.8], [19, -6.8], [16, -6.8], [16, -2.8]] }, // gantry + relay platform
+  { y: L2, area: WEST_L2_AREA, path: [[-17.5, -12], [-15, -13.5], [-4.2, -13.5], [-4.2, -12.2], [-4.2, -13.5], [-15, -13.5]] }, // L2 overwatch
 ];
+const GUARD_PATHS = GUARDS.map((g) => g.path);
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
 // guards: patrol 1.8 -> 1.4, investigate 2.6 -> 2.2, chase 4.6 -> 4.1 (still slower than a running player)
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
@@ -84,7 +106,9 @@ const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
 //   high / rope = range scale for a target up on a roof / gantry vs hanging on a rope (silhouetted against the wall).
 //   steep = range lost at the top of the vertical cone (looking up hard = shorter sight). slowUp = meter fill lost there,
 //   calmUp = extra meter scale while CALM (a patrolling guard isn't scanning rooftops). Roof edges / decks occlude.
-const SIGHT_V = { eye: 1.6, upFov: 0.85, upFovAlert: 1.05, high: 0.85, rope: 0.95, steep: 0.35, slowUp: 0.45, calmUp: 0.8,
+// downFov = how far below eye level a guard up on a deck looks (rad, ~57 deg): right under a catwalk is blind.
+// downK = how much of the drop counts toward range when he looks down (overwatch on a tower covers the yard below).
+const SIGHT_V = { eye: 1.6, downFov: 1.0, downK: 0.5, upFov: 0.85, upFovAlert: 1.05, high: 0.85, rope: 0.95, steep: 0.35, slowUp: 0.45, calmUp: 0.8,
   chest: { stand: 1.2, crouch: 0.75, prone: 0.25 } };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
 // takedown: must be within range and inside the guard's rear arc (|angle off his facing| > behind -> ~+-64deg behind him).
@@ -133,7 +157,7 @@ let lastAlert = 0, lastPhase = 'play', lastHp = HP_MAX, shake = 0, hurtT = 0;
 function freshWorld() {
   return {
     // st: patrol | investigate | chase | search | held (being taken down, tdT = seconds into it) | dead
-    guards: GUARD_PATHS.map((p) => ({ x: p[0][0], z: p[0][1], a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
+    guards: GUARDS.map(({ path: p, y, area }) => ({ x: p[0][0], z: p[0][1], y, area, a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
       rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false })),
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
     ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, kills: 0, // dead: index of the player who died (-1 = nobody)
@@ -147,7 +171,27 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; };
 const solids = () => WALLS.filter((w) => !(w.kind === 'door' && world.door));
 
-function collide(p, r, guard = false) { collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS) : solids()); }
+function collide(p, r, guard = false) {
+  if (guard && p.y > 0.3) return collideHigh(p, r);
+  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS) : solids());
+}
+// elevated guards: only what sticks up above their deck blocks them (walls, door, tall buildings, rails), then they are
+// clamped onto the nearest of their deck rects so they never walk off a catwalk.
+function collideHigh(g, r) {
+  const y = g.y, boxes = solids().filter((b) => b.kind === 'wall' || b.kind === 'door' || b.h > y + 0.05);
+  for (const b of RAILS) if (Math.abs(b.y0 - y) < 0.3) boxes.push(b);
+  collideBoxes(g, r, boxes);
+  if (g.area) clampArea(g, g.area, 0.18);
+}
+function clampArea(p, area, m) {
+  let best = null, bd = Infinity;
+  for (const a of area) {
+    const x = clamp(p.x, a.x1 + m, a.x2 - m), z = clamp(p.z, a.z1 + m, a.z2 - m), d = (x - p.x) ** 2 + (z - p.z) ** 2;
+    if (d < bd) { bd = d; best = [x, z]; }
+  }
+  if (best) { p.x = best[0]; p.z = best[1]; }
+}
+const onArea = (area, x, z) => !area || area.some((a) => x >= a.x1 && x <= a.x2 && z >= a.z1 && z <= a.z2);
 // players: anything whose top is under your feet doesn't block (you're on / above it) - except fences + the door, which
 // always do (no walking out of the map along a roof). Catwalk railings only exist up at their height.
 function collidePlayer(p, r) {
@@ -193,7 +237,14 @@ function segT(ax, az, bx, bz, b) {
 // bullets fly at chest height: only tall stuff (walls, buildings, tunnel walls, closed door) stops them, not crates
 // (from up high, anything lower than the shooter's chest no longer blocks)
 const bulletBlockers = (y = 0) => solids().filter((b) => b.h >= 1.3 && b.h > y + 0.6);
-function clearShot(ax, az, bx, bz, y = 0) { for (const b of bulletBlockers(y)) { const t = segT(ax, az, bx, bz, b); if (t !== null && t > 0.02) return false; } return true; }
+// ty = target's floor: the roof a target stands ON doesn't hide him (shooting up at a guard on a tower)
+function clearShot(ax, az, bx, bz, y = 0, ty = 0) {
+  for (const b of bulletBlockers(y)) {
+    if (ty >= b.h - 0.1 && bx >= b.x1 && bx <= b.x2 && bz >= b.z1 && bz <= b.z2) continue;
+    const t = segT(ax, az, bx, bz, b); if (t !== null && t > 0.02) return false;
+  }
+  return true;
+}
 function rayEnd(x, z, a, len) {
   const bx = x + Math.cos(a) * len, bz = z + Math.sin(a) * len; let tm = 1;
   for (const b of bulletBlockers()) { const t = segT(x, z, bx, bz, b); if (t !== null && t > 0.01 && t < tm) tm = t; }
@@ -201,8 +252,10 @@ function rayEnd(x, z, a, len) {
 }
 const alive = (g) => g.st !== 'dead' && g.st !== 'held';
 // low crates (h < 1.3) only hide a crouching target
+const gEye = (g) => (g.y || 0) + SIGHT_V.eye;
 function lineOfSight(g, p) {
-  if ((p.y || 0) > 0.3) return lineOfSight3(g, p);
+  if (Math.abs((p.y || 0) - (g.y || 0)) > 0.3) return lineOfSight3(g, p);
+  if ((g.y || 0) > 0.3) return lineOfSight3(g, p); // same deck up high: 3D, so lower roofs / ground stuff don't block
   for (const b of solids()) { if (b.h < 1.3 && !p.c) continue; if (b.h <= (p.y || 0) + 0.3) continue; if (segHitsBox(g.x, g.z, p.x, p.z, b)) return false; }
   return true;
 }
@@ -217,7 +270,7 @@ function seg3HitsBox(ax, ay, az, bx, by, bz, B, y0 = 0) {
 }
 // eye (1.6 m) -> target's chest. Buildings / walls / crates / posts block in full 3D; walk decks (gantry, barracks roof slab) are thin slabs.
 function lineOfSight3(g, p) {
-  const ty = targetY(p), ey = SIGHT_V.eye;
+  const ty = targetY(p), ey = gEye(g);
   for (const b of solids()) if (seg3HitsBox(g.x, ey, g.z, p.x, ty, p.z, b)) return false;
   for (const w of WALKS) if (seg3HitsBox(g.x, ey, g.z, p.x, ty, p.z, w, w.h - 0.2)) return false;
   return true;
@@ -231,13 +284,13 @@ function guardSees(g, p) {
   const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz), alert = world.alert > 0;
   let range = (p.p ? SIGHT.prone : p.c ? SIGHT.crouch : SIGHT.stand) + (alert ? 2 : 0);
   const inCone = Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < SIGHT.fovHalf;
-  if ((p.y || 0) <= 0.3) {
+  if (Math.abs((p.y || 0) - (g.y || 0)) <= 0.3) { // same floor (ground or the same deck): the original flat cone
     if (d > range || !(inCone || d < 1.1) || !lineOfSight(g, p)) return null;
     return { d, range, up: 0 };
   }
-  const dh = targetY(p) - SIGHT_V.eye, elev = Math.atan2(dh, Math.max(d, 1e-3)), vmax = world.alert === 2 ? SIGHT_V.upFovAlert : SIGHT_V.upFov;
-  if (elev > vmax) return null;                                   // straight overhead: outside his vertical cone
-  const up = clamp(elev / vmax, 0, 1), d3 = Math.hypot(d, dh);
+  const dh = targetY(p) - gEye(g), elev = Math.atan2(dh, Math.max(d, 1e-3)), vmax = world.alert === 2 ? SIGHT_V.upFovAlert : SIGHT_V.upFov;
+  if (elev > vmax || elev < -SIGHT_V.downFov) return null;        // straight over / under him: outside his vertical cone
+  const up = clamp(elev / vmax, 0, 1), d3 = Math.hypot(d, dh < 0 ? dh * SIGHT_V.downK : dh); // looking down off a deck: height costs less range
   range *= (p.rope ? SIGHT_V.rope : SIGHT_V.high) * (1 - SIGHT_V.steep * up);
   if (d3 > range || !(inCone || d3 < 1.3) || !lineOfSight3(g, p)) return null;
   return { d: d3, range, up };
@@ -291,10 +344,13 @@ const hazardTex = pixTex(16, (x, S) => { for (let i = -S; i < S * 2; i += 8) { x
 const tiled = (u, v) => { const t = concreteTex.clone(); t.repeat.set(Math.max(1, Math.round(u)), Math.max(1, Math.round(v))); t.needsUpdate = true; return t; };
 const concreteMat = (color, u, v) => new THREE.MeshLambertMaterial({ map: tiled(u, v), color, flatShading: true });
 let doorMesh = null;
+// CUTAWAY: tall buildings fade to a ghost while they hide a player from the top-down camera (see updateCutaway)
+const cutaway = [];
 for (const w of WALLS) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1, w.h, w.z2 - w.z1), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(COLORS[w.kind]));
   m.position.set((w.x1 + w.x2) / 2, w.h / 2, (w.z1 + w.z2) / 2); scene.add(m);
   if (w.kind === 'door') doorMesh = m;
+  if (w.kind === 'building' && w.h > 2) cutaway.push({ b: w, m, k: 1 });
 }
 // tunnel dressing: dark floor, roof slab, hazard-striped mouth frames, dim ceiling lamps with fake light pools
 const hazardMat = new THREE.MeshLambertMaterial({ map: hazardTex, color: 0xffffff, flatShading: true });
@@ -306,6 +362,7 @@ for (const t of TUNNELS) {
   const fl = new THREE.Mesh(new THREE.PlaneGeometry(lx, lz), concreteMat(0x3a4246, lx / 1.6, lz / 1.6)); fl.rotation.x = -Math.PI / 2; fl.position.set(cx, 0.03, cz); scene.add(fl);
   const roof = new THREE.Mesh(new THREE.BoxGeometry(lx + (along ? 0 : 2 * W), t.roof, lz + (along ? 2 * W : 0)), t.roof > 1 ? mat(COLORS.building) : concreteMat(0x8a9296, (along ? lx : lz) / 1.6, 1));
   roof.position.set(cx, TUNNEL_H + t.roof / 2, cz); scene.add(roof);
+  if (t.roof > 1) cutaway.push({ b: { x1: t.x1, x2: t.x2, z1: t.z1, z2: t.z2, h: TUNNEL_H + t.roof }, m: roof, k: 1, tun: 1 });
   for (const end of [-1, 1]) { // mouth frame at each open end + dark "throat" decal on the ground outside
     const ex = along ? (end < 0 ? t.x1 : t.x2) : cx, ez = along ? cz : (end < 0 ? t.z1 : t.z2);
     const span = (along ? lz : lx) + 2 * W + 0.2;
@@ -333,11 +390,11 @@ const switchMeshes = SWITCHES.map((s) => {
   pad.position.y = 0.04; g.add(pad);
   const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.1, 0.3), mat(0x888888)); post.position.set(0, 0.55, -0.9); g.add(post);
   const light = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.32), new THREE.MeshBasicMaterial({ color: 0x660000 })); light.position.set(0, 1.0, -0.9); g.add(light);
-  g.position.set(s.x, 0, s.z); scene.add(g);
+  g.position.set(s.x, s.y || 0, s.z); scene.add(g);
   return { pad, light };
 });
 const extractMesh = new THREE.Mesh(new THREE.RingGeometry(EXTRACT.r - 0.3, EXTRACT.r, 24), new THREE.MeshBasicMaterial({ color: 0x40ff80, transparent: true, opacity: 0.7, side: THREE.DoubleSide }));
-extractMesh.rotation.x = -Math.PI / 2; extractMesh.position.set(EXTRACT.x, 0.05, EXTRACT.z); scene.add(extractMesh);
+extractMesh.rotation.x = -Math.PI / 2; extractMesh.position.set(EXTRACT.x, EXTRACT.y + 0.05, EXTRACT.z); scene.add(extractMesh);
 
 function marker(color) { // little floating triangle so you can find each other
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.4, 3), new THREE.MeshBasicMaterial({ color }));
@@ -538,7 +595,8 @@ const _am = new THREE.Vector3();
 function aimPoint(p, mesh, on) {
   const i = on ? autoTarget(p) : -1; if (i < 0) return null;
   const g = world.guards[i]; mesh.muzzleWorld(_am);
-  return { x: g.rx ?? g.x, y: Math.max(0.45, Math.min(1.15, _am.y)), z: g.rz ?? g.z };
+  const py = p.y || 0, gy = g.y || 0; // same floor: keep the arms near level; other floor: aim at his chest
+  return { x: g.rx ?? g.x, y: Math.abs(py - gy) < 0.3 ? py + Math.max(0.45, Math.min(1.15, _am.y - py)) : gy + 1.1, z: g.rz ?? g.z };
 }
 const myLaser = makeLaser(), otherLaser = makeLaser();
 // grapple rope: dark cord hanging straight down the wall face from the claw, plus a short grip segment to the hands.
@@ -701,7 +759,7 @@ function holsterHint() { const now = performance.now(); if (now - hintT < 1500) 
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
 // ACT priority: takedown (only from behind) > door switch > climb / co-op / grapple (traversal) > fire handgun (only if drawn)
 // While mid-climb ACT = let go of a ladder / stand up from a boost kneel; F never fires while climbing.
-const nearSwitch = () => me.y < 0.3 && SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
+const nearSwitch = () => SWITCHES.some((s) => Math.abs(me.y - s.y) < 0.3 && Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
 let curTm = null; // traversal option ACT would use right now (refreshed every frame in updateHud)
 function actMode() {
   if (me.tr) return me.tr.k === 'ld' || (ON_LINE(me.tr.k) && me.tr.ph === 'line') ? 'letgo' : me.tr.k === 'kn' ? 'stand' : 'busy';
@@ -725,14 +783,14 @@ function doInteract() {
 // ---------------------------------------------------------------- combat: takedown + handgun
 // Guard index p can take down from behind, or -1. Uses each client's latest guard state (host: authoritative, guest: net).
 function takedownTarget(p, range = TD.range, behind = TD.behind) {
-  if (p.tun >= 0 || p.td || p.tr || (p.y || 0) > 0.3) return -1;
+  if (p.tun >= 0 || p.td || p.tr) return -1;
   let best = -1, bd = 1e9;
   world.guards.forEach((g, i) => {
-    if (!alive(g)) return;
+    if (!alive(g) || Math.abs((p.y || 0) - (g.y || 0)) > 0.3) return; // same floor only (ground or his deck)
     const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz);
     if (d > range || d >= bd) return;
     if (Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < behind) return; // in front of / beside him -> no
-    if (!lineOfSight(g, { x: p.x, z: p.z, c: true })) return; // nothing in between (crates count)
+    if (!lineOfSight(g, { x: p.x, z: p.z, y: p.y || 0, c: true })) return; // nothing in between (crates count)
     best = i; bd = d;
   });
   return best;
@@ -765,7 +823,7 @@ function autoTarget(p = me) {
     if (d > GUN.range) return;
     const off = Math.abs(angDiff(Math.atan2(dz, dx), pa));
     if (off > cone && d > 1.0) return;
-    if (!clearShot(px, pz, gx, gz, p.y || 0)) return;
+    if (!clearShot(px, pz, gx, gz, p.y || 0, g.y || 0)) return;
     const score = d + off * 8; if (score < best) { best = score; tgt = i; }
   });
   return tgt;
@@ -789,7 +847,7 @@ function fireGun() {
   me.bloom = Math.min(GUN.bloomMax, me.bloom + GUN.bloom);
   me.wob = GUN.wobble; me.wobA = Math.random() * 6.28; shake = Math.max(shake, GUN.kickShake);
   meMesh.g.rotation.y = -me.a;
-  gunFx(meMesh, end.x, end.z, tgt >= 0); gunSound(1);
+  gunFx(meMesh, end.x, end.z, tgt >= 0, tgt >= 0 ? GUARDS[tgt].y + 1.15 : null); gunSound(1);
   if (navigator.vibrate) navigator.vibrate(30);
   const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), y: r2(me.y), ex: r2(end.x), ez: r2(end.z) };
   if (role === 'host') hostShot(msg, 0);
@@ -799,7 +857,7 @@ function fireGun() {
 function hostShot(m, pidx) {
   if (world.phase !== 'play') return;
   const g = world.guards[m.g];
-  if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < GUN.range + 2 && clearShot(m.x, m.z, g.x, g.z, m.y || 0)) {
+  if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < GUN.range + 2 && clearShot(m.x, m.z, g.x, g.z, m.y || 0, g.y || 0)) {
     g.st = 'dead'; g.by = pidx; world.kills++;
   }
   for (const o of world.guards) {
@@ -888,8 +946,8 @@ function updateLocal(dt) {
     if (me.y <= gnd) { me.y = gnd; me.vy = 0; landed(me.fallFrom - gnd); }
   } else { me.y = gnd; me.vy = 0; }
   // auto-grab: keep pushing into a ladder / drainpipe from its foot for a moment = climb on (ACT does it instantly)
-  if (play && me.y < 0.05 && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p) {
-    const ci = CLIMBS.findIndex((c) => hz(me, c) < 0.75 && Math.abs(angDiff(c.a, wantDir)) < 0.6);
+  if (play && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p) {
+    const ci = CLIMBS.findIndex((c) => Math.abs(me.y - c.y0) < 0.05 && hz(me, c) < 0.75 && Math.abs(angDiff(c.a, wantDir)) < 0.6);
     me.grabT = ci >= 0 ? me.grabT + dt : 0;
     if (me.grabT > 0.25) { me.grabT = 0; startTrav({ m: 'climb', i: ci }); return; }
   } else me.grabT = 0;
@@ -961,7 +1019,7 @@ function travMode() {
   let down = null, downD = 1e9; // ladder top vs a grapple ring close by: the nearer one wins
   for (let i = 0; i < CLIMBS.length; i++) {
     const c = CLIMBS[i], dd = Math.hypot(me.x - c.lx, me.z - c.lz);
-    if (me.y < 0.3 && hz(me, c) < 0.85) return { m: 'climb', i };
+    if (Math.abs(me.y - c.y0) < 0.3 && hz(me, c) < 0.85) return { m: 'climb', i };
     if (Math.abs(me.y - c.top) < 0.2 && dd < 0.8 && dd < downD) { down = { m: 'down', i }; downD = dd; }
   }
   for (let i = 0; i < LINKS.length; i++) { // vertical lines: foot ring (ground, facing the wall) = grapple up, top ring = rappel down
@@ -1036,11 +1094,11 @@ function updateTrav(dt, jx, jz, mag) {
       const c = CLIMBS[T.i], d = mag > 0.15 ? jx * Math.cos(c.a) + jz * Math.sin(c.a) : 0;
       const up = mag < 0.15 ? 0 : Math.abs(d) > 0.35 ? d : -jz; // push into the wall (or W / up) = climb, away = down
       const hang = c.top - TRAV.hangBelow, y0 = me.y;
-      me.y = clamp(me.y + clamp(up * 1.3, -1, 1) * TRAV.climbSpeed[c.kind] * dt, 0, hang);
+      me.y = clamp(me.y + clamp(up * 1.3, -1, 1) * TRAV.climbSpeed[c.kind] * dt, c.y0, hang); // y0: ladders can start on a deck
       me.x = c.x; me.z = c.z; me.a = c.a; me.moving = Math.abs(me.y - y0) > 1e-4;
       if (Math.floor(me.y / 0.32) !== Math.floor(y0 / 0.32)) beep(c.kind === 'pipe' ? 520 : 240, 0.025, 'square', 0.03);
       if (me.y >= hang - 1e-3 && up > 0.3) me.tr = { k: 'mt', i: T.i, t: 0, dur: TRAV.topVaultT, sx: me.x, sy: me.y, sz: me.z, tx: c.lx, ty: c.top, tz: c.lz };
-      else if (me.y <= 1e-3 && up < -0.3) { me.tr = null; me.x -= Math.cos(c.a) * 0.35; me.z -= Math.sin(c.a) * 0.35; }
+      else if (me.y <= c.y0 + 1e-3 && up < -0.3) { me.tr = null; me.x -= Math.cos(c.a) * 0.35; me.z -= Math.sin(c.a) * 0.35; }
       break;
     }
     case 'mt': case 'md': {
@@ -1183,9 +1241,8 @@ function players() {
 }
 function armSwitch(pi) {
   const p = pi === 0 ? me : other;
-  if ((p.y || 0) > 0.3) return;
   SWITCHES.forEach((s, i) => {
-    if (Math.hypot(p.x - s.x, p.z - s.z) < 1.8) { world.sw[i] = SWITCH_WINDOW; world.swBy[i] = pi; }
+    if (Math.abs((p.y || 0) - s.y) < 0.3 && Math.hypot(p.x - s.x, p.z - s.z) < 1.8) { world.sw[i] = SWITCH_WINDOW; world.swBy[i] = pi; }
   });
   if (!world.door && world.sw[0] > 0 && world.sw[1] > 0 && (solo || world.swBy[0] !== world.swBy[1])) world.door = true;
   if (solo && !world.door && (world.sw[0] > 0 || world.sw[1] > 0)) world.door = true;
@@ -1241,7 +1298,7 @@ function guardFire(g, gi, tgt, d) {
     hit = Math.abs(err) < Math.atan2(hw, Math.max(0.3, d)) && F.climb * k * d < vt; // muzzle climb: later rounds sail high
     if (hit) { ex = tgt.x; ez = tgt.z; ey = targetY(tgt) + (Math.random() - 0.5) * 0.2; damagePlayer(tgt.idx, F.dmg, 'gun'); }
   }
-  if (!hit) { const e = rayEnd(g.x, g.z, a, F.range + 4); ex = e.x; ez = e.z; ey = Math.min(3.2, 1.1 + F.climb * k * Math.hypot(ex - g.x, ez - g.z) * 1.4); }
+  if (!hit) { const e = rayEnd(g.x, g.z, a, F.range + 4); ex = e.x; ez = e.z; ey = (g.y || 0) + Math.min(3.2, 1.1 + F.climb * k * Math.hypot(ex - g.x, ez - g.z) * 1.4); }
   // loud: keeps ALERT topped up and drags nearby guards in
   world.alertT = ALERT_TIME;
   for (const o of world.guards) if (o !== g && alive(o) && o.st !== 'chase' && Math.hypot(o.x - g.x, o.z - g.z) < F.noise) { o.st = 'chase'; o.tx = tgt ? tgt.x : g.tx; o.tz = tgt ? tgt.z : g.tz; o.give = 8; }
@@ -1281,11 +1338,12 @@ function hostUpdate(dt) {
       const v = guardSees(g, p);
       if (v && v.d < seenD) { seen = p; seenD = v.d; seenRange = v.range; seenUp = v.up; }
     }
-    g.seeUp = seen && seen.y > 0.3 ? 1 : 0;
+    const offLvl = seen && Math.abs((seen.y || 0) - (g.y || 0)) > 0.3;
+    g.seeUp = offLvl ? 1 : 0;
     if (seen) {
       anySeen = true;
       // looking up = slower to be sure of what he saw (and calm guards aren't scanning rooftops)
-      const upK = seen.y > 0.3 ? (1 - SIGHT_V.slowUp * seenUp) * (world.alert === 0 ? SIGHT_V.calmUp : 1) : 1;
+      const upK = offLvl ? (1 - SIGHT_V.slowUp * seenUp) * (world.alert === 0 ? SIGHT_V.calmUp : 1) : 1;
       const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.p ? 0.35 : seen.c ? 0.6 : 1) * upK;
       g.meter = Math.min(1, g.meter + rate * dt);
       if (g.meter >= 1) { triggerAlert(seen); }
@@ -1294,7 +1352,7 @@ function hostUpdate(dt) {
     } else g.meter = Math.max(0, g.meter - 0.3 * dt);
     // --- hearing
     if (g.st === 'patrol' || g.st === 'investigate' || g.st === 'search') {
-      for (const p of ps) if (p.noise > 0 && Math.hypot(p.x - g.x, p.z - g.z) < p.noise) {
+      for (const p of ps) if (p.noise > 0 && Math.hypot(p.x - g.x, p.z - g.z, (p.y || 0) - (g.y || 0)) < p.noise) {
         g.st = 'investigate'; g.tx = p.x; g.tz = p.z; g.wait = 3; g.give = 7; g.meter = Math.max(g.meter, 0.35);
       }
     }
@@ -1326,7 +1384,7 @@ function hostUpdate(dt) {
     // --- FAMAS (ALERT chase with line of sight)
     guardGun(g, world.guards.indexOf(g), ps, dt);
     // --- melee: a chasing guard that reaches you clubs you with the rifle (damage + i-frames; no more instant "caught")
-    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && p.tun < 0 && p.y < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < FAMAS.meleeR) {
+    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && p.tun < 0 && Math.abs((p.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < FAMAS.meleeR) {
       if (damagePlayer(p.idx, FAMAS.melee, 'melee')) { const gm = guardMeshes[world.guards.indexOf(g)]; if (gm) gm.shot = (gm.shot || 0) + 1; }
     }
     if (world.phase !== 'play') return;
@@ -1335,7 +1393,8 @@ function hostUpdate(dt) {
   if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { if (alive(g)) { g.st = 'patrol'; g.meter = 0; } }); } }
   else if (world.alert === 1) { world.cautionT -= dt; if (world.cautionT <= 0) world.alert = 0; }
   // --- extract
-  world.ext = [Math.hypot(me.x - EXTRACT.x, me.z - EXTRACT.z) < EXTRACT.r, peerConnected && Math.hypot(other.x - EXTRACT.x, other.z - EXTRACT.z) < EXTRACT.r];
+  const atExt = (p) => Math.abs((p.y || 0) - EXTRACT.y) < 0.4 && Math.hypot(p.x - EXTRACT.x, p.z - EXTRACT.z) < EXTRACT.r;
+  world.ext = [atExt(me), peerConnected && atExt(other)];
   if (world.door && world.ext[0] && (solo || world.ext[1])) { world.phase = 'win'; world.finalT = world.t; }
 }
 function hostRestart() {
@@ -1365,7 +1424,7 @@ function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a
   td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y) }); }
 function netTrav(o, y, tk, ti, tp) { o.y = y || 0; o.tk = tk || ''; o.ti = ti ?? -1; o.tp = tp || 0; }
 // partner fired: tracer + recoil on their model (host also applies the hit)
-function remoteShot(d) { other.shot++; other.gd = 1; gunFx(otherMesh, d.ex, d.ez, d.g >= 0); gunSound(0.6); }
+function remoteShot(d) { other.shot++; other.gd = 1; gunFx(otherMesh, d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null); gunSound(0.6); }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -1388,7 +1447,7 @@ function onGameMsg(d) {
   else if (d.t === 'cox' && role === 'guest') toast('Can\'t - get in position', 900, '#ffb36b');
   else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
     const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
-    const ok = g && alive(g) && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
+    const ok = g && alive(g) && Math.abs((other.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
     if (!ok || !hostTakedown(d.g, 1)) net.relay({ t: 'tdx' });
     else { other.x = d.x; other.z = d.z; other.td = 0; }
   }
@@ -1561,8 +1620,12 @@ function drawRadar() {
   for (const b of solids()) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = 'rgba(216,176,40,0.35)'; // tunnels
   for (const t of TUNNELS) rc.fillRect(X(t.x1), Z(t.z1), (t.x2 - t.x1) * sx, (t.z2 - t.z1) * sz);
-  rc.fillStyle = 'rgba(120,200,255,0.45)'; // gantry / roof decks
-  for (const b of WALKS) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
+  for (const b of WALKS) { // catwalks / bridges: L1 pale blue, L2 brighter
+    rc.fillStyle = b.h > 5 ? 'rgba(190,235,255,0.7)' : 'rgba(120,200,255,0.45)';
+    rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
+  }
+  rc.fillStyle = 'rgba(190,235,255,0.35)'; // L2 tower roofs
+  for (const b of WALLS) if (b.kind === 'building' && b.h > 5) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = '#ffd040'; for (const c of CLIMBS) rc.fillRect(X(c.x) - 1.5, Z(c.z) - 1.5, 3, 3); // ladders / pipe
   for (const c of COOPS) rc.fillRect(X(c.x) - 2.5, Z(c.z) - 1, 5, 2);
   rc.fillStyle = '#ff9a30'; // grapple anchors (vertical lines up a wall face)
@@ -1573,12 +1636,27 @@ function drawRadar() {
     rc.fillStyle = 'rgba(255,224,102,0.35)'; rc.beginPath(); rc.moveTo(X(g.rx), Z(g.rz));
     rc.arc(X(g.rx), Z(g.rz), SIGHT.stand * sx, g.ra - SIGHT.fovHalf, g.ra + SIGHT.fovHalf); rc.fill();
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
+    if (g.y > 0.3) { rc.strokeStyle = g.y > 5 ? '#ffffff' : '#ffb0b0'; rc.strokeRect(X(g.rx) - 3.5, Z(g.rz) - 3.5, 7, 7); } // up on a deck / roof
   }
   if (peerConnected) { rc.fillStyle = '#' + PLAYER_LOOK[otherLook].accent.toString(16).padStart(6, '0'); rc.fillRect(X(other.rx) - 3, Z(other.rz) - 3, 6, 6); }
   rc.fillStyle = '#ffffff'; rc.fillRect(X(me.x) - 3, Z(me.z) - 3, 6, 6);
 }
 
 // ---------------------------------------------------------------- render
+// CUTAWAY: a tall building between the camera and a player fades to a see-through ghost (decks do the same in
+// traverse.js) so the top-down view stays readable when you are under / behind the L2 towers.
+function updateCutaway(dt) {
+  const vs = [me]; if (peerConnected) vs.push({ x: other.rx, y: other.ry || 0, z: other.rz });
+  for (const c of cutaway) {
+    const b = c.b, hide = vs.some((v) => b.h > v.y + 1.4 && occludes(b, b.h, v, 0.35) && !(v.x > b.x1 && v.x < b.x2 && v.z > b.z1 && v.z < b.z2 && !c.tun));
+    const k = c.k + ((hide ? 0.28 : 1) - c.k) * Math.min(1, dt * 7);
+    if (Math.abs(k - c.k) < 1e-4 && k === c.k) continue;
+    c.k = k > 0.995 ? 1 : k;
+    const m = c.m.material, tr = c.k < 1;
+    if (m.transparent !== tr) { m.transparent = tr; m.depthWrite = !tr; m.needsUpdate = true; }
+    m.opacity = c.k;
+  }
+}
 const CAM_H = 12, CAM_Z = 7.2; // top-down cam height / back-offset before zoom (was 15 / 9)
 const topCam = new THREE.Vector3(me.x, CAM_H, me.z + CAM_Z), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
 const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
@@ -1614,8 +1692,9 @@ function hurtCheck() {
     const gx = g.rx ?? g.x, gz = g.rz ?? g.z, cand = [{ x: me.x, z: me.z }, ...(peerConnected ? [{ x: other.rx, z: other.rz }] : [])];
     let k = cand[0], bd = 1e9; for (const c of cand) { const d = Math.hypot(c.x - gx, c.z - gz); if (d < bd) { bd = d; k = c; } }
     if (role === 'host' && g.by != null) k = g.by === mi || !peerConnected ? cand[0] : cand[1] || cand[0];
-    if (prev === 'held') bloodOn(m, k.x, k.z, 14, 0); // knife finish: burst, no flinch (the hold already sells it)
-    else hurtActor(m, k.x, k.z, 30, 0); // shot dead: big spray + snap back as he drops
+    const fy = GUARDS[gi].y;
+    if (prev === 'held') bloodOn(m, k.x, k.z, 14, fy); // knife finish: burst, no flinch (the hold already sells it)
+    else hurtActor(m, k.x, k.z, 30, fy); // shot dead: big spray + snap back as he drops
   });
 }
 // which climb spot / grapple ring to highlight (whatever ACT would use)
@@ -1665,7 +1744,8 @@ function render(dt) {
     crouch: other.c && !other.p && !oBusy, prone: other.p && !oBusy, dead: deadOther, hurt: otherMesh.hurtN || 0, hurtFrom: otherMesh.hurtA, hurtAmt: otherMesh.hurtD, takedown: other.td >= 0 ? other.td : null, aim: (!!other.gd || !!other.eq) && !oBusy, armed: !!other.eq && !oBusy, shot: other.shot, trav: oTr });
   updateRope(myRope, meMesh, me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y, 1));
   updateRope(otherRope, otherMesh, peerConnected ? other.tk : '', other.ti, other.tp);
-  travFx.tick(dt, travNear());
+  travFx.tick(dt, travNear(), [me, peerConnected ? { x: other.rx, y: other.ry || 0, z: other.rz } : null]);
+  updateCutaway(dt);
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
   updateLaser(myLaser, meMesh, me.eq && !me.td && !myBusy && play && !deadMe, dt);
   updateLaser(otherLaser, otherMesh, peerConnected && !!other.eq && other.td < 0 && !oBusy && play && !deadOther, dt);
@@ -1673,7 +1753,7 @@ function render(dt) {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
     const m = guardMeshes[i];
-    m.g.position.set(g.rx, 0, g.rz); m.g.rotation.y = -g.ra;
+    m.g.position.set(g.rx, GUARDS[i].y, g.rz); m.g.rotation.y = -g.ra; // guards never change floor: y is level data
     if (dt > 0) { const v = Math.hypot(g.rx - m.px, g.rz - m.pz) / dt; m.spd += (Math.min(v, 8) - m.spd) * Math.min(1, dt * 8); }
     m.px = g.rx; m.pz = g.rz;
     const down = g.st === 'dead', held = g.st === 'held', live = !down && !held;
@@ -1772,12 +1852,12 @@ function updateHud() {
   if (world.phase === 'over') obj = 'GAME OVER';
   else if (!world.door) {
     const armed = world.sw.filter((v) => v > 0).length;
-    obj = solo ? 'Stand on a switch pad and press ACT' :
+    obj = solo ? 'Stand on a switch pad (red door / relay platform) and press ACT' :
       armed ? `Switch armed! Partner: press the OTHER switch now (${Math.max(...world.sw).toFixed(1)}s)` :
-      'Both stand on the two switch pads by the red door, then ACT within 2s of each other';
+      'Switches: one by the red door, one up on the RELAY PLATFORM - ACT within 2s of each other';
   } else {
     const n = world.ext.filter(Boolean).length;
-    obj = solo ? 'Door open - reach EXTRACT' : `Door open - both get to EXTRACT (${n}/2 there)`;
+    obj = solo ? 'Door open - climb the EXFIL TOWER to EXTRACT' : `Door open - both climb the EXFIL TOWER to EXTRACT (${n}/2 there)`;
   }
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
@@ -1818,7 +1898,7 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // debug hook for automated tests
-window.__ds = { me, other, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
+window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, other, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
   travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };
