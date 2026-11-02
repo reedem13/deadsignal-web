@@ -290,28 +290,61 @@ export function makeSneaker(scene, opts = {}) {
     const c = clamp((h - ANKLE - THIGH * Math.cos(t)) / SHIN, -1, 1);
     return -Math.acos(c) - t;
   };
-  let phase = 0, crouchK = 0, moveK = 0, runK = 0, deadK = 0, proneK = 0;
+  // Blend weights use critically-damped springs (SmoothDamp) instead of plain exponential lerps: transitions ease in AND
+  // out, so stance changes / starts / stops roll through instead of popping. Gait phase is distance-driven
+  // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
+  const K = (smooth) => ({ x: 0, v: 0, smooth });
+  const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4) };
+  let phase = 0, prevSpd = 0, prevYaw = null;
   const mix = (a, b, k) => a + (b - a) * k;
+  const sstep = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+  function damp(st, target, dt) {
+    if (dt <= 0) return st.x;
+    const om = 2 / st.smooth, x = om * dt, e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+    const ch = st.x - target, tmp = (st.v + om * ch) * dt;
+    st.v = (st.v - om * tmp) * e; st.x = target + (ch + tmp) * e;
+    return st.x;
+  }
+  const FALLBACK = { prone: 1.1, crouch: 1.8, run: 5.2, walk: 3.2 };
   function update(dt, s) {
-    const lerp = (a, b, k) => a + (b - a) * Math.min(1, k * dt);
-    crouchK = lerp(crouchK, s.crouch && !s.prone ? 1 : 0, 10);
-    proneK = lerp(proneK, s.prone && !s.dead ? 1 : 0, 6);
-    moveK = lerp(moveK, s.moving && !s.dead ? 1 : 0, 10);
-    runK = lerp(runK, s.run ? 1 : 0, 6);
-    deadK = lerp(deadK, s.dead ? 1 : 0, 6);
-    const stride = s.prone ? 4.2 : s.crouch ? 6.5 : s.run ? 11 : 8.5;
-    phase += dt * stride * moveK;
-    const sw = Math.sin(phase), cw = Math.cos(phase), t = performance.now() / 1000;
+    // speed in m/s: real speed from the game if given, else derived from the flags (character.html preview)
+    const flagSpd = s.moving && !s.dead ? (s.prone ? FALLBACK.prone : s.crouch ? FALLBACK.crouch : s.run ? FALLBACK.run : FALLBACK.walk) : 0;
+    const spd = Math.max(0, damp(W.spd, s.dead ? 0 : (s.speed ?? flagSpd), dt));
+    const crouchK = sstep(damp(W.crouch, s.crouch && !s.prone ? 1 : 0, dt));
+    const proneK = sstep(damp(W.prone, s.prone && !s.dead ? 1 : 0, dt));
+    const deadK = sstep(damp(W.dead, s.dead ? 1 : 0, dt));
+    // gait amplitude ramps up with speed (momentum: first steps are short, full stride only at cruising speed)
+    const ref = s.prone ? 0.7 : s.crouch ? 1.2 : 2.2;
+    const moveK = clamp(damp(W.move, s.dead ? 0 : sstep(spd / ref), dt), 0, 1);
+    const runTarget = s.crouch || s.prone ? 0 : s.speed != null ? sstep((spd - 3.5) / 1.4) : (s.run ? 1 : 0);
+    const runK = clamp(damp(W.run, runTarget, dt), 0, 1);
+    // stride length: radians of gait phase per metre travelled (walk 2.65, run 2.1, crouch 3.6, prone crawl 3.8)
+    const radPerM = mix(mix(mix(2.65, 2.1, runK), 3.6, crouchK), 3.8, proneK);
+    phase += dt * Math.max(spd, moveK * 0.4) * radPerM;
+    const sw = Math.sin(phase), t = performance.now() / 1000;
+    // body reacts to momentum: lean into acceleration, rock back when braking, bank into turns
+    const acc = dt > 0 ? (spd - prevSpd) / dt : 0; prevSpd = spd;
+    const lean = damp(W.lean, clamp(acc * 0.018, -0.1, 0.12) * (1 - proneK), dt);
+    const yaw = g.rotation.y; let yawRate = 0;
+    if (prevYaw !== null && dt > 0) { let d = yaw - prevYaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; yawRate = d / dt; }
+    prevYaw = yaw;
+    const roll = damp(W.roll, clamp(-yawRate * spd * 0.012, -0.12, 0.12) * (1 - proneK), dt);
+    const idle = damp(W.idle, 1 - moveK, dt) * (1 - deadK);
+    const breathe = Math.sin(t * 1.7) * idle, sway = Math.sin(t * 0.55) * idle;
 
-    // hip height: stand 0.92 -> crouch 0.56, small bob while walking
-    const bob = moveK * (0.02 + runK * 0.03) * Math.abs(cw);
-    hips.position.y = HIP_Y - crouchK * 0.26 - bob + (1 - moveK) * Math.sin(t * 2) * 0.004;
-    hips.rotation.y = moveK * sw * 0.12;
+    // hip height: stand 0.92 -> crouch 0.56. Bob is lowest at full stride (sin^2), smooth instead of the old |cos| cusp.
+    const bob = moveK * (0.022 + runK * 0.03) * sw * sw;
+    hips.position.y = HIP_Y - crouchK * 0.26 - bob + breathe * 0.005;
+    hips.position.z = moveK * Math.sin(phase - 0.4) * 0.022 * (1 - runK * 0.5) + sway * 0.012; // weight shift over the stance leg
+    hips.rotation.y = moveK * Math.sin(phase - 0.15) * 0.12;
     const h = hips.position.y - 0.04; // hip joints sit 4cm below the hips pivot
-    // torso: upright -> lean forward in crouch / run (negative z = forward)
-    torso.rotation.z = -(crouchK * 0.6 + runK * moveK * 0.25 + moveK * 0.05);
+    // torso: upright -> lean forward in crouch / run (negative z = forward), plus the momentum lean
+    torso.rotation.z = -(crouchK * 0.6 + runK * moveK * 0.25 + moveK * 0.05 + lean) - breathe * 0.012;
     torso.rotation.y = -hips.rotation.y * 1.3;
-    headPivot.rotation.z = crouchK * 0.45 + runK * moveK * 0.2; // keep eyes on the horizon
+    torso.rotation.x = -roll * 0.3 + sway * 0.015;
+    // head: keep eyes on the horizon, slightly lagged so it settles rather than snaps
+    headPivot.rotation.z = crouchK * 0.45 + runK * moveK * 0.2 + lean * 0.8;
+    headPivot.rotation.y = -torso.rotation.y * 0.5 + sway * 0.06;
     // legs: crouch base pose (front/back stagger like the crouch ref) + walk swing, IK keeps feet planted-ish
     for (const lg of legs) {
       const ph = lg.side === 1 ? 0 : Math.PI;
@@ -319,18 +352,19 @@ export function makeSneaker(scene, opts = {}) {
       const base = crouchK * (lg.side === -1 ? 0.95 : -0.5); // left leg forward, right leg back (lunge)
       const th = base + swing;
       let kn = legIK(th, h);
-      const lift = Math.max(0, Math.cos(phase + ph)) * moveK * (0.5 + runK * 0.6); // bend knee on the swing-through
+      const up = Math.max(0, Math.cos(phase + ph)), liftS = up * up * (3 - 2 * up); // eased swing-through (no kink at contact)
+      const lift = liftS * moveK * (0.5 + runK * 0.6);
       kn -= lift;
       lg.hip.rotation.z = th; lg.knee.rotation.z = kn; lg.ankle.rotation.z = -(th + kn) - lift * 0.4;
       lg.hip.rotation.x = -lg.side * crouchK * 0.08;
     }
-    // arms: relaxed at sides, swing opposite to legs; crouch = forearms up in a ready guard like the ref
+    // arms: relaxed at sides, swing opposite to legs with a little follow-through lag; crouch = forearms up in a ready guard
     for (const a of arms) {
       const ph = a.side === 1 ? Math.PI : 0;
-      const swing = Math.sin(phase + ph) * moveK * (0.4 + runK * 0.4) * (1 - crouchK * 0.6);
-      a.sh.rotation.z = swing + crouchK * (a.side === -1 ? 0.9 : 0.35) + runK * moveK * 0.2;
-      a.sh.rotation.x = -a.side * (0.1 + crouchK * 0.15);
-      a.el.rotation.z = 0.15 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.0 + moveK * 0.2;
+      const swing = Math.sin(phase + ph - 0.3) * moveK * (0.4 + runK * 0.4) * (1 - crouchK * 0.6);
+      a.sh.rotation.z = swing + crouchK * (a.side === -1 ? 0.9 : 0.35) + runK * moveK * 0.2 + breathe * 0.02;
+      a.sh.rotation.x = -a.side * (0.1 + crouchK * 0.15 + breathe * 0.015) + roll * 0.5;
+      a.el.rotation.z = 0.15 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.0 + moveK * 0.2 + Math.max(0, swing) * 0.35;
       a.wr.rotation.z = crouchK * -0.2;
     }
     // PRONE: blend every joint toward a belly-down pose, then lay the whole rig flat (head forward along +x).
@@ -339,14 +373,17 @@ export function makeSneaker(scene, opts = {}) {
     if (pk > 0.001) {
       const crawl = moveK * pk, cs = Math.sin(phase);
       hips.position.y = mix(hips.position.y, HIP_Y, pk);
+      hips.position.z = mix(hips.position.z, 0, pk);
       hips.rotation.y = mix(hips.rotation.y, 0, pk);
       hips.rotation.x = crawl * cs * 0.12; // hips roll side to side
-      torso.rotation.z = mix(torso.rotation.z, 0.14, pk); // chest propped up a little on the elbows
-      torso.rotation.y = mix(torso.rotation.y, crawl * cs * 0.1, pk);
-      torso.rotation.x = -crawl * cs * 0.08;
+      torso.rotation.z = mix(torso.rotation.z, 0.14 + breathe * 0.02, pk); // chest propped up a little on the elbows
+      torso.rotation.y = mix(torso.rotation.y, crawl * Math.sin(phase - 0.3) * 0.1, pk);
+      torso.rotation.x = mix(torso.rotation.x, -crawl * cs * 0.08, pk);
       headPivot.rotation.z = mix(headPivot.rotation.z, 1.2, pk); // chin up, eyes forward
+      headPivot.rotation.y = mix(headPivot.rotation.y, -crawl * cs * 0.06, pk);
       for (const lg of legs) {
-        const draw = 0.12 + crawl * Math.max(0, lg.side * cs) * 1.1; // 0 = straight leg, 1 = knee pulled up beside the hip
+        const pull = Math.max(0, lg.side * cs), pullS = pull * pull * (3 - 2 * pull);
+        const draw = 0.12 + crawl * pullS * 1.1; // 0 = straight leg, 1 = knee pulled up beside the hip
         lg.hip.rotation.z = mix(lg.hip.rotation.z, 0.05, pk);
         lg.knee.rotation.z = mix(lg.knee.rotation.z, 0, pk);
         lg.ankle.rotation.z = mix(lg.ankle.rotation.z, -1.1, pk); // toes dug in
@@ -354,7 +391,7 @@ export function makeSneaker(scene, opts = {}) {
         lg.knee.rotation.x = mix(0, lg.side * 1.5 * draw, pk);
       }
       for (const a of arms) {
-        const reach = crawl * Math.max(0, -a.side * cs); // opposite arm to the drawn knee reaches forward
+        const rr = Math.max(0, -a.side * Math.sin(phase - 0.25)), reach = crawl * rr * rr * (3 - 2 * rr); // opposite arm reaches
         a.sh.rotation.z = mix(a.sh.rotation.z, 0, pk);
         a.el.rotation.z = mix(a.el.rotation.z, 0, pk);
         a.wr.rotation.z = mix(a.wr.rotation.z, 0, pk);
@@ -362,7 +399,7 @@ export function makeSneaker(scene, opts = {}) {
         a.el.rotation.x = mix(0, -a.side * 1.8 * (1 - reach), pk); // forearms forward, hands near the head
       }
     } else {
-      hips.rotation.x = 0; torso.rotation.x = 0;
+      hips.rotation.x = 0;
       for (const lg of legs) lg.knee.rotation.x = 0;
       for (const a of arms) a.el.rotation.x = 0;
     }
@@ -371,6 +408,7 @@ export function makeSneaker(scene, opts = {}) {
     inner.rotation.z = -flat * Math.PI / 2;
     inner.position.y = mix(deadK * 0.16, 0.14, pk);
     inner.position.x = mix(deadK * 0.1, -0.78, pk);
+    rig.rotation.x = roll * (1 - flat); // bank into turns from the feet
   }
   update(0, {});
   return { g, inner, update, materials: M, head: headPivot };

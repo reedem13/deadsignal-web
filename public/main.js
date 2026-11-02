@@ -56,6 +56,9 @@ const GUARD_PATHS = [
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.8, investigate: 2.6, chase: 4.6 };
 const NOISE = { run: 6, walk: 2.2 };
+// Momentum (players only): velocity ramps toward the stick/keys target instead of snapping. Kept light for stealth:
+// walk reaches full speed in ~0.2s, run in ~0.33s; stops coast for ~0.15s (walk) / ~0.25s (run).
+const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
 const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
 
@@ -70,8 +73,9 @@ let solo = false;
 let roomCode = '';
 let peerConnected = false;
 // c = low (crouched OR prone; this is what older clients read as "crouch"), p = prone, tun = tunnel index or -1
-const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1 };
-const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0 };
+const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0 };
+const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0, nvx: 0, nvz: 0, pt: 0 };
+const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play';
 
@@ -338,6 +342,8 @@ function updateLocal(dt) {
   if (mag > 1) { jx /= mag; jz /= mag; mag = 1; }
   const play = world.phase === 'play';
   const baseSp = () => (me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
+  // desired velocity (tvx, tvz) from input; actual velocity me.vx/me.vz chases it with limited accel = momentum
+  let tvx = 0, tvz = 0, wantDir = null;
   if (me.tun >= 0) {
     // FIRST PERSON (inside a tunnel): view-relative tank controls. up/W = crawl forward, down/S = back up, left/right = turn.
     // fpsLatch: whatever direction you were holding when you entered keeps meaning "forward" until you let go,
@@ -345,22 +351,42 @@ function updateLocal(dt) {
     if (fpsLatch && mag < 0.15) fpsLatch = false;
     const fwd = fpsLatch ? mag : -jz, turn = fpsLatch ? 0 : jx;
     if (play) me.a += turn * 2.6 * dt;
-    me.moving = play && Math.abs(fwd) > 0.15; me.run = false;
-    if (me.moving) {
+    me.run = false;
+    if (play && Math.abs(fwd) > 0.15) {
       const sp = baseSp() * (fwd < 0 ? 0.6 : 1) * Math.sign(fwd);
-      me.x += Math.cos(me.a) * sp * dt; me.z += Math.sin(me.a) * sp * dt; collide(me, 0.38);
+      tvx = Math.cos(me.a) * sp; tvz = Math.sin(me.a) * sp;
       const t = TUNNELS[me.tun], ax = t.axis === 'x' ? (Math.cos(me.a) >= 0 ? 0 : Math.PI) : (Math.sin(me.a) >= 0 ? Math.PI / 2 : -Math.PI / 2);
       if (Math.abs(turn) < 0.15 && Math.abs(angDiff(ax, me.a)) < 0.6) turnToward(me, ax, dt * 2.5); // gently line up with the tunnel
     }
   } else {
-    me.moving = mag > 0.15 && play;
-    me.run = me.moving && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
-    if (me.moving) {
-      const sp = baseSp();
-      me.x += (jx / mag) * sp * dt; me.z += (jz / mag) * sp * dt; collide(me, 0.38);
-      turnToward(me, Math.atan2(jz, jx), dt * (me.p ? 5 : 14));
+    const wants = mag > 0.15 && play;
+    me.run = wants && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
+    if (wants) { const sp = baseSp(); tvx = (jx / mag) * sp; tvz = (jz / mag) * sp; wantDir = Math.atan2(jz, jx); }
+  }
+  // accelerate toward the target velocity. Speeding up uses accel, slowing down uses (slightly stronger) decel;
+  // changing direction at speed uses turnAccel so strafing/cornering stays tight rather than icy.
+  const dvx = tvx - me.vx, dvz = tvz - me.vz, dv = Math.hypot(dvx, dvz);
+  if (dv > 1e-6) {
+    const cur = Math.hypot(me.vx, me.vz), tgt = Math.hypot(tvx, tvz);
+    const align = cur > 0.05 && tgt > 0.05 ? (me.vx * tvx + me.vz * tvz) / (cur * tgt) : 1;
+    const rate = tgt < 0.05 ? MOVE.decel : align < 0.7 ? MOVE.turnAccel : tgt >= cur ? MOVE.accel : MOVE.decel;
+    const step = Math.min(dv, rate * dt);
+    me.vx += (dvx / dv) * step; me.vz += (dvz / dv) * step;
+  }
+  if (Math.hypot(me.vx, me.vz) < 0.02 && tvx === 0 && tvz === 0) me.vx = me.vz = 0;
+  if (me.vx || me.vz) {
+    const px = me.x, pz = me.z;
+    me.x += me.vx * dt; me.z += me.vz * dt; collide(me, 0.38);
+    // walls eat momentum: keep only the velocity that actually turned into movement (no sticky slide after a bump)
+    if (dt > 0) {
+      const ax = (me.x - px) / dt, az = (me.z - pz) / dt, want = Math.hypot(me.vx, me.vz), got = Math.hypot(ax, az);
+      if (got < want * 0.98) { const f = got > 1e-4 ? Math.min(1, want / got) : 0; me.vx = ax * f; me.vz = az * f; }
     }
   }
+  const speed = Math.hypot(me.vx, me.vz);
+  me.moving = speed > 0.25;
+  if (me.tun < 0 && wantDir !== null) turnToward(me, wantDir, dt * (me.p ? MOVE.proneTurnRate : MOVE.turnRate));
+  if (!me.moving) me.run = false;
   // tunnel state (hysteresis: must be 0.35 inside a mouth to enter, leaves as soon as you're out)
   const was = me.tun;
   me.tun = tunnelAt(me.x, me.z, was >= 0 ? 0 : 0.35);
@@ -373,7 +399,7 @@ function updateLocal(dt) {
     + (me.tun >= 0 ? ' · TUNNEL' : '');
 }
 let fpsLatch = false;
-const noiseOf = (p) => (!p.moving ? 0 : p.run ? NOISE.run : p.c ? 0 : NOISE.walk);
+const noiseOf = (p) => (!p.moving ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
 
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
@@ -461,7 +487,7 @@ function hostUpdate(dt) {
 }
 function hostRestart() {
   world = freshWorld();
-  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z;
+  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z; other.nvx = other.nvz = 0;
   net.relay({ t: 'tp', x: SPAWNS[1].x, z: SPAWNS[1].z, silent: true });
   sendState();
 }
@@ -473,21 +499,31 @@ function sendState() {
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter)]),
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo,
-    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0] }); // h[4] = prone (older clients ignore it)
+    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz)] }); // h[4] = prone, h[5..6] = velocity (older clients ignore)
 }
-function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me) }); }
+function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz) }); }
+// remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
+// clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
+function netSample(o, x, z, vx, vz) {
+  const now = performance.now(), age = o.pt ? (now - o.pt) / 1000 : 1;
+  if (vx != null && vz != null) { o.nvx = vx; o.nvz = vz; }
+  else if (age > 0.02 && age < 0.5) { o.nvx += ((x - o.x) / age - o.nvx) * 0.5; o.nvz += ((z - o.z) / age - o.nvz) * 0.5; }
+  else { o.nvx = 0; o.nvz = 0; }
+  if (Math.hypot(x - o.x, z - o.z) > 3) { o.nvx = o.nvz = 0; o.snap = true; } // teleport (restart)
+  o.pt = now; o.x = x; o.z = z;
+}
 
 function onGameMsg(d) {
-  if (d.t === 'p' && role === 'host') { other.x = d.x; other.z = d.z; other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; }
+  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; }
   else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(1); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
-    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; g.x = a[0]; g.z = a[1]; g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search' }[a[3]]; g.meter = a[4]; });
+    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search' }[a[3]]; g.meter = a[4]; });
     Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1 });
     solo = d.solo;
-    other.x = d.h[0]; other.z = d.h[1]; other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4];
+    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4];
   } else if (d.t === 'tp' && role === 'guest') {
-    me.x = d.x; me.z = d.z; me.tun = -1; if (!d.silent) toast('CAUGHT! Back to start', 1600);
+    me.x = d.x; me.z = d.z; me.tun = -1; stopMe(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
 }
 
@@ -537,13 +573,13 @@ function setPeer(v) {
 function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false;
-  me.c = false; me.p = false; me.tun = -1; syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
+  me.c = false; me.p = false; me.tun = -1; stopMe(); syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
   if (!$('lobby').classList.contains('hidden')) {
     $('lobby').classList.add('hidden'); $('hud').classList.remove('hidden');
-    const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z;
+    const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z; stopMe();
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
   }
   applyPlayerLooks();
@@ -653,25 +689,31 @@ let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12;
 const lerpA = (a, b, t) => a + angDiff(b, a) * t;
 function render(dt) {
   const k = Math.min(1, dt * 12);
-  // remote player smoothing
-  other.rx += (other.x - other.rx) * k; other.rz += (other.z - other.rz) * k; other.ra = lerpA(other.ra, other.a, k);
+  // remote player smoothing: chase a slightly extrapolated position (last packet + net velocity * packet age, capped)
+  const now = performance.now();
+  const ext = (o) => { const age = o.pt ? Math.min(0.12, (now - o.pt) / 1000) : 0; return [o.x + (o.nvx || 0) * age, o.z + (o.nvz || 0) * age]; };
+  const kr = Math.min(1, dt * 10);
+  { const [tx, tz] = ext(other); if (other.snap) { other.rx = tx; other.rz = tz; other.snap = false; } else { other.rx += (tx - other.rx) * kr; other.rz += (tz - other.rz) * kr; } }
+  other.ra = lerpA(other.ra, other.a, k);
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
-  meMesh.update(dt, { moving: me.moving, run: me.run, crouch: me.c && !me.p, prone: me.p, dead: deadMe });
+  meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe });
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
-  if (dt > 0) { const v = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt; otherSpeed += (Math.min(v, 8) - otherSpeed) * Math.min(1, dt * 8); }
+  // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
+  if (dt > 0) { const vNet = Math.hypot(other.nvx, other.nvz), vScr = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt;
+    const v = other.pt && performance.now() - other.pt < 300 ? vNet : vScr; otherSpeed += (Math.min(v, 8) - otherSpeed) * Math.min(1, dt * 8); }
   otherPX = other.rx; otherPZ = other.rz;
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
-  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, crouch: other.c && !other.p, prone: other.p, dead: deadOther });
+  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' ? otherSpeed : 0, crouch: other.c && !other.p, prone: other.p, dead: deadOther });
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
-    else { g.rx += (g.x - g.rx) * k; g.rz += (g.z - g.rz) * k; g.ra = lerpA(g.ra, g.a, k); }
+    else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
     const m = guardMeshes[i];
     m.g.position.set(g.rx, 0, g.rz); m.g.rotation.y = -g.ra;
     if (dt > 0) { const v = Math.hypot(g.rx - m.px, g.rz - m.pz) / dt; m.spd += (Math.min(v, 8) - m.spd) * Math.min(1, dt * 8); }
     m.px = g.rx; m.pz = g.rz;
-    m.update(dt, { moving: m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4 });
+    m.update(dt, { moving: m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4, speed: world.phase === 'play' ? m.spd : 0 });
     const range = SIGHT.stand + (world.alert > 0 ? 2 : 0);
     m.cone.scale.set(range, range, 1);
     m.coneMat.color.setHex(world.alert === 2 ? 0xff3030 : g.meter > 0.3 ? 0xffa030 : 0xffe066);
