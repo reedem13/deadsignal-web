@@ -1,6 +1,11 @@
-// "Sneaker" player character (Night Ops / Ash Fox / olive kits) - procedural low-poly PS1-style rig.
-// Built from boxes/cones in a joint hierarchy so it is easy to tweak and cheap on phones (~45 boxes, ~600 tris).
-// Textures are tiny (32-64px) CanvasTextures drawn at load with NearestFilter = intentionally crunchy.
+// "Sneaker" player character (Night Ops / Ash Fox / olive kits) - procedural PS1-era (MGS1-inspired, original) rig.
+// Joint hierarchy of tapered faceted lofts (6-10 sided rings: thighs / calves / biceps / forearms / torso with a chest
+// swell), deformed segmented boxes (head with jaw taper + brow/nose ridge, toe-sloped boots on thick lugged soles,
+// mitt hands with a knuckle break) and a few small cylinders. Static parts are MERGED per bone + material at build
+// time, so a player is ~3k tris in ~35 draw calls (old: ~1k tris in ~85 draws) - still cheap on phones.
+// Textures are CanvasTextures (suit 128, torso 256 wrap, face / hair / boots 128, kit 64) drawn at load, then crushed to
+// 15-bit colour with a 4x4 ordered dither and sampled with NearestFilter = crunchy PlayStation look, just sharper.
+// Lofts wrap u around the limb with the FRONT (+x) at u = 0.5 and v = 1 at the top, so texture seams sit at the back.
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
 // respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
@@ -12,14 +17,25 @@ import * as THREE from 'three';
 
 // ---------------------------------------------------------------- tiny seeded RNG so textures are identical every load
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
-const hex = (r, g, b) => `rgb(${r | 0},${g | 0},${b | 0})`;
+const hex = (r, g, b) => `rgb(${clamp(r | 0, 0, 255)},${clamp(g | 0, 0, 255)},${clamp(b | 0, 0, 255)})`;
 const shade = ([r, g, b], f) => hex(r * f, g * f, b * f);
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
-function canvasTex(size, draw) {
+// PS1 crush: 5 bits / channel with a 4x4 ordered dither (the console's 15-bit framebuffer look)
+function psx(x, S) {
+  const img = x.getImageData(0, 0, S, S), p = img.data;
+  for (let k = 0, i = 0; k < p.length; k += 4, i++) {
+    const d = (BAYER[((i / S | 0) & 3) * 4 + (i % S & 3)] / 16 - 0.5) * 8;
+    for (let c = 0; c < 3; c++) p[k + c] = clamp(Math.round((p[k + c] + d) / 8) * 8, 0, 255);
+  }
+  x.putImageData(img, 0, 0);
+}
+function canvasTex(size, draw, crush = true) {
   const c = document.createElement('canvas'); c.width = c.height = size;
-  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; draw(x, size);
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; draw(x, size); if (crush) psx(x, size);
   const t = new THREE.CanvasTexture(c);
   t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; // loft u runs a hair past 1 (flat-front ring offset)
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -39,7 +55,31 @@ function facets(x, S, base, seed, cells = 4, spread = 0.22, grain = 0.08) {
   for (let k = 0; k < p.length; k += 4) { const f = 1 + (r() - 0.5) * grain * 2; p[k] *= f; p[k + 1] *= f; p[k + 2] *= f; }
   x.putImageData(img, 0, 0);
 }
-const px = (x, c, X, Y, w = 1, h = 1) => { x.fillStyle = c; x.fillRect(X, Y, w, h); };
+// fabric: diagonal twill every `step` px + sparse slub flecks
+function weave(x, S, step = 3, dark = 0.88, seed = 1, fleck = 0.012) {
+  const r = rng(seed), img = x.getImageData(0, 0, S, S), p = img.data;
+  for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
+    const k = (j * S + i) * 4; let f = (i + j) % step === 0 ? dark : 1;
+    if (r() < fleck) f *= r() < 0.5 ? 0.8 : 1.18;
+    p[k] *= f; p[k + 1] *= f; p[k + 2] *= f;
+  }
+  x.putImageData(img, 0, 0);
+}
+const px = (x, c, X, Y, w = 1, h = 1) => { x.fillStyle = c; x.fillRect(X | 0, Y | 0, w, h); };
+// 1px pixel line (DDA), optional dash pattern [on, off]
+function pline(x, c, x0, y0, x1, y1, dash = null, w = 1) {
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) | 0 || 1; x.fillStyle = c;
+  for (let i = 0; i <= n; i++) { if (dash && i % (dash[0] + dash[1]) >= dash[0]) continue; x.fillRect(Math.round(x0 + (x1 - x0) * i / n), Math.round(y0 + (y1 - y0) * i / n), w, w); }
+}
+// sewn seam: dark groove, lit lip beside it, stitch dashes on both sides
+function seamV(x, X, y0, y1, base, light = 1.3) {
+  pline(x, shade(base, 0.45), X, y0, X, y1); pline(x, shade(base, light), X + 1, y0, X + 1, y1);
+  pline(x, shade(base, 0.7), X - 2, y0, X - 2, y1, [2, 2]); pline(x, shade(base, 0.7), X + 3, y0 + 2, X + 3, y1, [2, 2]);
+}
+function seamH(x, Y, x0, x1, base, light = 1.3) {
+  pline(x, shade(base, 0.45), x0, Y, x1, Y); pline(x, shade(base, light), x0, Y + 1, x1, Y + 1);
+  pline(x, shade(base, 0.7), x0, Y + 3, x1, Y + 3, [2, 2]);
+}
 
 // colours sampled from the reference sheets
 const OLIVE = [104, 114, 74], OLIVE_DK = [80, 90, 58], BLACK = [34, 35, 36], SKIN = [206, 162, 120], HAIR = [42, 34, 28], BOOT = [44, 45, 46];
@@ -52,164 +92,362 @@ const SLATE = [96, 104, 116], SLATE_DK = [64, 70, 82], MASK = [30, 30, 33], HELM
 //  'ash'   = ASH FOX  (P2 default): slate blue-grey suit, black webbing with vivid blue stripes, ash-blonde swept undercut.
 //  'player' = legacy olive sneaker (character.html / old look).
 const KITS = {
-  player: { suit: OLIVE, suitDk: OLIVE_DK, camo: 6, web: BLACK, webStripe: null, pouch: BLACK, pad: [52, 53, 55], hair: HAIR, trim: [60, 62, 64], hairStyle: 'spiky', gaiter: null },
+  player: { suit: OLIVE, suitDk: OLIVE_DK, camo: 6, web: BLACK, webStripe: null, pouch: BLACK, pad: [52, 53, 55], hair: HAIR, trim: [60, 62, 64], hairStyle: 'spiky', gaiter: null,
+    seam: [62, 70, 44], piping: null, stubble: 0.25 },
   night: { suit: [46, 48, 52], suitDk: [30, 31, 35], camo: 5, web: [74, 84, 50], webStripe: null, pouch: [66, 76, 46], pad: [38, 39, 42], hair: [30, 25, 21],
-    trim: [86, 98, 58], hairStyle: 'spiky', gaiter: [70, 80, 50], seam: [22, 23, 26] },
+    trim: [86, 98, 58], hairStyle: 'spiky', gaiter: [70, 80, 50], seam: [22, 23, 26], piping: null, stubble: 0.3 },
   ash: { suit: [88, 104, 128], suitDk: [66, 78, 98], camo: 4, web: [28, 30, 34], webStripe: [40, 120, 255], pouch: [30, 32, 36], pad: [40, 44, 52], hair: [236, 200, 128],
-    trim: [40, 120, 255], hairStyle: 'swept', gaiter: null, seam: [50, 60, 78] },
+    trim: [40, 120, 255], hairStyle: 'swept', gaiter: null, seam: [50, 60, 78], piping: [40, 120, 255], stubble: 0 },
 };
 const TEX = {};
 function textures(kit = 'player') {
   if (TEX[kit]) return TEX[kit];
   if (kit === 'enemy') return (TEX.enemy = enemyTextures());
   const K = KITS[kit] || KITS.player, SU = K.suit, SD = K.suitDk, WB = K.web, HR = K.hair, seed = kit === 'player' ? 0 : kit === 'night' ? 400 : 800;
-  const swept = K.hairStyle === 'swept';
+  const swept = K.hairStyle === 'swept', SEAM = K.seam || SD;
+  const camo = (x, S, n, sz) => { const r = rng(5 + seed); for (let i = 0; i < n; i++) { x.fillStyle = shade(SD, 0.9 + r() * 0.2); x.beginPath();
+    const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * sz, cy + (r() - 0.5) * sz); x.fill(); } };
   TEX[kit] = {
-    suit: canvasTex(64, (x, S) => {
-      facets(x, S, SU, 11 + seed, 5, 0.26);
-      const r = rng(5 + seed); // darker angular blotches (subtle on the stealth suits)
-      for (let i = 0; i < K.camo; i++) { x.fillStyle = shade(SD, 0.9 + r() * 0.2); x.beginPath();
-        const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 22, cy + (r() - 0.5) * 22); x.fill(); }
-      if (K.seam) { px(x, shade(K.seam, 1), 0, 20, S, 1); px(x, shade(K.seam, 1), 0, 44, S, 1); px(x, shade(SU, 1.25), 0, 21, S, 1); } // panel seams
+    // LIMBS (wrap): u 0.5 = front. Side seams, a back seam, two horizontal panel seams (knee / elbow break), twill.
+    suit: canvasTex(128, (x, S) => {
+      facets(x, S, SU, 11 + seed, 8, 0.2, 0.05); camo(x, S, K.camo * 2, 30); weave(x, S, 3, 0.9, 3 + seed);
+      seamV(x, 30, 0, S, SEAM); seamV(x, 96, 0, S, SEAM); seamV(x, 2, 0, S, SEAM, 1.15);
+      seamH(x, 40, 0, S, SEAM); seamH(x, 86, 0, S, SEAM);
+      for (let y = 46; y < 84; y += 6) pline(x, shade(SU, 0.78), 44, y, 84, y); // quilted ribs over the front of knee / elbow
+      if (K.piping) { pline(x, shade(K.piping, 0.9), 97, 0, 97, S); pline(x, shade(K.piping, 0.9), 31, 0, 31, S); }
     }),
-    suitFront: canvasTex(64, (x, S) => { // torso front: zipper + chest seams
-      facets(x, S, SU, 23 + seed, 5, 0.26);
-      px(x, shade(SD, 0.7), 31, 0, 2, S); px(x, shade(SU, 1.35), 31, 0, 1, S);
-      for (let y = 2; y < S; y += 4) px(x, shade(SD, 0.55), 32, y, 1, 1);
-      px(x, shade(SD, 0.8), 6, 26, 20, 1); px(x, shade(SD, 0.8), 38, 26, 20, 1);
-      if (K.seam) { px(x, shade(K.seam, 1), 4, 44, 24, 1); px(x, shade(K.seam, 1), 36, 44, 24, 1); }
+    // TORSO (wrap, 256): zipper down the front, V yoke seams, ribbed abdomen, side panels, spine seam at the back
+    suitFront: canvasTex(256, (x, S) => {
+      facets(x, S, SU, 23 + seed, 10, 0.2, 0.05); camo(x, S, K.camo * 3, 50); weave(x, S, 3, 0.9, 7 + seed);
+      // shoulder yoke (darker) across the top
+      x.fillStyle = shade(SD, 0.95); x.beginPath(); x.moveTo(0, 0); x.lineTo(S, 0); x.lineTo(S, 40); x.lineTo(170, 52); x.lineTo(128, 96); x.lineTo(86, 52); x.lineTo(0, 40); x.fill();
+      pline(x, shade(SEAM, 0.6), 0, 40, 86, 52); pline(x, shade(SEAM, 0.6), 86, 52, 128, 96); pline(x, shade(SEAM, 0.6), 128, 96, 170, 52); pline(x, shade(SEAM, 0.6), 170, 52, S, 40);
+      pline(x, shade(SU, 1.3), 0, 41, 86, 53); pline(x, shade(SU, 1.3), 86, 53, 127, 97); pline(x, shade(SU, 1.3), 129, 97, 170, 53); pline(x, shade(SU, 1.3), 170, 53, S, 41);
+      if (K.piping) { pline(x, shade(K.piping, 1), 0, 43, 86, 55); pline(x, shade(K.piping, 1), 86, 55, 126, 99); pline(x, shade(K.piping, 1), 130, 99, 170, 55); pline(x, shade(K.piping, 1), 170, 55, S, 43); }
+      // ribbed abdomen panel
+      for (let y = 150; y < 236; y += 7) { pline(x, shade(SD, 0.7), 84, y, 172, y); pline(x, shade(SU, 1.15), 84, y + 1, 172, y + 1); }
+      seamV(x, 82, 140, S, SEAM); seamV(x, 172, 140, S, SEAM); seamH(x, 140, 84, 172, SEAM);
+      // side panels + spine
+      seamV(x, 60, 40, S, SEAM); seamV(x, 196, 40, S, SEAM); seamV(x, 2, 40, S, SEAM, 1.15);
+      // chest pockets (flap + stitching) either side of the zip
+      for (const cx of [92, 140]) { px(x, shade(SD, 0.8), cx, 104, 24, 26); px(x, shade(SU, 1.2), cx, 104, 24, 1); px(x, shade(SD, 0.5), cx, 112, 24, 2);
+        pline(x, shade(SU, 1.35), cx + 1, 106, cx + 22, 106, [2, 1]); }
+      // zipper: dark tape, alternating teeth, pull tab near the collar
+      px(x, shade(SD, 0.5), 124, 0, 9, S); for (let y = 0; y < S; y += 2) { px(x, '#8c8f92', 126 + ((y >> 1) & 1) * 2, y, 3, 1); px(x, '#303234', 126 + (((y >> 1) + 1) & 1) * 2, y, 3, 1); }
+      px(x, '#a8acb0', 125, 10, 7, 14); px(x, '#46484a', 127, 13, 3, 8);
     }),
-    gear: canvasTex(32, (x, S) => { // small hardware: always black (gun frame, knife handle, antenna, cuffs)
-      facets(x, S, BLACK, 31, 3, 0.25, 0.06);
-      px(x, shade(BLACK, 1.7), 0, 1, S, 1); px(x, shade(BLACK, 1.7), 0, S - 2, S, 1);
-      for (let i = 1; i < S; i += 3) { px(x, shade(BLACK, 0.6), i, 3); px(x, shade(BLACK, 0.6), i, S - 4); }
+    gear: canvasTex(64, (x, S) => { // small hardware: always black (gun frame, knife handle, antenna, cuffs)
+      facets(x, S, BLACK, 31, 4, 0.25, 0.06); weave(x, S, 2, 0.85, 31, 0);
+      px(x, shade(BLACK, 1.7), 0, 2, S, 1); px(x, shade(BLACK, 1.7), 0, S - 3, S, 1);
+      for (let i = 1; i < S; i += 4) { px(x, shade(BLACK, 0.6), i, 5, 2, 1); px(x, shade(BLACK, 0.6), i, S - 6, 2, 1); }
     }),
-    web: canvasTex(32, (x, S) => { // harness / belt / leg straps: kit webbing colour with stitched edges (+ optional accent stripe)
-      facets(x, S, WB, 33 + seed, 3, 0.25, 0.06);
-      px(x, shade(WB, 1.6), 0, 1, S, 1); px(x, shade(WB, 1.6), 0, S - 2, S, 1);
-      for (let i = 1; i < S; i += 3) { px(x, shade(WB, 0.6), i, 3); px(x, shade(WB, 0.6), i, S - 4); px(x, shade(WB, 0.6), 3, i); px(x, shade(WB, 0.6), S - 4, i); }
-      if (K.webStripe) { px(x, shade(K.webStripe, 1), 6, 6, S - 12, S - 12); px(x, shade(K.webStripe, 1.3), 6, 6, S - 12, 2); }
+    web: canvasTex(64, (x, S) => { // harness / belt / leg straps: kit webbing with ribbed weave, stitched edges (+ optional accent stripe)
+      facets(x, S, WB, 33 + seed, 4, 0.22, 0.06);
+      for (let i = 0; i < S; i += 2) pline(x, shade(WB, 0.78), i, 0, i, S); // nylon ribs
+      px(x, shade(WB, 1.6), 0, 2, S, 1); px(x, shade(WB, 1.6), 0, S - 3, S, 1); px(x, shade(WB, 1.6), 2, 0, 1, S); px(x, shade(WB, 1.6), S - 3, 0, 1, S);
+      pline(x, shade(WB, 0.5), 5, 5, S - 6, 5, [3, 2]); pline(x, shade(WB, 0.5), 5, S - 6, S - 6, S - 6, [3, 2]);
+      pline(x, shade(WB, 0.5), 5, 5, 5, S - 6, [3, 2]); pline(x, shade(WB, 0.5), S - 6, 5, S - 6, S - 6, [3, 2]);
+      if (K.webStripe) { px(x, shade(K.webStripe, 1), 14, 14, S - 28, S - 28); px(x, shade(K.webStripe, 1.3), 14, 14, S - 28, 3); px(x, shade(K.webStripe, 0.6), 14, S - 17, S - 28, 3); }
     }),
-    pouch: canvasTex(32, (x, S) => { // pouch / radio face: flap line + snap
-      const PB = K.pouch; facets(x, S, PB, 41 + seed, 3, 0.3, 0.06);
-      px(x, shade(PB, 0.5), 2, 11, S - 4, 2); px(x, shade(PB, 1.8), 2, 13, S - 4, 1);
-      px(x, '#6b6d6e', 14, 8, 4, 4); px(x, '#2a2a2a', 15, 9, 2, 2);
+    pouch: canvasTex(64, (x, S) => { // pouch / radio face: flap with bound edge, press-stud, gusset shadow, stitching
+      const PB = K.pouch; facets(x, S, PB, 41 + seed, 4, 0.26, 0.06); weave(x, S, 3, 0.86, 41 + seed, 0);
+      px(x, shade(PB, 1.15), 0, 0, S, 24); px(x, shade(PB, 0.45), 0, 24, S, 3); px(x, shade(PB, 1.8), 0, 27, S, 1); // flap
+      pline(x, shade(PB, 0.6), 3, 3, S - 4, 3, [2, 2]); pline(x, shade(PB, 0.6), 3, 3, 3, 21, [2, 2]); pline(x, shade(PB, 0.6), S - 4, 3, S - 4, 21, [2, 2]);
+      px(x, '#7a7d80', 27, 14, 10, 8); px(x, '#2a2a2a', 29, 16, 6, 4); px(x, '#b0b4b8', 28, 14, 3, 1); // press-stud
+      px(x, shade(PB, 0.6), 0, S - 4, S, 4); pline(x, shade(PB, 0.55), 4, 30, 4, S - 5); pline(x, shade(PB, 0.55), S - 5, 30, S - 5, S - 5);
     }),
-    pad: canvasTex(32, (x, S) => { facets(x, S, K.pad, 51 + seed, 2, 0.35, 0.05); px(x, '#1c1c1c', 0, 0, S, 2); px(x, '#1c1c1c', 0, S - 2, S, 2);
-      px(x, shade(K.pad, 1.5), 4, 8, S - 8, 1); px(x, shade(K.pad, 0.7), 4, 20, S - 8, 1); }), // moulded ridge
-    trim: canvasTex(16, (x, S) => { facets(x, S, K.trim, 55 + seed, 2, 0.25, 0.06); px(x, shade(K.trim, 0.6), 0, S - 2, S, 2); }),
-    gaiter: canvasTex(32, (x, S) => { // knit neck gaiter: horizontal rib rows + loose fold line
-      const GC = K.gaiter || SD; facets(x, S, GC, 57 + seed, 3, 0.3, 0.12);
-      for (let y = 1; y < S; y += 3) px(x, shade(GC, 0.72), 0, y, S, 1);
-      px(x, shade(GC, 1.35), 0, 9, S, 1); px(x, shade(GC, 0.5), 0, 10, S, 1);
+    pad: canvasTex(64, (x, S) => { facets(x, S, K.pad, 51 + seed, 3, 0.32, 0.05); px(x, '#1c1c1c', 0, 0, S, 3); px(x, '#1c1c1c', 0, S - 3, S, 3);
+      for (const y of [16, 30, 44]) { px(x, shade(K.pad, 1.5), 6, y, S - 12, 1); px(x, shade(K.pad, 0.6), 6, y + 1, S - 12, 2); } // moulded ridges
+      px(x, '#505254', 6, 6, 3, 3); px(x, '#505254', S - 9, 6, 3, 3); }), // rivets
+    trim: canvasTex(32, (x, S) => { facets(x, S, K.trim, 55 + seed, 2, 0.25, 0.06); px(x, shade(K.trim, 1.3), 0, 0, S, 2); px(x, shade(K.trim, 0.6), 0, S - 3, S, 3); }),
+    gaiter: canvasTex(64, (x, S) => { // knit neck gaiter: rib columns + horizontal courses + loose fold line
+      const GC = K.gaiter || SD; facets(x, S, GC, 57 + seed, 4, 0.28, 0.12);
+      for (let i = 0; i < S; i += 3) pline(x, shade(GC, 0.75), i, 0, i, S);
+      for (let y = 1; y < S; y += 4) px(x, shade(GC, 0.82), 0, y, S, 1);
+      px(x, shade(GC, 1.35), 0, 20, S, 2); px(x, shade(GC, 0.5), 0, 22, S, 2);
     }),
-    boot: canvasTex(32, (x, S) => {
-      facets(x, S, BOOT, 61, 3, 0.25, 0.06);
-      px(x, '#18191a', 0, S - 8, S, 8); for (let i = 0; i < S; i += 4) px(x, '#2e2f30', i, S - 6, 2, 3); // lugged sole
-      for (let y = 4; y < S - 10; y += 5) px(x, '#5a5b5c', 10, y, 12, 1); // laces
+    // boots (shaft loft + foot box): leather facets, toe-cap seam, criss-cross laces up the front, welt + sole band at the bottom
+    boot: canvasTex(128, (x, S) => {
+      facets(x, S, BOOT, 61, 6, 0.24, 0.06);
+      px(x, '#18191a', 0, S - 22, S, 22); px(x, '#3a3b3c', 0, S - 22, S, 2); for (let i = 0; i < S; i += 8) px(x, '#2c2d2e', i, S - 16, 4, 10); // welt + lugs
+      seamH(x, S - 40, 0, S, BOOT, 1.6);
+      px(x, '#252627', 46, 0, 36, S - 40); // tongue
+      for (let y = 6; y < S - 46; y += 10) { pline(x, '#6a6b6c', 48, y, 80, y + 8, null); pline(x, '#6a6b6c', 80, y, 48, y + 8, null); px(x, '#8a8c8e', 44, y, 4, 4); px(x, '#8a8c8e', 80, y, 4, 4); }
+      seamV(x, 30, 0, S - 40, BOOT, 1.5); seamV(x, 98, 0, S - 40, BOOT, 1.5);
     }),
-    skin: canvasTex(32, (x, S) => facets(x, S, SKIN, 71, 2, 0.16, 0.05)),
+    sole: canvasTex(64, (x, S) => { facets(x, S, [26, 26, 27], 63, 3, 0.2, 0.05); for (let i = 0; i < S; i += 8) for (let j = 0; j < S; j += 8) px(x, '#121213', i + ((j >> 3) & 1) * 4, j, 4, 5); px(x, '#3c3d3e', 0, 0, S, 2); }),
+    skin: canvasTex(64, (x, S) => { facets(x, S, SKIN, 71, 3, 0.14, 0.04); }),
     // shaved undercut sides (ash): skin with a dark-blonde stubble wash
-    stubble: canvasTex(32, (x, S) => { facets(x, S, SKIN, 73, 2, 0.16, 0.05); const r = rng(13);
-      x.fillStyle = 'rgba(150,128,92,0.35)'; x.fillRect(0, 0, S, S * 0.6); for (let i = 0; i < 50; i++) px(x, shade(HR, 0.55 + r() * 0.2), r() * S | 0, r() * S * 0.6 | 0); }),
-    hair: canvasTex(32, (x, S) => {
-      facets(x, S, HR, 81 + seed, 4, swept ? 0.3 : 0.4, 0.1);
-      const r = rng(9 + seed); for (let i = 0; i < 40; i++) px(x, shade(HR, (swept ? 0.7 : 0.5) + r() * (swept ? 0.6 : 0.9)), r() * S | 0, r() * S | 0, swept ? 2 + (r() * 4 | 0) : 1, swept ? 1 : 2 + (r() * 4 | 0));
+    stubble: canvasTex(64, (x, S) => { facets(x, S, SKIN, 73, 3, 0.14, 0.04); const r = rng(13);
+      x.fillStyle = 'rgba(150,128,92,0.35)'; x.fillRect(0, 0, S, S * 0.62); for (let i = 0; i < 260; i++) px(x, shade(HR, 0.5 + r() * 0.25), r() * S | 0, r() * S * 0.62 | 0); }),
+    hair: canvasTex(128, (x, S) => {
+      facets(x, S, HR, 81 + seed, 6, swept ? 0.28 : 0.36, 0.08);
+      const r = rng(9 + seed);
+      for (let i = 0; i < 520; i++) { // strands: vertical spikes (night) / long swept diagonals (ash)
+        const X = r() * S, Y = r() * S, L = 4 + r() * (swept ? 18 : 12), f = (swept ? 0.65 : 0.45) + r() * (swept ? 0.65 : 0.95);
+        if (swept) pline(x, shade(HR, f), X, Y, X + L, Y + L * 0.35); else pline(x, shade(HR, f), X, Y, X + (r() - 0.5) * 3, Y + L);
+      }
+      if (swept) for (let i = 0; i < 6; i++) { const Y = 10 + i * 20; pline(x, shade(HR, 1.18), 0, Y, S, Y + 30, [6, 3]); } // sheen bands
     }),
-    face: canvasTex(32, (x, S) => { // front of head: fringe, brows, eyes, nose shadow, mouth (stern sneaker look)
-      facets(x, S, SKIN, 91, 2, 0.14, 0.05);
-      if (swept) { // swept fringe: thick on the right, tapering diagonally across the forehead to the left temple
-        for (let i = 0; i < S; i++) px(x, shade(HR, 0.95 + ((i * 5) % 3) * 0.12), i, 0, 1, Math.max(2, 8 - (i * 6 / S | 0)));
-        for (let i = 2; i < S; i += 4) px(x, shade(HR, 0.75), i, 2, 1, 3);
-      } else { px(x, shade(HR, 1), 0, 0, S, 5); for (let i = 0; i < S; i += 3) px(x, shade(HR, 1.1), i, 5, 2, 1 + ((i * 7) % 4)); } // spiky fringe
-      const brow = swept ? '#6e5a3e' : '#2b211b';
-      px(x, shade(SKIN, 0.82), 0, 13, 7, 9); px(x, shade(SKIN, 0.82), 25, 13, 7, 9); // cheek shading
-      px(x, brow, 6, 11, 8, 2); px(x, brow, 18, 11, 8, 2); // brows (angled)
-      px(x, brow, 12, 12, 2, 1); px(x, brow, 18, 12, 2, 1);
-      px(x, '#e8dcc8', 8, 14, 5, 2); px(x, '#e8dcc8', 19, 14, 5, 2); // eyes
-      const iris = swept ? '#2c4a66' : '#1d2a30'; px(x, iris, 10, 14, 2, 2); px(x, iris, 20, 14, 2, 2);
-      px(x, shade(SKIN, 0.72), 15, 15, 2, 6); px(x, shade(SKIN, 0.62), 14, 20, 4, 1); // nose
-      px(x, '#7a4e3c', 12, 24, 8, 1); px(x, shade(SKIN, 0.85), 11, 27, 10, 2); // mouth + chin shadow
+    face: canvasTex(128, (x, S) => drawFace(x, S, swept, HR, K.stubble)),
+    gun: canvasTex(32, (x, S) => { // gunmetal: dark slide with serration ticks + a lighter top edge
+      facets(x, S, [40, 42, 46], 121, 3, 0.28, 0.08);
+      px(x, '#6a6e74', 0, 0, S, 2); for (let i = 3; i < S; i += 4) px(x, '#1a1b1d', i, 5, 2, 8);
+      px(x, '#24262a', 0, S - 8, S, 8); px(x, '#4a4d52', 0, S - 9, S, 1);
     }),
-    gun: canvasTex(16, (x, S) => { // gunmetal: dark slide with serration ticks + a lighter top edge
-      facets(x, S, [40, 42, 46], 121, 2, 0.3, 0.08);
-      px(x, '#6a6e74', 0, 0, S, 1); for (let i = 2; i < S; i += 3) px(x, '#1a1b1d', i, 3, 1, 4);
-      px(x, '#24262a', 0, S - 4, S, 4);
-    }),
-    blade: canvasTex(16, (x, S) => { facets(x, S, [150, 156, 160], 131, 2, 0.35, 0.06); px(x, '#e8eef0', 0, 0, S, 2); px(x, '#5a5e60', 0, S - 2, S, 2); }),
-    glove: canvasTex(32, (x, S) => { // fingerless glove: black with skin finger tips at the bottom
-      facets(x, S, BLACK, 101, 3, 0.25, 0.06);
-      px(x, shade(SKIN, 1), 0, S - 9, S, 9); for (let i = 0; i < S; i += 8) px(x, shade(SKIN, 0.7), i, S - 9, 1, 9);
+    blade: canvasTex(32, (x, S) => { facets(x, S, [150, 156, 160], 131, 2, 0.35, 0.06); px(x, '#e8eef0', 0, 0, S, 3); px(x, '#5a5e60', 0, S - 3, S, 3); pline(x, '#c8d0d4', 0, 12, S, 9); }),
+    glove: canvasTex(64, (x, S) => { // fingerless tactical glove: black leather, knuckle ridge, finger splits, skin tips at the bottom
+      facets(x, S, BLACK, 101, 4, 0.25, 0.06); weave(x, S, 2, 0.9, 101, 0);
+      px(x, shade(BLACK, 1.6), 0, 24, S, 2); px(x, shade(BLACK, 0.55), 0, 26, S, 2); // knuckle ridge
+      for (let i = 4; i < S; i += 8) pline(x, shade(BLACK, 1.4), i, 6, i + 4, 6, [1, 1]);
+      px(x, shade(SKIN, 1), 0, S - 16, S, 16); for (let i = 0; i < S; i += 16) { px(x, shade(SKIN, 0.68), i, S - 16, 2, 16); px(x, shade(BLACK, 0.8), i, S - 18, 16, 2); }
+      for (let i = 4; i < S; i += 16) px(x, shade(SKIN, 1.12), i, S - 13, 6, 2); // nail highlights
     }),
   };
   return TEX[kit];
+}
+// face (front of the head box, 128px, u = across the face, v = up): features laid out on the old 32px grid x4 with
+// lids, irises + catchlights, nose bridge / nostrils, lips, cheekbone + jaw shading and stubble.
+function drawFace(x, S, swept, HR, stubble) {
+  facets(x, S, SKIN, 91, 4, 0.12, 0.04);
+  const r = rng(swept ? 33 : 34);
+  px(x, shade(SKIN, 1.06), 20, 26, 88, 14); // forehead light
+  px(x, shade(SKIN, 0.84), 0, 52, 22, 44); px(x, shade(SKIN, 0.84), 106, 52, 22, 44); // cheek sides in shadow
+  px(x, shade(SKIN, 0.78), 0, 96, 18, 32); px(x, shade(SKIN, 0.78), 110, 96, 18, 32); // jaw corners
+  pline(x, shade(SKIN, 0.74), 18, 96, 40, 118); pline(x, shade(SKIN, 0.74), 110, 96, 88, 118); // jaw line
+  px(x, shade(SKIN, 1.1), 24, 70, 14, 4); px(x, shade(SKIN, 1.1), 90, 70, 14, 4); // cheekbone highlights
+  if (stubble) { // five o'clock shadow round the jaw + upper lip
+    for (let i = 0; i < 900 * stubble; i++) { const X = r() * S, Y = 86 + r() * 42; if (Y < 100 && X > 40 && X < 88 && Y > 92) continue; px(x, shade([60, 46, 38], 0.9 + r() * 0.4), X, Y); }
+    for (let i = 0; i < 120 * stubble; i++) px(x, shade([60, 46, 38], 1), 46 + r() * 36, 88 + r() * 4);
+  }
+  if (swept) { // swept fringe: thick on one side, tapering diagonally across the forehead to the other temple
+    for (let i = 0; i < S; i++) { const h = Math.max(6, 32 - (i * 26 / S | 0)); px(x, shade(HR, 0.95 + ((i * 5) % 3) * 0.1), i, 0, 1, h);
+      if (i % 3 === 0) px(x, shade(HR, 0.7), i, h - 5, 1, 5); if (i % 7 === 0) px(x, shade(HR, 1.25), i, 2, 1, h - 8); }
+    px(x, shade(HR, 0.55), 0, 30, 30, 2); // shadow under the fringe
+  } else { // spiky fringe: jagged points
+    px(x, shade(HR, 1), 0, 0, S, 18);
+    for (let i = 0; i < S; i += 6) { const d = 6 + ((i * 7) % 11); for (let k = 0; k < d; k++) px(x, shade(HR, 1.05 + (k % 2) * 0.1), i + (k >> 2), 18 + k, Math.max(1, 5 - (k >> 1)), 1); }
+    for (let i = 2; i < S; i += 5) pline(x, shade(HR, 1.5), i, 2, i + 1, 14, [3, 2]);
+  }
+  const brow = swept ? [110, 90, 62] : [43, 33, 27];
+  for (const [bx, dir] of [[22, 1], [72, -1]]) { // brows angled down toward the nose (stern)
+    for (let i = 0; i < 34; i++) px(x, shade(brow, 0.9 + (i % 3) * 0.08), bx + i, 44 + (dir > 0 ? (i / 11 | 0) : 3 - (i / 11 | 0)), 1, 5);
+  }
+  px(x, shade(SKIN, 0.7), 20, 54, 36, 2); px(x, shade(SKIN, 0.7), 72, 54, 36, 2); // brow-ridge shadow
+  const iris = swept ? [44, 74, 102] : [29, 42, 48];
+  for (const ex of [30, 76]) { // eyes: lid line, white, iris, pupil, catchlight, lower lid
+    px(x, '#2a1e18', ex - 2, 57, 26, 2); px(x, '#e4d8c4', ex, 59, 22, 7); px(x, shade([228, 216, 196], 0.8), ex, 59, 22, 1);
+    px(x, shade(iris, 1), ex + 7, 59, 9, 7); px(x, '#0c0c0e', ex + 9, 60, 5, 5); px(x, '#f4f0e8', ex + 8, 60, 2, 2);
+    px(x, shade(SKIN, 0.78), ex, 66, 22, 2); px(x, shade(SKIN, 0.86), ex + 2, 69, 18, 2); // lower lid + bag
+  }
+  px(x, shade(SKIN, 0.82), 58, 56, 4, 24); px(x, shade(SKIN, 1.12), 62, 56, 4, 26); // nose bridge: shadow / lit side
+  px(x, shade(SKIN, 0.66), 54, 80, 20, 3); px(x, shade(SKIN, 1.15), 60, 76, 8, 4); // nose tip + underside
+  px(x, '#5a3a2c', 55, 81, 4, 2); px(x, '#5a3a2c', 69, 81, 4, 2); // nostrils
+  px(x, shade(SKIN, 0.8), 62, 85, 4, 7); // philtrum
+  px(x, '#6e4636', 46, 95, 36, 2); px(x, '#8a5a46', 50, 93, 28, 2); px(x, shade(SKIN, 1.08), 50, 98, 28, 3); // mouth + lips
+  px(x, shade(SKIN, 0.8), 52, 104, 24, 2); px(x, shade(SKIN, 0.7), 50, 114, 28, 4); px(x, shade(SKIN, 1.08), 56, 108, 16, 4); // chin
 }
 export const PLAYER_KITS = ['night', 'ash', 'player'];
 
 function enemyTextures() {
   return {
-    suit: canvasTex(64, (x, S) => { // slate urban camo: facets + dark angular blotches + a few light chips
-      facets(x, S, SLATE, 211, 5, 0.24);
+    suit: canvasTex(128, (x, S) => { // slate urban camo: facets + dark angular blotches + light chips, seams like the sneak suit
+      facets(x, S, SLATE, 211, 8, 0.22, 0.05);
       const r = rng(17);
-      for (let i = 0; i < 7; i++) { x.fillStyle = shade(SLATE_DK, 0.85 + r() * 0.2); x.beginPath();
-        const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 20, cy + (r() - 0.5) * 20); x.fill(); }
-      for (let i = 0; i < 10; i++) px(x, shade(SLATE, 1.3), r() * S | 0, r() * S | 0, 2, 1);
+      for (let i = 0; i < 16; i++) { x.fillStyle = shade(SLATE_DK, 0.85 + r() * 0.2); x.beginPath();
+        const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 36, cy + (r() - 0.5) * 36); x.fill(); }
+      for (let i = 0; i < 30; i++) px(x, shade(SLATE, 1.3), r() * S | 0, r() * S | 0, 3, 2);
+      weave(x, S, 3, 0.9, 211); seamV(x, 30, 0, S, SLATE_DK); seamV(x, 96, 0, S, SLATE_DK); seamH(x, 86, 0, S, SLATE_DK);
+      for (let y = 46; y < 84; y += 8) pline(x, shade(SLATE_DK, 0.8), 46, y, 82, y);
     }),
-    suitFront: canvasTex(64, (x, S) => { // armoured vest front: plate outline + magazine pouch row
-      facets(x, S, SLATE, 223, 5, 0.24);
-      px(x, shade(MASK, 1.2), 8, 4, 48, 40); // vest plate
-      px(x, shade(MASK, 1.6), 8, 4, 48, 1); px(x, shade(MASK, 1.6), 8, 43, 48, 1);
-      for (let i = 0; i < 3; i++) { px(x, shade(MASK, 0.8), 12 + i * 14, 24, 11, 16); px(x, shade(MASK, 1.9), 12 + i * 14, 24, 11, 1); }
-      px(x, '#7a1414', 28, 8, 8, 4); // red unit tab
+    suitFront: canvasTex(256, (x, S) => { // fatigue blouse under the plate carrier: camo, button placket, side seams
+      facets(x, S, SLATE, 223, 10, 0.22, 0.05);
+      const r = rng(19);
+      for (let i = 0; i < 26; i++) { x.fillStyle = shade(SLATE_DK, 0.85 + r() * 0.2); x.beginPath();
+        const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * 60, cy + (r() - 0.5) * 60); x.fill(); }
+      weave(x, S, 3, 0.9, 223);
+      px(x, shade(SLATE_DK, 0.7), 122, 0, 12, S); for (let y = 12; y < S; y += 40) { px(x, '#2a2c30', 126, y, 5, 5); }
+      seamV(x, 60, 0, S, SLATE_DK); seamV(x, 196, 0, S, SLATE_DK); seamV(x, 2, 0, S, SLATE_DK);
     }),
-    gear: canvasTex(32, (x, S) => {
-      facets(x, S, [28, 29, 31], 231, 3, 0.25, 0.06);
-      px(x, shade(MASK, 1.8), 0, 1, S, 1); px(x, shade(MASK, 1.8), 0, S - 2, S, 1);
-      for (let i = 1; i < S; i += 3) { px(x, shade(MASK, 0.6), i, 3); px(x, shade(MASK, 0.6), i, S - 4); }
+    // plate carrier (front + back panels, mag pouches): black cordura with MOLLE rows + red unit tab
+    vest: canvasTex(64, (x, S) => {
+      facets(x, S, [36, 37, 40], 225, 4, 0.22, 0.05); weave(x, S, 2, 0.85, 225, 0);
+      px(x, '#4a4c50', 0, 0, S, 2); px(x, '#4a4c50', 0, S - 2, S, 2); px(x, '#4a4c50', 0, 0, 2, S); px(x, '#4a4c50', S - 2, 0, 2, S);
+      for (let y = 26; y < S - 4; y += 8) { px(x, '#1a1b1d', 4, y, S - 8, 3); for (let i = 6; i < S - 6; i += 10) px(x, '#55585c', i, y, 2, 3); }
+      px(x, '#7a1414', 24, 8, 16, 9); px(x, '#a02020', 24, 8, 16, 2);
     }),
-    pouch: canvasTex(32, (x, S) => {
-      facets(x, S, [32, 33, 35], 241, 3, 0.3, 0.06);
-      px(x, shade(MASK, 0.5), 2, 11, S - 4, 2); px(x, shade(MASK, 1.9), 2, 13, S - 4, 1);
-      px(x, '#5b5e62', 14, 8, 4, 4);
+    gear: canvasTex(64, (x, S) => {
+      facets(x, S, [28, 29, 31], 231, 4, 0.25, 0.06);
+      px(x, shade(MASK, 1.8), 0, 2, S, 1); px(x, shade(MASK, 1.8), 0, S - 3, S, 1);
+      for (let i = 1; i < S; i += 4) { px(x, shade(MASK, 0.6), i, 5, 2, 1); px(x, shade(MASK, 0.6), i, S - 6, 2, 1); }
     }),
-    pad: canvasTex(32, (x, S) => { facets(x, S, [44, 46, 50], 251, 2, 0.35, 0.05); px(x, '#151515', 0, 0, S, 2); px(x, '#151515', 0, S - 2, S, 2); }),
-    boot: canvasTex(32, (x, S) => {
-      facets(x, S, [36, 36, 38], 261, 3, 0.25, 0.06);
-      px(x, '#141415', 0, S - 8, S, 8); for (let i = 0; i < S; i += 4) px(x, '#29292a', i, S - 6, 2, 3);
-      for (let y = 4; y < S - 10; y += 5) px(x, '#4a4b4c', 10, y, 12, 1);
+    pouch: canvasTex(64, (x, S) => {
+      facets(x, S, [32, 33, 35], 241, 4, 0.28, 0.06); weave(x, S, 3, 0.86, 241, 0);
+      px(x, shade(MASK, 1.3), 0, 0, S, 24); px(x, shade(MASK, 0.5), 0, 24, S, 3); px(x, shade(MASK, 1.9), 0, 27, S, 1);
+      px(x, '#5b5e62', 27, 14, 10, 8); px(x, '#2a2a2a', 29, 16, 6, 4);
     }),
+    pad: canvasTex(64, (x, S) => { facets(x, S, [44, 46, 50], 251, 3, 0.32, 0.05); px(x, '#151515', 0, 0, S, 3); px(x, '#151515', 0, S - 3, S, 3);
+      for (const y of [16, 30, 44]) { px(x, '#5a5c60', 6, y, S - 12, 1); px(x, '#202124', 6, y + 1, S - 12, 2); } }),
+    boot: canvasTex(128, (x, S) => {
+      facets(x, S, [36, 36, 38], 261, 6, 0.24, 0.06);
+      px(x, '#141415', 0, S - 22, S, 22); for (let i = 0; i < S; i += 8) px(x, '#29292a', i, S - 16, 4, 10);
+      seamH(x, S - 40, 0, S, [36, 36, 38], 1.6); px(x, '#202021', 46, 0, 36, S - 40);
+      for (let y = 6; y < S - 46; y += 10) { pline(x, '#4a4b4c', 48, y, 80, y + 8); pline(x, '#4a4b4c', 80, y, 48, y + 8); }
+    }),
+    sole: canvasTex(64, (x, S) => { facets(x, S, [22, 22, 23], 263, 3, 0.2, 0.05); for (let i = 0; i < S; i += 8) for (let j = 0; j < S; j += 8) px(x, '#0e0e0f', i + ((j >> 3) & 1) * 4, j, 4, 5); }),
     // "skin" slot = balaclava knit (neck, sides/back of head) so no skin shows anywhere
-    skin: canvasTex(32, (x, S) => { facets(x, S, MASK, 271, 3, 0.2, 0.1); for (let y = 1; y < S; y += 3) px(x, shade(MASK, 0.7), 0, y, S, 1); }),
-    hair: canvasTex(32, (x, S) => facets(x, S, MASK, 281, 3, 0.2, 0.1)),
+    skin: canvasTex(64, (x, S) => { facets(x, S, MASK, 271, 4, 0.2, 0.1); for (let y = 1; y < S; y += 3) px(x, shade(MASK, 0.7), 0, y, S, 1); for (let i = 0; i < S; i += 3) pline(x, shade(MASK, 0.85), i, 0, i, S); }),
+    hair: canvasTex(64, (x, S) => facets(x, S, MASK, 281, 4, 0.2, 0.1)),
     // front of head: fully masked. knit balaclava, goggle strap band, respirator seat - no eyes/nose/mouth
-    face: canvasTex(32, (x, S) => {
-      facets(x, S, MASK, 291, 3, 0.18, 0.1);
-      for (let y = 1; y < S; y += 3) px(x, shade(MASK, 0.75), 0, y, S, 1); // knit rows
-      px(x, '#141416', 0, 10, S, 9); // goggle gasket band
-      px(x, '#3a3c40', 0, 10, S, 1); px(x, '#3a3c40', 0, 18, S, 1);
-      px(x, '#3d3f42', 9, 21, 14, 10); px(x, '#56595d', 10, 22, 12, 1); // respirator seat
-      for (let i = 0; i < 4; i++) px(x, '#1a1b1d', 11 + i * 3, 25, 2, 5);
+    face: canvasTex(128, (x, S) => {
+      facets(x, S, MASK, 291, 4, 0.18, 0.1);
+      for (let y = 1; y < S; y += 4) px(x, shade(MASK, 0.75), 0, y, S, 1); for (let i = 0; i < S; i += 3) pline(x, shade(MASK, 0.88), i, 0, i, S); // knit
+      px(x, '#141416', 0, 40, S, 36); px(x, '#3a3c40', 0, 40, S, 2); px(x, '#3a3c40', 0, 74, S, 2); // goggle gasket band
+      px(x, '#3d3f42', 36, 84, 56, 40); px(x, '#56595d', 40, 88, 48, 3); // respirator seat
+      for (let i = 0; i < 6; i++) px(x, '#1a1b1d', 44 + i * 7, 98, 4, 20);
     }),
-    glove: canvasTex(32, (x, S) => { facets(x, S, [26, 27, 29], 301, 3, 0.25, 0.06); for (let i = 0; i < S; i += 8) px(x, '#3a3b3d', i, S - 9, 1, 9); }),
-    helmet: canvasTex(32, (x, S) => {
-      facets(x, S, HELM, 311, 3, 0.3, 0.08);
-      const r = rng(31); for (let i = 0; i < 14; i++) px(x, shade(HELM, 0.6 + r() * 0.3), r() * S | 0, r() * S | 0, 2, 1); // scuffs
-      px(x, shade(HELM, 0.55), 0, S - 3, S, 3); // rim shadow
+    glove: canvasTex(64, (x, S) => { facets(x, S, [26, 27, 29], 301, 4, 0.25, 0.06); px(x, '#3a3b3d', 0, 24, S, 2);
+      for (let i = 0; i < S; i += 16) px(x, '#3a3b3d', i, S - 18, 2, 18); }),
+    helmet: canvasTex(64, (x, S) => {
+      facets(x, S, HELM, 311, 5, 0.28, 0.08);
+      const r = rng(31); for (let i = 0; i < 60; i++) px(x, shade(HELM, 0.6 + r() * 0.3), r() * S | 0, r() * S | 0, 2 + (r() * 3 | 0), 1); // scuffs
+      for (let i = 0; i < S; i += 6) px(x, shade(HELM, 0.75), i, 0, 3, S * 0.4); // cover weave
+      px(x, shade(HELM, 0.55), 0, S - 6, S, 6); // rim shadow
     }),
-    lens: canvasTex(16, (x, S) => { // opaque mirrored lens, red glint - nothing behind it shows
+    lens: canvasTex(32, (x, S) => { // opaque mirrored lens, red glint - nothing behind it shows
       x.fillStyle = '#1a0606'; x.fillRect(0, 0, S, S); x.fillStyle = '#5a1010'; x.fillRect(0, 0, S, S / 2);
-      px(x, '#ff6a4a', 3, 3, 3, 2); px(x, '#ffd0b0', 4, 3, 1, 1);
-    }),
+      px(x, '#ff6a4a', 6, 6, 6, 4); px(x, '#ffd0b0', 8, 6, 2, 2);
+    }, false),
   };
 }
 
-// ---------------------------------------------------------------- build helpers
+// ---------------------------------------------------------------- geometry helpers
+// loft: rings [y, rx, rz, cx = 0, cz = 0] (any order; sorted bottom -> top), n sides. Flat face toward +x (front),
+// u wraps with the front at 0.5, v = 0 at the lowest ring .. 1 at the top. caps: [bottom, top].
+function loft(rings, n = 8, caps = [true, true]) {
+  rings = [...rings].sort((a, b) => a[0] - b[0]);
+  const y0 = rings[0][0], y1 = rings[rings.length - 1][0], pos = [], uv = [], idx = [];
+  for (const [y, rx, rz, cx = 0, cz = 0] of rings) for (let i = 0; i <= n; i++) {
+    const th = -Math.PI + (i + 0.5) / n * 2 * Math.PI;
+    pos.push(cx + Math.cos(th) * rx, y, cz + Math.sin(th) * rz); uv.push((th + Math.PI) / (2 * Math.PI), (y - y0) / (y1 - y0 || 1));
+  }
+  const R = rings.length, W = n + 1;
+  for (let j = 0; j < R - 1; j++) for (let i = 0; i < n; i++) {
+    const a = j * W + i, b = a + 1, d = a + W, c = d + 1; idx.push(a, d, b, b, d, c);
+  }
+  const cap = (j, top) => { const [y, , , cx = 0, cz = 0] = rings[j], ci = pos.length / 3; pos.push(cx, y, cz); uv.push(0.5, top ? 1 : 0);
+    for (let i = 0; i < n; i++) { const a = j * W + i, b = a + 1; if (top) idx.push(ci, b, a); else idx.push(ci, a, b); } };
+  if (caps[0]) cap(0, false); if (caps[1]) cap(R - 1, true);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals(); return g;
+}
+// thin band around a loft (belt, straps round a limb, cuffs): two rings of the same section
+const band = (y, h, rx, rz, n = 8, cx = 0, cz = 0) => loft([[y - h / 2, rx, rz, cx, cz], [y + h / 2, rx, rz, cx, cz]], n, [false, false]);
+// segmented box with a vertex deformer fn(v, nx, ny, nz) (normalised -1..1 coords) - keeps BoxGeometry face groups / UVs
+function shaped(w, h, d, seg = [1, 1, 1], fn = null) {
+  const g = new THREE.BoxGeometry(w, h, d, ...seg);
+  if (fn) { const p = g.attributes.position, v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); fn(v, v.x / (w / 2), v.y / (h / 2), v.z / (d / 2)); p.setXYZ(i, v.x, v.y, v.z); }
+    g.computeVertexNormals(); }
+  return g;
+}
+const BOXG = {};
+const boxG = (w, h, d) => BOXG[w + ',' + h + ',' + d] ??= new THREE.BoxGeometry(w, h, d);
+// merge static parts per (bone, material, kit tag): far fewer draw calls with the extra polys
+const _o = new THREE.Object3D();
+function batcher() {
+  const items = [];
+  return {
+    // o: { r: [rx, ry, rz], s: [sx, sy, sz] (positive only), tag: 'night' | 'ash' | 'night+player' ... }
+    add(parent, geo, mat, x = 0, y = 0, z = 0, o = {}) { items.push({ parent, geo, mat, x, y, z, o }); },
+    // strap / tube along a polyline in the x-y plane at depth z (each leg = a box oriented along the segment)
+    strap(parent, pts, z, w, t, mat, o = {}) {
+      for (let i = 0; i < pts.length - 1; i++) { const [ax, ay] = pts[i], [bx, by] = pts[i + 1], dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy);
+        this.add(parent, boxG(t, L + t * 0.6, w), mat, (ax + bx) / 2, (ay + by) / 2, z, { ...o, r: [0, 0, Math.atan2(-dx, dy)] }); }
+    },
+    flush(kitParts) {
+      const groups = new Map();
+      for (const { parent, geo, mat, x, y, z, o } of items) {
+        const key = parent.uuid + '|' + mat.uuid + '|' + (o.tag || '');
+        if (!groups.has(key)) groups.set(key, { parent, mat, tag: o.tag, list: [] });
+        _o.position.set(x, y, z); _o.rotation.set(...(o.r || [0, 0, 0])); _o.scale.set(...(o.s || [1, 1, 1])); _o.updateMatrix();
+        groups.get(key).list.push((geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(_o.matrix));
+      }
+      for (const gr of groups.values()) {
+        const mesh = new THREE.Mesh(mergeGeos(gr.list), gr.mat); gr.parent.add(mesh);
+        if (gr.tag) for (const t of gr.tag.split('+')) kitParts[t].push(mesh);
+      }
+      items.length = 0;
+    },
+  };
+}
+function mergeGeos(list) {
+  let n = 0; for (const g of list) n += g.attributes.position.count;
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2); let o = 0;
+  for (const g of list) { const c = g.attributes.position.count;
+    pos.set(g.attributes.position.array, o * 3); if (!g.attributes.normal) g.computeVertexNormals(); nor.set(g.attributes.normal.array, o * 3);
+    if (g.attributes.uv) uv.set(g.attributes.uv.array, o * 2); o += c; g.dispose(); }
+  const m = new THREE.BufferGeometry();
+  m.setAttribute('position', new THREE.BufferAttribute(pos, 3)); m.setAttribute('normal', new THREE.BufferAttribute(nor, 3)); m.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  m.computeBoundingSphere(); return m;
+}
 function box(w, h, d, m) { return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); }
 function at(mesh, x, y, z, parent) { mesh.position.set(x, y, z); parent.add(mesh); return mesh; }
 function pivot(parent, x, y, z) { const p = new THREE.Group(); p.position.set(x, y, z); parent.add(p); return p; }
 
 // leg / arm lengths used by the pose solver
 const THIGH = 0.42, SHIN = 0.4, ANKLE = 0.1, HIP_Y = THIGH + SHIN + ANKLE; // 0.92
+
+// shared shapes (built once, cloned into the per-bone batches)
+const SHAPES = {};
+function shapes() {
+  if (SHAPES.ready) return SHAPES;
+  Object.assign(SHAPES, {
+    ready: true,
+    pelvis: loft([[-0.13, 0.105, 0.17], [-0.06, 0.122, 0.2], [0.04, 0.128, 0.198], [0.12, 0.124, 0.192]], 10),
+    belt: band(0.07, 0.075, 0.142, 0.218, 10),
+    torso: loft([[0, 0.126, 0.194], [0.1, 0.13, 0.192], [0.2, 0.142, 0.212, 0.004], [0.3, 0.152, 0.236, 0.008], [0.4, 0.15, 0.246, 0.004], [0.465, 0.128, 0.226], [0.52, 0.085, 0.13]], 10),
+    collar: loft([[0.47, 0.088, 0.1, 0.01], [0.56, 0.08, 0.092, 0.012]], 8, [false, true]),
+    thigh: loft([[0.04, 0.098, 0.098], [-0.05, 0.112, 0.108], [-0.18, 0.108, 0.103, 0.004], [-0.32, 0.09, 0.086], [-0.43, 0.078, 0.077]], 8),
+    knee: loft([[0.05, 0.05, 0.05], [0, 0.084, 0.08], [-0.06, 0.062, 0.06]], 8),
+    shin: loft([[0.01, 0.082, 0.079], [-0.09, 0.089, 0.085, -0.008], [-0.19, 0.083, 0.08, -0.01], [-0.3, 0.068, 0.068], [-0.38, 0.07, 0.07]], 8),
+    cuff: loft([[-0.33, 0.082, 0.08], [-0.37, 0.09, 0.088], [-0.405, 0.085, 0.083]], 8, [false, false]),
+    bootShaft: loft([[-0.075, 0.098, 0.088, 0.008], [0.0, 0.092, 0.085], [0.085, 0.084, 0.079]], 8),
+    // foot: toe slopes down + narrows, heel rounded
+    foot: shaped(0.3, 0.075, 0.172, [3, 1, 2], (v, nx, ny, nz) => {
+      if (nx > 0.2 && ny > 0) v.y -= 0.034 * (nx - 0.2) / 0.8; if (nx > 0.6) v.z *= 0.86; if (nx < -0.6) v.z *= 0.9;
+      if (nx > 0.98 && ny > 0) v.x -= 0.012; }),
+    sole: shaped(0.318, 0.032, 0.186, [3, 1, 1], (v, nx, ny, nz) => { if (nx > 0.6) v.z *= 0.88; if (nx > 0.98) v.x -= 0.004; }),
+    kneePad: shaped(0.05, 0.135, 0.15, [1, 2, 2], (v, nx, ny, nz) => { const c = (1 - nz * nz) * (1 - 0.5 * ny * ny); v.x += c * 0.016 - (1 - c) * 0.004; v.z *= 1 - 0.12 * (ny < 0 ? -ny : 0); }),
+    deltoid: loft([[0.085, 0.035, 0.035], [0.055, 0.078, 0.074], [-0.02, 0.09, 0.086], [-0.1, 0.074, 0.07]], 8),
+    upperArm: loft([[-0.04, 0.072, 0.068], [-0.12, 0.075, 0.071, 0.006], [-0.24, 0.063, 0.06], [-0.32, 0.057, 0.056]], 8),
+    elbow: loft([[0.04, 0.042, 0.042], [0, 0.06, 0.058], [-0.04, 0.05, 0.05]], 6),
+    forearm: loft([[0.02, 0.057, 0.055], [-0.07, 0.064, 0.06, 0.004], [-0.17, 0.052, 0.05], [-0.25, 0.045, 0.044]], 8),
+    gauntlet: loft([[-0.19, 0.052, 0.05], [-0.255, 0.06, 0.058], [-0.28, 0.055, 0.053]], 8, [false, true]),
+    palm: shaped(0.1, 0.078, 0.074, [1, 2, 1], (v, nx, ny) => { if (ny < 0) { v.x *= 0.95; v.z *= 0.94; } if (ny > 0.9) { v.x *= 0.88; v.z *= 0.9; } }),
+    fingers: shaped(0.096, 0.044, 0.07, [2, 1, 1], (v, nx, ny) => { if (nx > 0.9) v.y -= 0.008; }),
+    fingerTips: shaped(0.05, 0.034, 0.068, [1, 1, 1], (v, nx, ny) => { if (ny < 0) v.x *= 0.85; }),
+    thumb: shaped(0.034, 0.05, 0.03, [1, 1, 1], (v, nx, ny) => { if (ny < 0) { v.x *= 0.8; v.z *= 0.8; } }),
+    neck: loft([[-0.03, 0.048, 0.052], [0.07, 0.044, 0.048]], 8),
+    // head: jaw tapers in, crown rounds off, brow + nose ridge down the centre of the face, back of skull bulges
+    head: shaped(0.215, 0.27, 0.198, [2, 4, 2], (v, nx, ny, nz) => {
+      if (ny < -0.2) { const k = (-0.2 - ny) / 0.8; v.z *= 1 - 0.2 * k; if (nx < 0) v.x *= 1 - 0.28 * k; }
+      if (ny > 0.45) { const k = (ny - 0.45) / 0.55; v.z *= 1 - 0.1 * k; v.x *= 1 - 0.08 * k; }
+      if (nx > 0.99 && Math.abs(nz) < 0.01 && ny > -0.9 && ny < 0.6) v.x += 0.012;
+      if (nx > 0.99 && Math.abs(nz) > 0.99 && ny > -0.6 && ny < 0.2) v.x -= 0.008; // cheeks recede -> face plane reads
+      if (nx < -0.99 && ny > -0.3 && ny < 0.6) v.x -= 0.01;
+      if (Math.abs(nx) > 0.99 && Math.abs(nz) > 0.99) { v.x *= 0.95; v.z *= 0.93; } // chamfered vertical edges -> octagonal skull
+      if (ny < -0.99 && nx > 0.99 && Math.abs(nz) < 0.01) { v.x += 0.006; v.y -= 0.006; } // chin point
+    }),
+    ear: shaped(0.045, 0.065, 0.022, [1, 2, 1], (v, nx, ny) => { if (ny < -0.5) v.x *= 0.6; }),
+    pouch: shaped(0.064, 0.1, 0.074, [1, 2, 1], (v, nx, ny) => { if (ny > 0.9) { v.x *= 0.9; } if (ny < -0.9) { v.x *= 0.85; v.z *= 0.95; } }),
+    flap: shaped(0.07, 0.03, 0.08, [1, 1, 1], (v, nx, ny) => { if (nx > 0.9 && ny < 0) v.y -= 0.006; }),
+    spike: new THREE.ConeGeometry(0.05, 0.12, 5),
+    tip: new THREE.ConeGeometry(0.045, 0.14, 4),
+  });
+  return SHAPES;
+}
 
 /**
  * Build one sneaker. opts.kit = 'night' (Night Ops, default) | 'ash' (Ash Fox) | 'player' (legacy olive) | 'enemy'.
@@ -219,143 +457,166 @@ const THIGH = 0.42, SHIN = 0.4, ANKLE = 0.1, HIP_Y = THIGH + SHIN + ANKLE; // 0.
 export function makeSneaker(scene, opts = {}) {
   const enemy = opts.kit === 'enemy';
   let kit = enemy ? 'enemy' : KITS[opts.kit] ? opts.kit : 'night';
-  const T = textures(kit);
+  const T = textures(kit), G = shapes();
   const L = (map, color = 0xffffff) => new THREE.MeshLambertMaterial({ map, color, flatShading: true });
   const suitTint = opts.tint ?? 0xffffff;
   const M = {
-    suit: L(T.suit, suitTint), gear: L(T.gear), pouch: L(T.pouch), pad: L(T.pad), boot: L(T.boot),
+    suit: L(T.suit, suitTint), gear: L(T.gear), pouch: L(T.pouch), pad: L(T.pad), boot: L(T.boot), sole: L(T.sole),
     skin: L(T.skin), hair: L(T.hair), glove: L(T.glove),
     web: L(T.web ?? T.gear), trim: L(T.trim ?? T.gear), gaiter: L(T.gaiter ?? T.skin), face: L(T.face), headSide: L(T.skin),
     metal: new THREE.MeshLambertMaterial({ color: 0x6b6d6e, flatShading: true }),
     accent: new THREE.MeshBasicMaterial({ color: opts.accent ?? 0x6fb0ff }),
     patch: new THREE.MeshLambertMaterial({ color: new THREE.Color(opts.accent ?? 0x6fb0ff).multiplyScalar(0.55), flatShading: true }),
   };
-  if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); }
+  if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); M.vest = L(T.vest); }
   else { M.gun = L(T.gun); M.blade = L(T.blade); }
   const suitFrontMat = M.suitFront = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
-  const torsoMats = [suitFrontMat, M.suit, M.suit, M.suit, M.suit, M.suit];
   const headMats = enemy ? [M.face, M.skin, M.hair, M.skin, M.skin, M.skin] : [M.face, M.headSide, M.hair, M.skin, M.headSide, M.headSide];
   const kitParts = { night: [], ash: [], player: [] }; // per-kit extra meshes (hair style, gaiter, trims) toggled by setKit
-  const part = (k, mesh) => { kitParts[k].push(mesh); return mesh; };
+  const B = batcher(), add = B.add.bind(B);
 
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
   const rig = new THREE.Group(); rig.scale.setScalar(opts.scale ?? 0.93); inner.add(rig);
 
   // --- hips (root of the skeleton)
   const hips = pivot(rig, 0, HIP_Y, 0);
-  at(box(0.24, 0.18, 0.4, M.suit), 0, -0.02, 0, hips);
-  // belt + pouches + buckle
-  at(box(0.28, 0.08, 0.44, M.web), 0, 0.07, 0, hips);
-  at(box(0.03, 0.06, 0.08, M.metal), 0.145, 0.07, 0, hips);
-  for (const z of [-0.16, -0.08, 0.08, 0.16]) at(box(0.06, 0.1, 0.07, M.pouch), 0.15, 0.05, z, hips);
-  at(box(0.07, 0.1, 0.08, M.pouch), -0.15, 0.05, 0.12, hips);
+  add(hips, G.pelvis, M.suit, 0, -0.02, 0);
+  // belt + pouches (body + flap + stud) + buckle
+  add(hips, G.belt, M.web);
+  add(hips, boxG(0.03, 0.065, 0.085), M.metal, 0.147, 0.07, 0); add(hips, boxG(0.012, 0.03, 0.05), M.gear, 0.163, 0.07, 0);
+  for (const z of [-0.165, -0.085, 0.085, 0.165]) {
+    const rz = Math.sign(z) * Math.abs(z) * 0.5; // follow the belt curve
+    add(hips, G.pouch, M.pouch, 0.152 - Math.abs(z) * 0.12, 0.045, z, { r: [0, -rz * 1.6, 0] });
+    add(hips, G.flap, M.pouch, 0.153 - Math.abs(z) * 0.12, 0.098, z, { r: [0, -rz * 1.6, 0] });
+  }
+  add(hips, G.pouch, M.pouch, -0.15, 0.045, 0.11, { s: [1.1, 1, 1.15] }); add(hips, G.flap, M.pouch, -0.152, 0.1, 0.11, { s: [1.1, 1, 1.15] });
+  add(hips, G.pouch, M.pouch, -0.13, 0.045, -0.15, { r: [0, 0.6, 0], s: [0.9, 0.9, 0.9] }); // canteen / dump pouch, left rear
 
   // --- legs
   const legs = [];
   let holstered = null;
   for (const side of [-1, 1]) { // -1 = left (-z), 1 = right (+z)
     const hip = pivot(hips, 0, -0.04, side * 0.11);
-    at(box(0.21, THIGH, 0.19, M.suit), 0, -THIGH / 2, 0, hip);
-    if (side === 1) { // thigh holster with two straps on the right leg
-      at(box(0.14, 0.2, 0.06, M.pouch), 0.01, -0.2, 0.12, hip);
-      at(box(0.06, 0.28, 0.04, M.web), 0.02, -0.12, 0.15, hip);
-      at(box(0.22, 0.04, 0.21, M.web), 0, -0.14, 0, hip); at(box(0.22, 0.04, 0.21, M.web), 0, -0.3, 0, hip);
+    add(hip, G.thigh, M.suit);
+    if (side === 1) { // drop-leg holster: tapered body + flap, two straps wrapping the thigh, hanger strap to the belt
+      add(hip, shaped(0.15, 0.21, 0.055, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.x *= 0.8; }), M.pouch, 0.012, -0.2, 0.128);
+      add(hip, boxG(0.06, 0.3, 0.035), M.web, 0.02, -0.12, 0.153);
+      add(hip, band(-0.14, 0.04, 0.118, 0.114), M.web); add(hip, band(-0.3, 0.04, 0.1, 0.096), M.web);
+      add(hip, boxG(0.03, 0.03, 0.02), M.metal, 0.02, -0.02, 0.17); // QD buckle
       if (!enemy) { // holstered pistol: slide sunk in the holster, grip + hammer sticking out the top, angled back
         holstered = pivot(hip, 0.0, -0.08, 0.15);
-        at(box(0.05, 0.2, 0.035, M.gun), 0.02, -0.08, 0, holstered); // slide (mostly inside the holster)
-        const grip = at(box(0.1, 0.05, 0.04, M.gun), -0.04, 0.02, 0, holstered); grip.rotation.z = -0.25;
-        at(box(0.03, 0.03, 0.03, M.gear), 0.02, 0.035, 0, holstered); // hammer / rear sight
+        add(holstered, boxG(0.05, 0.2, 0.035), M.gun, 0.02, -0.08, 0); // slide (mostly inside the holster)
+        add(holstered, shaped(0.1, 0.05, 0.04, [2, 1, 1], (v, nx) => { if (nx < -0.9) v.y -= 0.006; }), M.gun, -0.04, 0.02, 0, { r: [0, 0, -0.25] });
+        add(holstered, boxG(0.03, 0.03, 0.03), M.gear, 0.02, 0.035, 0); // hammer / rear sight
       }
-    }
+    } else add(hip, band(-0.2, 0.03, 0.115, 0.11), M.web); // map-pocket strap on the left thigh
     const knee = pivot(hip, 0, -THIGH, 0);
-    at(box(0.18, SHIN, 0.17, M.suit), 0, -SHIN / 2, 0, knee);
-    at(box(0.07, 0.15, 0.17, M.pad), 0.1, -0.04, 0, knee); // knee pad
-    if (!enemy) { const kp = at(box(0.04, 0.1, 0.12, M.pad), 0.135, -0.04, 0, knee); kp.rotation.z = 0.15; } // sharper moulded cap
-    at(box(0.19, 0.06, 0.18, M.suit), 0, -SHIN + 0.04, 0, knee); // trouser cuff over boot
+    add(knee, G.knee, M.suit);
+    add(knee, G.shin, M.suit);
+    add(knee, G.kneePad, M.pad, 0.083, -0.035, 0);
+    add(knee, band(-0.1, 0.022, 0.092, 0.088), M.web); // knee-pad strap behind the calf
+    add(knee, G.cuff, M.suit); // trouser bloused over the boot
     const ankle = pivot(knee, 0, -SHIN, 0);
-    at(box(0.19, 0.16, 0.17, M.boot), 0, -0.02, 0, ankle); // boot shaft
-    if (!enemy) at(box(0.2, 0.035, 0.18, M.trim), 0, 0.06, 0, ankle); // ankle band (olive on Night Ops, blue on Ash Fox)
-    at(box(0.3, 0.09, 0.18, M.boot), 0.05, -ANKLE + 0.045, 0, ankle); // boot foot
+    add(ankle, G.bootShaft, M.boot);
+    if (!enemy) add(ankle, band(0.06, 0.03, 0.088, 0.083), M.trim); // ankle band (olive on Night Ops, blue on Ash Fox)
+    add(ankle, G.foot, M.boot, 0.05, -ANKLE + 0.067, 0);
+    add(ankle, G.sole, M.sole, 0.05, -ANKLE + 0.016, 0);
+    add(ankle, boxG(0.05, 0.035, 0.18), M.sole, -0.075, -ANKLE + 0.042, 0); // heel block
     legs.push({ hip, knee, ankle, side });
   }
 
   // --- torso (pivot at waist so it can lean)
   const torso = pivot(hips, 0, 0.08, 0);
-  at(box(0.26, 0.24, 0.4, torsoMats), 0, 0.12, 0, torso); // abdomen
-  at(box(0.28, 0.24, 0.46, torsoMats), 0, 0.34, 0, torso); // chest (broader)
-  at(box(0.2, 0.08, 0.2, M.suit), 0.01, 0.49, 0, torso); // high collar
-  // harness: two shoulder straps front + back, chest strap, buckles
+  add(torso, G.torso, suitFrontMat);
+  add(torso, G.collar, M.suit); // high collar
+  // harness: two shoulder straps that follow the chest curve and run over the shoulders to the back, chest strap, buckles
   for (const z of [-0.11, 0.11]) {
-    at(box(0.02, 0.44, 0.05, M.web), 0.145, 0.24, z, torso);
-    at(box(0.02, 0.44, 0.05, M.web), -0.145, 0.24, z, torso);
-    at(box(0.3, 0.02, 0.05, M.web), 0, 0.465, z, torso);
-    at(box(0.025, 0.04, 0.04, M.metal), 0.155, 0.3, z, torso);
+    B.strap(torso, [[0.134, 0.0], [0.15, 0.16], [0.16, 0.3], [0.148, 0.43], [0.06, 0.5], [-0.06, 0.5], [-0.148, 0.43], [-0.16, 0.3], [-0.15, 0.16], [-0.134, 0.0]], z, 0.05, 0.018, M.web);
+    add(torso, boxG(0.022, 0.045, 0.045), M.metal, 0.168, 0.25, z); add(torso, boxG(0.012, 0.025, 0.028), M.gear, 0.178, 0.25, z);
   }
-  at(box(0.02, 0.04, 0.3, M.web), 0.15, 0.36, 0, torso);
-  at(box(0.02, 0.18, 0.1, M.web), -0.15, 0.3, 0, torso); // back X-panel
-  if (!enemy) { // Ash Fox: accent stripe round the high collar
-    part('ash', at(box(0.205, 0.015, 0.205, M.trim), 0.01, 0.515, 0, torso));
+  add(torso, shaped(0.02, 0.04, 0.3, [1, 1, 4], (v, nx, ny, nz) => { v.x -= 0.012 * nz * nz; }), M.web, 0.168, 0.36, 0);
+  add(torso, boxG(0.02, 0.18, 0.1), M.web, -0.168, 0.3, 0, { r: [0.78, 0, 0] }); add(torso, boxG(0.02, 0.18, 0.1), M.web, -0.168, 0.3, 0, { r: [-0.78, 0, 0] }); // back X
+  add(torso, boxG(0.03, 0.05, 0.05), M.metal, -0.172, 0.3, 0);
+  if (!enemy) add(torso, band(0.535, 0.016, 0.086, 0.097, 8, 0.011), M.trim, 0, 0, 0, { tag: 'ash' }); // Ash Fox: accent stripe round the collar
+  if (enemy) { // plate carrier: curved front + back plates, shoulder pads, three rifle-mag pouches
+    const plate = shaped(0.05, 0.3, 0.36, [1, 2, 3], (v, nx, ny, nz) => { v.x += 0.022 * (1 - nz * nz) * Math.sign(nx || 1); if (ny > 0.9) v.z *= 0.85; });
+    add(torso, plate, M.vest, 0.15, 0.3, 0); add(torso, plate, M.vest, -0.145, 0.3, 0, { r: [0, Math.PI, 0] });
+    for (const z of [-0.08, 0.08]) B.strap(torso, [[0.13, 0.44], [0.04, 0.5], [-0.04, 0.5], [-0.13, 0.44]], z, 0.07, 0.025, M.vest);
+    for (const z of [-0.1, 0, 0.1]) { add(torso, G.pouch, M.pouch, 0.2, 0.2, z, { s: [0.75, 1.15, 1.2] }); add(torso, G.flap, M.pouch, 0.2, 0.26, z, { s: [0.75, 1, 1.2] }); }
+    add(torso, boxG(0.04, 0.12, 0.08), M.pouch, 0.2, 0.36, -0.12); // radio
   }
   // chest radio on the right strap + antenna + LED (P1/P2 accent)
-  at(box(0.06, 0.14, 0.09, M.pouch), 0.17, 0.33, 0.13, torso);
-  const ant = at(new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.16, 3), M.gear), 0.17, 0.48, 0.16, torso);
-  at(box(0.012, 0.025, 0.025, M.accent), 0.2, 0.37, 0.11, torso);
-  at(box(0.025, 0.025, 0.025, M.accent), 0, 0.08, 0, ant);
+  add(torso, shaped(0.06, 0.14, 0.09, [1, 2, 1], (v, nx, ny) => { if (nx > 0.9 && Math.abs(ny) > 0.9) v.x -= 0.006; }), M.pouch, 0.185, 0.33, 0.13);
+  add(torso, boxG(0.012, 0.03, 0.06), M.metal, 0.217, 0.37, 0.13); // dial / PTT
+  const ant = pivot(torso, 0.18, 0.48, 0.16);
+  add(ant, new THREE.CylinderGeometry(0.006, 0.01, 0.16, 4), M.gear);
+  add(torso, boxG(0.012, 0.025, 0.025), M.accent, 0.218, 0.33, 0.11);
+  add(ant, boxG(0.025, 0.025, 0.025), M.accent, 0, 0.08, 0);
 
   // --- head
   const neck = pivot(torso, 0.01, 0.52, 0);
-  at(box(0.09, 0.06, 0.1, M.skin), 0, 0.0, 0, neck);
+  add(neck, G.neck, M.skin);
   const headPivot = pivot(neck, 0, 0.03, 0);
-  if (enemy) buildEnemyHead(headPivot, M, headMats);
+  if (enemy) buildEnemyHead(headPivot, M, headMats, B, G);
   else {
-    at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, headPivot);
-    at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, 0.11, headPivot); at(box(0.03, 0.06, 0.03, M.skin), -0.01, 0.12, -0.11, headPivot); // ears
-    // SPIKY (olive + Night Ops): short dark spikes, full cap
-    const spikyParts = [];
-    const sp = (m) => (spikyParts.push(m), m);
-    sp(at(box(0.22, 0.06, 0.22, M.hair), 0.0, 0.27, 0, headPivot)); // hair cap
-    sp(at(box(0.05, 0.16, 0.22, M.hair), -0.1, 0.17, 0, headPivot)); // back of hair
-    const spike = new THREE.ConeGeometry(0.05, 0.12, 4);
+    at(new THREE.Mesh(G.head, headMats), 0.01, 0.13, 0, headPivot);
+    for (const s of [-1, 1]) add(headPivot, G.ear, M.skin, -0.012, 0.125, s * 0.1);
+    // SPIKY (olive + Night Ops): rounded hair cap + back + sideburns, a crown of tilted 5-sided spikes swept back
+    const NP = { tag: 'night+player' };
+    add(headPivot, shaped(0.235, 0.075, 0.218, [2, 1, 2], (v, nx, ny, nz) => { if (ny > 0) v.y += 0.018 * (1 - nx * nx) * (1 - nz * nz); if (nx > 0.9) v.y -= 0.01; }), M.hair, 0.0, 0.27, 0, NP);
+    add(headPivot, shaped(0.055, 0.18, 0.214, [1, 2, 2], (v, nx, ny, nz) => { if (ny < -0.5) v.z *= 0.86; v.x -= 0.008 * (1 - nz * nz); }), M.hair, -0.098, 0.18, 0, NP);
+    for (const s of [-1, 1]) add(headPivot, boxG(0.11, 0.07, 0.014), M.hair, -0.02, 0.235, s * 0.1, NP); // temples above the ears
+    for (const s of [-1, 1]) add(headPivot, boxG(0.024, 0.05, 0.012), M.hair, 0.05, 0.19, s * 0.099, NP); // sideburns
     const r = rng(77);
-    for (let i = 0; i < 9; i++) { // short spiky hair: random-ish tilted 4-sided cones
-      const s = sp(at(new THREE.Mesh(spike, M.hair), -0.08 + (i % 3) * 0.075 + (r() - 0.5) * 0.02, 0.31, -0.075 + Math.floor(i / 3) * 0.075, headPivot));
-      s.rotation.set((r() - 0.5) * 0.9, r() * 3, -0.5 + (r() - 0.5) * 0.6); s.scale.setScalar(0.8 + r() * 0.5);
+    for (let i = 0; i < 16; i++) { // short spiky hair: tilted cones, raked back
+      const row = i % 4, col = i >> 2;
+      add(headPivot, G.spike, M.hair, -0.09 + row * 0.06 + (r() - 0.5) * 0.02, 0.3 + (r() - 0.5) * 0.02, -0.08 + col * 0.053 + (r() - 0.5) * 0.015,
+        { ...NP, r: [(r() - 0.5) * 0.9, r() * 3, -0.55 + (r() - 0.5) * 0.6], s: Array(3).fill(0.75 + r() * 0.5) });
     }
-    for (let i = 0; i < 4; i++) { const s = sp(at(new THREE.Mesh(spike, M.hair), 0.11, 0.26, -0.075 + i * 0.05, headPivot)); s.rotation.set(0, 0, -1.2); s.scale.setScalar(0.6); }
-    for (const m of spikyParts) { part('night', m); kitParts.player.push(m); }
-    // NIGHT OPS neck gaiter: knit tube bunched round the neck + rolled top edge under the jaw. Face stays open.
-    part('night', at(box(0.17, 0.085, 0.19, M.gaiter), 0.0, -0.005, 0, neck));
-    part('night', at(box(0.15, 0.03, 0.17, M.gaiter), 0.005, 0.045, 0, neck));
-    const drape = part('night', at(box(0.05, 0.08, 0.15, M.gaiter), 0.075, -0.03, 0, neck)); drape.rotation.z = -0.25; // slack fold at the throat
+    for (let i = 0; i < 5; i++) add(headPivot, G.spike, M.hair, 0.112, 0.262, -0.08 + i * 0.04, { ...NP, r: [0, 0, -1.25], s: [0.55, 0.6 + r() * 0.2, 0.55] }); // fringe spikes
+    for (let i = 0; i < 6; i++) add(headPivot, G.spike, M.hair, -0.12, 0.22 + (i % 2) * 0.05, -0.07 + (i >> 1) * 0.07, { ...NP, r: [0, 0, 1.9 + (r() - 0.5) * 0.4], s: [0.6, 0.7, 0.6] }); // nape
+    // NIGHT OPS neck gaiter: bunched knit tube (alternating fold rings) + rolled lip under the jaw + slack throat fold
+    add(neck, loft([[-0.05, 0.088, 0.096], [-0.025, 0.094, 0.102], [0.0, 0.086, 0.094], [0.025, 0.092, 0.1], [0.045, 0.082, 0.09]], 10, [false, false]), M.gaiter, 0, 0, 0, { tag: 'night' });
+    add(neck, band(0.05, 0.022, 0.078, 0.088, 10, 0.004), M.gaiter, 0, 0, 0, { tag: 'night' });
+    add(neck, shaped(0.05, 0.08, 0.15, [1, 2, 2], (v, nx, ny, nz) => { v.x += 0.01 * (1 - nz * nz); }), M.gaiter, 0.078, -0.03, 0, { tag: 'night', r: [0, 0, -0.25] });
     // ASH FOX swept undercut: shaved sides (stubble texture on head sides), long top swept up + over to the right,
-    // a fringe strand falling across the left of the forehead. Low-poly boxes + flat wedges.
-    const ashHair = (mesh, x, y, z, rx = 0, ry = 0, rz = 0) => { const m = part('ash', at(mesh, x, y, z, headPivot)); m.rotation.set(rx, ry, rz); return m; };
-    ashHair(box(0.24, 0.06, 0.17, M.hair), 0.005, 0.285, 0.015); // top slab (narrower than the head = undercut)
-    ashHair(box(0.22, 0.09, 0.13, M.hair), 0.02, 0.33, 0.04, -0.35); // swept volume, rising to the right
-    ashHair(box(0.18, 0.06, 0.09, M.hair), 0.03, 0.37, 0.09, -0.7); // crest rolling over the right side
-    ashHair(box(0.09, 0.13, 0.17, M.hair), 0.1, 0.315, 0.03, -0.2, 0, 0.3); // tall front quiff
-    ashHair(box(0.035, 0.06, 0.14, M.hair), 0.12, 0.245, -0.035, 0.45); // fringe strand down to the left temple
-    ashHair(box(0.05, 0.11, 0.18, M.hair), -0.095, 0.24, 0.01); // back (above the shaved nape)
-    const wedge = new THREE.ConeGeometry(0.045, 0.14, 4);
-    for (let i = 0; i < 4; i++) { const w = ashHair(new THREE.Mesh(wedge, M.hair), -0.07 + i * 0.055, 0.35, 0.1, 1.15, 0, 0.15); w.scale.set(1, 1, 0.55); } // swept tips over the right ear
+    // a fringe strand falling across the left of the forehead. Segmented boxes rounded off + flat wedges.
+    const A = (geo, x, y, z, rx = 0, ry = 0, rz = 0, s) => add(headPivot, geo, M.hair, x, y, z, { tag: 'ash', r: [rx, ry, rz], s });
+    const round = (w, h, d, k = 0.012) => shaped(w, h, d, [2, 2, 2], (v, nx, ny, nz) => { if (ny > 0) v.y += k * (1 - nx * nx) * (1 - nz * nz); if (Math.abs(nx) > 0.9 && Math.abs(nz) > 0.9) { v.x *= 0.92; v.z *= 0.92; } });
+    A(round(0.24, 0.06, 0.17), 0.005, 0.285, 0.015); // top slab (narrower than the head = undercut)
+    A(round(0.22, 0.09, 0.13, 0.015), 0.02, 0.33, 0.04, -0.35); // swept volume, rising to the right
+    A(round(0.18, 0.06, 0.09), 0.03, 0.37, 0.09, -0.7); // crest rolling over the right side
+    A(round(0.09, 0.13, 0.17), 0.1, 0.315, 0.03, -0.2, 0, 0.3); // tall front quiff
+    A(shaped(0.035, 0.07, 0.14, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.z *= 0.6; }), 0.12, 0.24, -0.035, 0.45); // fringe strand down to the left temple
+    A(round(0.05, 0.11, 0.18), -0.095, 0.24, 0.01); // back (above the shaved nape)
+    for (let i = 0; i < 5; i++) A(G.tip, -0.08 + i * 0.048, 0.35, 0.1, 1.15, 0, 0.15, [1, 1, 0.55]); // swept tips over the right ear
+    for (let i = 0; i < 3; i++) A(G.tip, 0.09 - i * 0.01, 0.37 - i * 0.012, -0.02 + i * 0.05, -0.3, 0, -1.0, [0.8, 0.9, 0.5]); // quiff points
+    for (let i = 0; i < 4; i++) A(G.tip, -0.06 + i * 0.05, 0.315, -0.075, -0.9, 0, 0.1, [0.7, 0.8, 0.45]); // short layer over the left side of the undercut
+    for (let i = 0; i < 3; i++) A(G.tip, -0.115, 0.27 + i * 0.02, -0.05 + i * 0.06, 0, 0, 1.75, [0.75, 0.8, 0.5]); // tapered back
   }
 
   // --- arms
   const arms = [];
   for (const side of [-1, 1]) {
     const sh = pivot(torso, 0, 0.42, side * 0.28);
-    at(box(0.17, 0.12, 0.13, M.suit), 0, -0.02, 0, sh); // shoulder cap
-    at(box(0.13, 0.3, 0.12, M.suit), 0, -0.17, 0, sh);
-    at(box(0.08, 0.08, 0.02, M.patch), 0, -0.1, side * 0.065, sh); // sleeve patch (P1/P2 accent)
-    if (!enemy) { const sp = at(box(0.13, 0.04, 0.15, M.pad), 0.0, 0.05, side * 0.01, sh); sp.rotation.x = -side * 0.25; } // shoulder plate
+    add(sh, G.deltoid, M.suit);
+    add(sh, G.upperArm, M.suit);
+    add(sh, boxG(0.075, 0.08, 0.014), M.patch, 0, -0.1, side * 0.073); // sleeve patch (P1/P2 accent)
+    if (!enemy) add(sh, shaped(0.13, 0.03, 0.14, [2, 1, 3], (v, nx, ny, nz) => { v.y -= 0.03 * nz * nz + 0.01 * nx * nx; }), M.pad, 0.0, 0.07, side * 0.03, { r: [-side * 0.38, 0, 0] }); // moulded shoulder plate
+    else add(sh, shaped(0.15, 0.04, 0.15, [2, 1, 2], (v, nx, ny, nz) => { v.y -= 0.02 * nz * nz; }), M.vest, 0.0, 0.07, side * 0.015, { r: [-side * 0.3, 0, 0] });
     const el = pivot(sh, 0, -0.32, 0);
-    at(box(0.12, 0.26, 0.11, M.suit), 0, -0.12, 0, el);
-    if (!enemy) at(box(0.05, 0.08, 0.1, M.pad), -0.06, -0.01, 0, el); // elbow pad
-    at(box(0.13, 0.06, 0.12, M.gear), 0, -0.24, 0, el); // glove cuff
+    add(el, G.elbow, M.suit);
+    add(el, G.forearm, M.suit);
+    if (!enemy) add(el, shaped(0.05, 0.085, 0.1, [1, 1, 2], (v, nx, ny, nz) => { if (nx < 0) v.x -= 0.01 * (1 - nz * nz); }), M.pad, -0.058, -0.01, 0); // elbow pad
+    add(el, G.gauntlet, M.gear); // glove gauntlet cuff
     const wr = pivot(el, 0, -0.27, 0);
-    at(box(0.11, 0.12, 0.08, M.glove), 0.01, -0.06, 0, wr);
-    at(box(0.04, 0.05, 0.03, M.glove), 0.05, -0.03, -side * 0.04, wr); // thumb
+    // mitt hand with a knuckle break: palm, finger block, curled tips, two-segment thumb
+    add(wr, G.palm, M.glove, 0.008, -0.04, 0);
+    add(wr, G.fingers, M.glove, 0.004, -0.098, 0, { r: [0, 0, 0.12] });
+    add(wr, G.fingerTips, M.glove, -0.03, -0.122, 0, { r: [0, 0, 0.55] });
+    add(wr, G.thumb, M.glove, 0.05, -0.03, -side * 0.035, { r: [side * 0.3, 0, -0.35] });
+    add(wr, G.thumb, M.glove, 0.064, -0.068, -side * 0.035, { r: [side * 0.2, 0, -0.1], s: [0.85, 0.8, 0.85] });
     arms.push({ sh, el, wr, side });
   }
   // right hand props (player kit). Wrist-local: -y = along the forearm (barrel / blade direction), -x = "down" when aiming.
@@ -363,29 +624,33 @@ export function makeSneaker(scene, opts = {}) {
   if (!enemy) {
     const wr = arms[1].wr;
     drawn = pivot(wr, 0, 0, 0);
-    at(box(0.05, 0.22, 0.04, M.gun), 0.035, -0.13, 0, drawn); // slide + barrel, runs past the fist
-    at(box(0.1, 0.05, 0.04, M.gun), -0.02, -0.07, 0, drawn).rotation.z = 0.2; // grip in the fist, raked back
-    at(box(0.03, 0.06, 0.035, M.gear), -0.005, -0.13, 0, drawn); // trigger guard / frame
-    at(box(0.015, 0.02, 0.015, M.metal), 0.065, -0.21, 0, drawn); // front sight
-    at(box(0.07, 0.03, 0.03, M.gear), -0.075, -0.07, 0, drawn); // magazine base
+    add(drawn, shaped(0.05, 0.22, 0.04, [1, 2, 1], (v, nx, ny, nz) => { if (nx > 0.9) v.z *= 0.8; }), M.gun, 0.035, -0.13, 0); // slide + barrel, runs past the fist
+    add(drawn, boxG(0.1, 0.05, 0.04), M.gun, -0.02, -0.07, 0, { r: [0, 0, 0.2] }); // grip in the fist, raked back
+    add(drawn, boxG(0.03, 0.06, 0.035), M.gear, -0.005, -0.13, 0); // trigger guard / frame
+    add(drawn, boxG(0.015, 0.02, 0.015), M.metal, 0.065, -0.21, 0); // front sight
+    add(drawn, boxG(0.015, 0.02, 0.03), M.metal, 0.065, -0.03, 0); // rear sight
+    add(drawn, boxG(0.07, 0.03, 0.03), M.gear, -0.075, -0.07, 0); // magazine base
     flash = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), new THREE.MeshBasicMaterial({ color: 0xffe080, transparent: true, opacity: 0.95, depthWrite: false }));
     flash.position.set(0.035, -0.3, 0); flash.scale.set(0.8, 1.6, 0.8); drawn.add(flash); flash.visible = false;
     knife = pivot(wr, 0, 0, 0);
-    at(box(0.04, 0.06, 0.035, M.gear), 0.0, -0.1, 0, knife); // handle in the fist
-    at(box(0.025, 0.04, 0.05, M.metal), 0.0, -0.14, 0, knife); // guard
-    at(box(0.012, 0.2, 0.035, M.blade), 0.0, -0.26, 0, knife); // blade
+    add(knife, shaped(0.04, 0.06, 0.035, [1, 2, 1], (v, nx, ny) => { if (Math.abs(ny) < 0.1) v.x *= 0.85; }), M.gear, 0.0, -0.1, 0); // handle in the fist
+    add(knife, boxG(0.025, 0.04, 0.05), M.metal, 0.0, -0.14, 0); // guard
+    add(knife, shaped(0.012, 0.2, 0.035, [1, 2, 1], (v, nx, ny, nz) => { if (ny < -0.9) v.z = nz > 0 ? v.z * 0.1 : v.z; }), M.blade, 0.0, -0.26, 0); // blade with a clipped point
     drawn.visible = knife.visible = false;
   }
 
-  if (enemy) { // slung carbine across the vest (low-poly: receiver, barrel, mag, stock)
-    const rifle = pivot(torso, 0.19, 0.28, 0); rifle.rotation.x = 0.75;
-    at(box(0.05, 0.07, 0.36, M.gear), 0, 0, 0, rifle);
-    at(box(0.025, 0.025, 0.2, M.metal), 0, 0.01, 0.27, rifle);
-    at(box(0.04, 0.11, 0.05, M.pouch), 0, -0.08, 0.06, rifle);
-    at(box(0.04, 0.07, 0.14, M.gear), 0, -0.01, -0.24, rifle);
-    at(box(0.03, 0.03, 0.06, M.metal), 0, 0.055, 0.02, rifle); // optic
+  if (enemy) { // slung carbine across the vest: receiver, barrel + handguard, mag, stock, optic
+    const rifle = pivot(torso, 0.22, 0.28, 0); rifle.rotation.x = 0.75;
+    add(rifle, boxG(0.05, 0.07, 0.36), M.gear);
+    add(rifle, new THREE.CylinderGeometry(0.03, 0.03, 0.16, 6), M.gear, 0, 0.005, 0.24, { r: [Math.PI / 2, 0, 0] });
+    add(rifle, new THREE.CylinderGeometry(0.011, 0.011, 0.14, 5), M.metal, 0, 0.005, 0.36, { r: [Math.PI / 2, 0, 0] });
+    add(rifle, shaped(0.04, 0.12, 0.05, [1, 2, 1], (v, nx, ny, nz) => { if (ny < 0) v.z += 0.012 * -ny; }), M.pouch, 0, -0.08, 0.06);
+    add(rifle, shaped(0.04, 0.08, 0.15, [1, 1, 2], (v, nx, ny, nz) => { if (nz < 0 && ny < 0) v.y += 0.02; }), M.gear, 0, -0.01, -0.25);
+    add(rifle, new THREE.CylinderGeometry(0.018, 0.018, 0.08, 6), M.metal, 0, 0.06, 0.02, { r: [Math.PI / 2, 0, 0] }); // optic
+    add(rifle, boxG(0.03, 0.04, 0.05), M.gear, 0, -0.05, -0.08); // grip
   }
 
+  B.flush(kitParts);
   scene.add(g);
 
   // ---------------------------------------------------------------- pose / animation
@@ -754,7 +1019,7 @@ export function makeSneaker(scene, opts = {}) {
   const handWorld = (v, side = 1) => { g.updateMatrixWorld(true); return arms[side > 0 ? 1 : 0].wr.getWorldPosition(v); };
   // swap the suit kit in place (same rig / meshes): re-point material maps + toggle the kit's hair / gaiter / trims
   const MAPS = { suit: 'suit', suitFront: 'suitFront', gear: 'gear', web: 'web', pouch: 'pouch', pad: 'pad', boot: 'boot', skin: 'skin', hair: 'hair',
-    glove: 'glove', face: 'face', trim: 'trim', gaiter: 'gaiter', gun: 'gun', blade: 'blade' };
+    glove: 'glove', sole: 'sole', face: 'face', trim: 'trim', gaiter: 'gaiter', gun: 'gun', blade: 'blade' };
   function setKit(k) {
     if (enemy || !KITS[k]) return kit;
     const TT = textures(k);
@@ -768,22 +1033,21 @@ export function makeSneaker(scene, opts = {}) {
   return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld, setKit, get kit() { return kit; } };
 }
 
-// enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.
-function buildEnemyHead(hp, M, headMats) {
-  at(box(0.22, 0.26, 0.2, headMats), 0.01, 0.13, 0, hp); // balaclava-covered head
-  at(box(0.04, 0.07, 0.04, M.skin), -0.01, 0.12, 0.11, hp); at(box(0.04, 0.07, 0.04, M.skin), -0.01, 0.12, -0.11, hp); // covered ears
-  at(box(0.27, 0.13, 0.26, M.helmet), 0.0, 0.29, 0, hp); // helmet shell
-  at(box(0.2, 0.05, 0.2, M.helmet), -0.005, 0.375, 0, hp); // crown
-  at(box(0.3, 0.025, 0.29, M.helmet), 0.01, 0.225, 0, hp); // brim
-  at(box(0.06, 0.13, 0.27, M.helmet), -0.12, 0.17, 0, hp); // neck guard
-  at(box(0.03, 0.05, 0.07, M.metal), 0.145, 0.3, 0, hp); // NVG mount
-  at(box(0.02, 0.055, 0.215, M.gear), 0.115, 0.17, 0, hp); // goggle frame
-  for (const z of [-0.05, 0.05]) at(box(0.025, 0.045, 0.075, M.lens), 0.13, 0.17, z, hp); // lenses (opaque)
-  const resp = at(box(0.06, 0.08, 0.09, M.pouch), 0.13, 0.055, 0, hp); // respirator
-  resp.rotation.z = -0.2;
+// enemy head: balaclava (head shape), domed helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.
+function buildEnemyHead(hp, M, headMats, B, G) {
+  at(new THREE.Mesh(G.head, headMats), 0.01, 0.13, 0, hp); // balaclava-covered head
+  for (const s of [-1, 1]) B.add(hp, G.ear, M.skin, -0.012, 0.125, s * 0.1, { s: [1.1, 1.1, 1.4] }); // covered ears
+  B.add(hp, loft([[0.2, 0.152, 0.147, -0.005], [0.255, 0.16, 0.155, -0.005], [0.315, 0.145, 0.14, -0.01], [0.36, 0.11, 0.105, -0.01], [0.39, 0.05, 0.05, -0.01]], 10, [false, true]), M.helmet); // helmet shell
+  B.add(hp, band(0.205, 0.022, 0.168, 0.162, 10, 0.004), M.helmet); // brim / rim
+  B.add(hp, shaped(0.06, 0.13, 0.27, [1, 2, 2], (v, nx, ny, nz) => { v.z *= 1 - 0.08 * (ny < 0 ? -ny : 0); v.x -= 0.012 * nz * nz; }), M.helmet, -0.12, 0.17, 0); // neck guard
+  B.add(hp, boxG(0.03, 0.05, 0.07), M.metal, 0.155, 0.3, 0); B.add(hp, boxG(0.02, 0.02, 0.03), M.gear, 0.172, 0.29, 0); // NVG mount
+  for (const s of [-1, 1]) B.add(hp, boxG(0.05, 0.03, 0.02), M.gear, 0.03, 0.26, s * 0.158); // side rails
+  B.add(hp, shaped(0.02, 0.055, 0.215, [1, 1, 2], (v, nx, ny, nz) => { v.x -= 0.01 * nz * nz; }), M.gear, 0.118, 0.17, 0); // goggle frame
+  for (const z of [-0.05, 0.05]) B.add(hp, boxG(0.025, 0.045, 0.075), M.lens, 0.132, 0.17, z); // lenses (opaque)
+  B.add(hp, shaped(0.06, 0.08, 0.09, [1, 2, 2], (v, nx, ny, nz) => { if (nx > 0) v.x += 0.01 * (1 - nz * nz); }), M.pouch, 0.13, 0.055, 0, { r: [0, 0, -0.2] }); // respirator
   const filt = new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6);
-  for (const z of [-0.07, 0.07]) { const f = at(new THREE.Mesh(filt, M.gear), 0.13, 0.04, z, hp); f.rotation.set(Math.PI / 2, 0, 0.5 * Math.sign(z)); }
-  at(box(0.03, 0.02, 0.24, M.gear), 0.03, 0.2, 0, hp); // chin strap / headset band
+  for (const z of [-0.07, 0.07]) B.add(hp, filt, M.gear, 0.13, 0.04, z, { r: [Math.PI / 2, 0, 0.5 * Math.sign(z)] });
+  B.add(hp, boxG(0.03, 0.02, 0.24), M.gear, 0.03, 0.2, 0); // chin strap / headset band
 }
 
 /** Guard model: same rig + PS1 texture pipeline as the sneaker, enemy kit (fully masked face). */
