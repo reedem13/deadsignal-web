@@ -4,6 +4,9 @@
 // each client decides that for its own player only. Guards can't enter, see or catch you inside a tunnel.
 // Netcode: listen-server style. Host simulates guards, alert, door, extract & win. Each client owns its own
 // movement (sent 20x/s); host broadcasts world state 15x/s. Messages go through server.js (WebSocket relay).
+// Combat: ACT behind a guard = TAKEDOWN (choke + knife, guard stays down). Otherwise ACT = switch if on a pad, else fire
+// the handgun (F always fires). Limited ammo + cooldown, auto-aims at the nearest guard in front, gunshots are loud.
+// The host is authoritative for guard deaths: guests send 'td' / 'sh' requests, the host applies them and broadcasts.
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
 
@@ -61,6 +64,11 @@ const NOISE = { run: 6, walk: 2.2 };
 const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
 const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
+// takedown: must be within range and inside the guard's rear arc (|angle off his facing| > behind -> ~+-64deg behind him).
+// Host re-checks guest requests with the looser 'lenient' numbers to absorb lag.
+const TD = { range: 1.45, behind: 1.95, time: 2.2, gap: 0.42, lenRange: 2.3, lenBehind: 1.55 };
+// handgun: 12 rounds per mission, slow-ish fire, auto-aim cone in front, gunshot noise pulls guards in this radius
+const GUN = { ammo: 12, cooldown: 0.5, range: 13, cone: 0.35, fpsCone: 0.14, noise: 12, drawTime: 2.0 };
 
 // ---------------------------------------------------------------- params / state
 const qs = new URLSearchParams(location.search);
@@ -73,18 +81,23 @@ let solo = false;
 let roomCode = '';
 let peerConnected = false;
 // c = low (crouched OR prone; this is what older clients read as "crouch"), p = prone, tun = tunnel index or -1
-const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0 };
-const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0, nvx: 0, nvz: 0, pt: 0 };
+// combat: td = active takedown { g, t } or null, ammo, cd = fire cooldown, gunT = seconds the pistol stays drawn, shot = shot counter (recoil)
+const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0,
+  td: null, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0 };
+const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0, nvx: 0, nvz: 0, pt: 0,
+  td: -1, gd: 0, shot: 0 };
+function resetLoadout() { me.td = null; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; other.td = -1; other.gd = 0; }
 const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play';
 
 function freshWorld() {
   return {
+    // st: patrol | investigate | chase | search | held (being taken down, tdT = seconds into it) | dead
     guards: GUARD_PATHS.map((p) => ({ x: p[0][0], z: p[0][1], a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0,
-      rx: p[0][0], rz: p[0][1], ra: 0 })),
+      rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1 })),
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
-    ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, // dead: index of the player who died (-1 = nobody)
+    ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, kills: 0, // dead: index of the player who died (-1 = nobody)
   };
 }
 
@@ -114,6 +127,24 @@ function segHitsBox(ax, az, bx, bz, b) {
   }
   return true;
 }
+// entry fraction t (0..1) where segment a->b first touches box b, or null
+function segT(ax, az, bx, bz, b) {
+  let t0 = 0, t1 = 1; const dx = bx - ax, dz = bz - az;
+  for (const [p, d, lo, hi] of [[ax, dx, b.x1, b.x2], [az, dz, b.z1, b.z2]]) {
+    if (Math.abs(d) < 1e-9) { if (p < lo || p > hi) return null; }
+    else { let ta = (lo - p) / d, tb = (hi - p) / d; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) return null; }
+  }
+  return t0;
+}
+// bullets fly at chest height: only tall stuff (walls, buildings, tunnel walls, closed door) stops them, not crates
+const bulletBlockers = () => solids().filter((b) => b.h >= 1.3);
+function clearShot(ax, az, bx, bz) { for (const b of bulletBlockers()) { const t = segT(ax, az, bx, bz, b); if (t !== null && t > 0.02) return false; } return true; }
+function rayEnd(x, z, a, len) {
+  const bx = x + Math.cos(a) * len, bz = z + Math.sin(a) * len; let tm = 1;
+  for (const b of bulletBlockers()) { const t = segT(x, z, bx, bz, b); if (t !== null && t > 0.01 && t < tm) tm = t; }
+  return { x: x + (bx - x) * tm, z: z + (bz - z) * tm };
+}
+const alive = (g) => g.st !== 'dead' && g.st !== 'held';
 // low crates (h < 1.3) only hide a crouching target
 function lineOfSight(g, p) {
   for (const b of solids()) { if (b.h < 1.3 && !p.c) continue; if (segHitsBox(g.x, g.z, p.x, p.z, b)) return false; }
@@ -249,8 +280,33 @@ const guardMeshes = GUARD_PATHS.map(() => {
   cone.rotation.x = -Math.PI / 2; cone.position.y = 0.06;
   const coneHolder = new THREE.Group(); coneHolder.add(cone); ch.g.add(coneHolder);
   const q = textSprite('?', '#ffe066'), ex = textSprite('!', '#ff4040'); ch.g.add(q, ex);
-  return { ...ch, cone, coneMat, coneHolder, q, ex, spd: 0, px: 0, pz: 0 };
+  // dark blood pool under the body (fades in after a kill). Body topples forward along local +x.
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(0.5, 7), new THREE.MeshBasicMaterial({ color: 0x4a0808, transparent: true, opacity: 0.85, depthWrite: false }));
+  pool.rotation.x = -Math.PI / 2; pool.position.set(0.9, 0.035, 0); pool.visible = false; ch.g.add(pool);
+  return { ...ch, cone, coneMat, coneHolder, q, ex, pool, poolK: 0, spd: 0, px: 0, pz: 0 };
 });
+
+// gun fx: short-lived tracer lines + impact puffs (pooled)
+const tracers = Array.from({ length: 6 }, () => {
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff0a0, transparent: true, opacity: 0 }));
+  const puff = new THREE.Mesh(new THREE.OctahedronGeometry(0.12, 0), new THREE.MeshBasicMaterial({ color: 0xd8d0b0, transparent: true, opacity: 0 }));
+  line.frustumCulled = false; scene.add(line, puff); return { line, puff, t: 0 };
+});
+let tracerI = 0;
+const _mz = new THREE.Vector3();
+function gunFx(mesh, ex, ez, hit) {
+  const tr = tracers[tracerI++ % tracers.length];
+  mesh.muzzleWorld(_mz);
+  const a = tr.line.geometry.attributes.position; a.setXYZ(0, _mz.x, _mz.y, _mz.z); a.setXYZ(1, ex, hit ? 1.15 : _mz.y, ez); a.needsUpdate = true;
+  tr.puff.position.set(ex, hit ? 1.15 : _mz.y, ez); tr.puff.material.color.setHex(hit ? 0x8a1010 : 0xd8d0b0); tr.t = 0.16;
+}
+function updateFx(dt) {
+  for (const tr of tracers) {
+    tr.t = Math.max(0, tr.t - dt); const k = tr.t / 0.16;
+    tr.line.material.opacity = k; tr.puff.material.opacity = k; tr.puff.scale.setScalar(1 + (1 - k) * 2); tr.line.visible = tr.puff.visible = k > 0;
+  }
+}
 
 function resize() {
   const w = innerWidth, h = innerHeight;
@@ -269,6 +325,15 @@ function beep(freq = 880, dur = 0.12, type = 'square', vol = 0.08) {
   o.connect(g); g.connect(actx.destination); o.start(); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur); o.stop(actx.currentTime + dur);
 }
 const alertSound = () => { beep(1046, 0.1); setTimeout(() => beep(1396, 0.25), 110); };
+// gunshot: noise burst + low thump (quieter when it's your partner's gun)
+function gunSound(vol = 1) {
+  if (!actx) return;
+  const n = actx.sampleRate * 0.18, buf = actx.createBuffer(1, n, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3);
+  const src = actx.createBufferSource(), g = actx.createGain(); src.buffer = buf; g.gain.value = 0.35 * vol;
+  src.connect(g); g.connect(actx.destination); src.start(); beep(70, 0.15, 'sine', 0.25 * vol);
+}
+const stabSound = () => { beep(140, 0.06, 'triangle', 0.12); setTimeout(() => beep(95, 0.09, 'triangle', 0.12), 70); };
 
 // ---------------------------------------------------------------- input
 const input = { jx: 0, jz: 0, kRun: false, keys: new Set() };
@@ -277,7 +342,8 @@ addEventListener('keydown', (e) => {
   input.keys.add(e.code);
   if (e.code === 'KeyC' || e.code === 'ControlLeft') toggleCrouch();
   if (e.code === 'KeyZ' || e.code === 'KeyX') toggleProne();
-  if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); doInteract(); }
+  if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) doInteract(); }
+  if (e.code === 'KeyF' && !e.repeat) { unlockAudio(); if (role && world.phase === 'play' && !me.td) fireGun(); }
 });
 addEventListener('keyup', (e) => input.keys.delete(e.code));
 addEventListener('blur', () => input.keys.clear());
@@ -310,28 +376,114 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 // stance: stand <-> crouch (C), anything <-> prone (Z/X). Tunnels are too low to stand in.
 function syncStanceButtons() { $('btnCrouch').classList.toggle('on', me.c && !me.p); $('btnProne').classList.toggle('on', me.p); }
 function toggleCrouch() {
+  if (me.td) return;
   if (me.p) me.p = false; // prone -> crouch
   else if (me.c && me.tun >= 0) toast('Too low to stand', 800, '#ccc');
   else me.c = !me.c;
   syncStanceButtons();
 }
 function toggleProne() {
+  if (me.td) return;
   if (me.p) me.p = false; // prone -> crouch (stay low)
   else { me.p = true; me.c = true; }
   syncStanceButtons();
 }
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
+// ACT priority: takedown (only from behind) > door switch > fire handgun
+const nearSwitch = () => SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
+function actMode() { return takedownTarget(me) >= 0 ? 'td' : nearSwitch() ? 'use' : 'fire'; }
 function doInteract() {
-  if (!role || world.phase !== 'play') return;
+  if (!role || world.phase !== 'play' || me.td) return;
   flash($('btnAct'));
-  const near = SWITCHES.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
-  if (!near) { toast('Nothing to use here', 900, '#ccc'); return; }
-  beep(660, 0.08);
-  if (role === 'host') armSwitch(0); else net.relay({ t: 'i' });
+  const gi = takedownTarget(me);
+  if (gi >= 0) { startTakedown(gi); return; }
+  if (nearSwitch()) { beep(660, 0.08); if (role === 'host') armSwitch(0); else net.relay({ t: 'i' }); return; }
+  fireGun();
+}
+
+// ---------------------------------------------------------------- combat: takedown + handgun
+// Guard index p can take down from behind, or -1. Uses each client's latest guard state (host: authoritative, guest: net).
+function takedownTarget(p, range = TD.range, behind = TD.behind) {
+  if (p.tun >= 0 || p.td) return -1;
+  let best = -1, bd = 1e9;
+  world.guards.forEach((g, i) => {
+    if (!alive(g)) return;
+    const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz);
+    if (d > range || d >= bd) return;
+    if (Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < behind) return; // in front of / beside him -> no
+    if (!lineOfSight(g, { x: p.x, z: p.z, c: true })) return; // nothing in between (crates count)
+    best = i; bd = d;
+  });
+  return best;
+}
+function startTakedown(gi) {
+  const g = world.guards[gi];
+  me.td = { g: gi, t: 0 }; me.p = false; me.c = false; me.gunT = 0; syncStanceButtons(); stopMe();
+  // snap in tight behind him, facing the same way
+  me.a = g.a; me.x = g.x - Math.cos(g.a) * TD.gap; me.z = g.z - Math.sin(g.a) * TD.gap;
+  beep(200, 0.05, 'triangle', 0.1);
+  if (role === 'host') hostTakedown(gi, 0); else net.relay({ t: 'td', g: gi, x: r2(me.x), z: r2(me.z) });
+}
+// host: start the hold on a guard (returns false if he's already down / grabbed)
+function hostTakedown(gi, pidx) {
+  const g = world.guards[gi];
+  if (!g || !alive(g) || world.phase !== 'play') return false;
+  g.st = 'held'; g.by = pidx; g.tdT = 0; g.meter = 0;
+  if (peerConnected) sendState();
+  return true;
+}
+function fireGun() {
+  if (me.cd > 0) return;
+  if (me.ammo <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
+  me.ammo--; me.cd = GUN.cooldown; me.gunT = GUN.drawTime; me.shot++;
+  // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
+  const cone = me.tun >= 0 ? GUN.fpsCone : GUN.cone;
+  let tgt = -1, best = 1e9;
+  world.guards.forEach((g, i) => {
+    if (g.st === 'dead') return;
+    const dx = g.x - me.x, dz = g.z - me.z, d = Math.hypot(dx, dz);
+    if (d > GUN.range) return;
+    const off = Math.abs(angDiff(Math.atan2(dz, dx), me.a));
+    if (off > cone && d > 1.0) return;
+    if (!clearShot(me.x, me.z, g.x, g.z)) return;
+    const score = d + off * 8; if (score < best) { best = score; tgt = i; }
+  });
+  let end;
+  if (tgt >= 0) { const g = world.guards[tgt]; if (me.tun < 0) me.a = Math.atan2(g.z - me.z, g.x - me.x); end = { x: g.x, z: g.z }; }
+  else end = rayEnd(me.x, me.z, me.a, GUN.range);
+  meMesh.g.rotation.y = -me.a;
+  gunFx(meMesh, end.x, end.z, tgt >= 0); gunSound(1);
+  if (navigator.vibrate) navigator.vibrate(30);
+  const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), ex: r2(end.x), ez: r2(end.z) };
+  if (role === 'host') hostShot(msg, 0);
+  net.relay(msg); // host: fx for the guest. guest: hit request + fx for the host
+}
+// host: apply a shot (from either player). A hit drops the guard; the bang pulls every live guard in earshot.
+function hostShot(m, pidx) {
+  if (world.phase !== 'play') return;
+  const g = world.guards[m.g];
+  if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < GUN.range + 2 && clearShot(m.x, m.z, g.x, g.z)) {
+    g.st = 'dead'; g.by = pidx; world.kills++;
+  }
+  for (const o of world.guards) {
+    if (!alive(o) || Math.hypot(o.x - m.x, o.z - m.z) > GUN.noise) continue;
+    o.meter = Math.max(o.meter, 0.5);
+    if (world.alert === 2) { o.st = 'chase'; o.tx = m.x; o.tz = m.z; o.give = 8; }
+    else { o.st = 'investigate'; o.tx = m.x; o.tz = m.z; o.wait = 3.5; o.give = 9; }
+  }
+  if (peerConnected) sendState();
 }
 
 // ---------------------------------------------------------------- local movement (both roles)
 function updateLocal(dt) {
+  me.cd = Math.max(0, me.cd - dt); me.gunT = Math.max(0, me.gunT - dt);
+  if (me.td) { // locked into the takedown animation
+    const before = me.td.t; me.td.t += dt; stopMe(); me.run = false;
+    for (const hit of [0.4, 0.64]) if (before < hit * TD.time && me.td.t >= hit * TD.time) stabSound();
+    if (me.td.t >= TD.time + 0.3 || world.phase !== 'play') { me.td = null; }
+    $('stance').textContent = 'TAKEDOWN';
+    return;
+  }
   let jx = input.jx, jz = input.jz, kb = false;
   const k = input.keys;
   if (k.has('KeyA') || k.has('ArrowLeft')) { jx -= 1; kb = true; }
@@ -418,7 +570,7 @@ function armSwitch(pi) {
 function triggerAlert(p) {
   if (world.alert < 2) { world.alerts++; }
   world.alert = 2; world.alertT = ALERT_TIME;
-  for (const g of world.guards) { g.st = 'chase'; g.tx = p.x; g.tz = p.z; g.give = 8; }
+  for (const g of world.guards) if (alive(g)) { g.st = 'chase'; g.tx = p.x; g.tz = p.z; g.give = 8; }
 }
 // Being caught = death = GAME OVER for both players. Host decides; phase 'over' is broadcast in every state packet.
 function catchPlayer(idx) {
@@ -434,6 +586,12 @@ function hostUpdate(dt) {
   const ps = players();
   let anySeen = false;
   for (const g of world.guards) {
+    if (g.st === 'dead') continue;
+    if (g.st === 'held') { // being taken down: frozen, blind, deaf. Drops dead when the hold finishes.
+      g.tdT += dt;
+      if (g.tdT >= TD.time) { g.st = 'dead'; world.kills++; }
+      continue;
+    }
     // --- sight
     let seen = null, seenD = 1e9, seenRange = 1;
     for (const p of ps) {
@@ -479,7 +637,7 @@ function hostUpdate(dt) {
     if (world.phase !== 'play') return;
   }
   // --- alert phases
-  if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { g.st = 'patrol'; g.meter = 0; }); } }
+  if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { if (alive(g)) { g.st = 'patrol'; g.meter = 0; } }); } }
   else if (world.alert === 1) { world.cautionT -= dt; if (world.cautionT <= 0) world.alert = 0; }
   // --- extract
   world.ext = [Math.hypot(me.x - EXTRACT.x, me.z - EXTRACT.z) < EXTRACT.r, peerConnected && Math.hypot(other.x - EXTRACT.x, other.z - EXTRACT.z) < EXTRACT.r];
@@ -487,7 +645,7 @@ function hostUpdate(dt) {
 }
 function hostRestart() {
   world = freshWorld();
-  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z; other.nvx = other.nvz = 0;
+  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z; other.nvx = other.nvz = 0;
   net.relay({ t: 'tp', x: SPAWNS[1].x, z: SPAWNS[1].z, silent: true });
   sendState();
 }
@@ -496,12 +654,17 @@ function hostRestart() {
 const r2 = (v) => Math.round(v * 100) / 100;
 function sendState() {
   net.relay({ t: 's',
-    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter)]),
+    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0)]), // st[0]: p i c s h(eld) d(ead)
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
-    c: world.caught, n: world.alerts, ext: world.ext, solo,
-    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz)] }); // h[4] = prone, h[5..6] = velocity (older clients ignore)
+    c: world.caught, n: world.alerts, ext: world.ext, solo, k: world.kills,
+    // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = pistol drawn (older clients ignore)
+    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0] });
 }
-function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz) }); }
+const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
+function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
+  td: tdProg(), gd: me.gunT > 0 ? 1 : 0 }); }
+// partner fired: tracer + recoil on their model (host also applies the hit)
+function remoteShot(d) { other.shot++; other.gd = 1; gunFx(otherMesh, d.ex, d.ez, d.g >= 0); gunSound(0.6); }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -514,14 +677,22 @@ function netSample(o, x, z, vx, vz) {
 }
 
 function onGameMsg(d) {
-  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; }
+  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; other.td = d.td ?? -1; other.gd = d.gd || 0; }
+  else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
+    const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
+    const ok = g && alive(g) && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
+    if (!ok || !hostTakedown(d.g, 1)) net.relay({ t: 'tdx' });
+    else { other.x = d.x; other.z = d.z; other.td = 0; }
+  }
+  else if (d.t === 'tdx' && role === 'guest') { if (me.td) { me.td = null; toast('Spotted - grab failed', 1000, '#ffb36b'); } }
+  else if (d.t === 'sh') { remoteShot(d); if (role === 'host') hostShot(d, 1); }
   else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(1); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
-    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search' }[a[3]]; g.meter = a[4]; });
-    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1 });
+    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; });
+    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1, kills: d.k || 0 });
     solo = d.solo;
-    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4];
+    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4]; other.td = d.h[7] ?? -1; other.gd = d.h[8] || 0;
   } else if (d.t === 'tp' && role === 'guest') {
     me.x = d.x; me.z = d.z; me.tun = -1; stopMe(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
@@ -573,13 +744,13 @@ function setPeer(v) {
 function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false;
-  me.c = false; me.p = false; me.tun = -1; stopMe(); syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
+  me.c = false; me.p = false; me.tun = -1; stopMe(); resetLoadout(); syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
   if (!$('lobby').classList.contains('hidden')) {
     $('lobby').classList.add('hidden'); $('hud').classList.remove('hidden');
-    const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z; stopMe();
+    const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout();
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
   }
   applyPlayerLooks();
@@ -629,7 +800,7 @@ function updateOverlay() {
       beep(523, 0.15, 'triangle', 0.1); setTimeout(() => beep(784, 0.3, 'triangle', 0.1), 160);
       $('overlay').classList.remove('over');
       $('ovTitle').textContent = 'MISSION COMPLETE';
-      $('ovBody').innerHTML = `Time ${fmtTime(world.finalT)}<br>Alerts ${world.alerts}<br>Rank: <b>${rank()}</b>`;
+      $('ovBody').innerHTML = `Time ${fmtTime(world.finalT)}<br>Alerts ${world.alerts} &middot; Kills ${world.kills}<br>Rank: <b>${rank()}</b>`;
       btn.textContent = 'RUN IT AGAIN';
     } else if (world.phase === 'over') {
       beep(220, 0.25, 'sawtooth', 0.1); setTimeout(() => beep(110, 0.6, 'sawtooth', 0.1), 220);
@@ -645,7 +816,7 @@ function updateOverlay() {
     $('ovHint').textContent = role === 'host' || solo ? '' : 'Either player can tap RETRY to restart for both.';
     $('overlay').classList.remove('hidden');
   }
-  if (world.phase === 'play' && lastPhase !== 'play') $('overlay').classList.add('hidden');
+  if (world.phase === 'play' && lastPhase !== 'play') { $('overlay').classList.add('hidden'); resetLoadout(); }
   lastPhase = world.phase;
 }
 $('ovBtn').onclick = () => {
@@ -674,6 +845,7 @@ function drawRadar() {
   for (const t of TUNNELS) rc.fillRect(X(t.x1), Z(t.z1), (t.x2 - t.x1) * sx, (t.z2 - t.z1) * sz);
   rc.strokeStyle = '#7fff9f'; rc.beginPath(); rc.arc(X(EXTRACT.x), Z(EXTRACT.z), EXTRACT.r * sx, 0, 7); rc.stroke();
   for (const g of world.guards) {
+    if (!alive(g)) { rc.fillStyle = '#777'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 1, 5, 2); continue; }
     rc.fillStyle = 'rgba(255,224,102,0.35)'; rc.beginPath(); rc.moveTo(X(g.rx), Z(g.rz));
     rc.arc(X(g.rx), Z(g.rz), SIGHT.stand * sx, g.ra - SIGHT.fovHalf, g.ra + SIGHT.fovHalf); rc.fill();
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
@@ -697,7 +869,8 @@ function render(dt) {
   other.ra = lerpA(other.ra, other.a, k);
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
-  meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe });
+  meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe,
+    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.gunT > 0, shot: me.shot });
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
   if (dt > 0) { const vNet = Math.hypot(other.nvx, other.nvz), vScr = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt;
@@ -705,7 +878,8 @@ function render(dt) {
   otherPX = other.rx; otherPZ = other.rz;
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
-  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play', run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' ? otherSpeed : 0, crouch: other.c && !other.p, prone: other.p, dead: deadOther });
+  otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 ? otherSpeed : 0,
+    crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd, shot: other.shot });
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -713,12 +887,17 @@ function render(dt) {
     m.g.position.set(g.rx, 0, g.rz); m.g.rotation.y = -g.ra;
     if (dt > 0) { const v = Math.hypot(g.rx - m.px, g.rz - m.pz) / dt; m.spd += (Math.min(v, 8) - m.spd) * Math.min(1, dt * 8); }
     m.px = g.rx; m.pz = g.rz;
-    m.update(dt, { moving: m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4, speed: world.phase === 'play' ? m.spd : 0 });
+    const down = g.st === 'dead', held = g.st === 'held', live = !down && !held;
+    m.update(dt, { moving: live && m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4, speed: live && world.phase === 'play' ? m.spd : 0,
+      dead: down, held: held ? Math.min(1, g.tdT / TD.time) : null });
+    m.coneHolder.visible = live;
+    m.poolK = down ? Math.min(1, m.poolK + dt * 0.5) : 0; m.pool.visible = m.poolK > 0; m.pool.scale.setScalar(0.2 + m.poolK * 0.9);
     const range = SIGHT.stand + (world.alert > 0 ? 2 : 0);
     m.cone.scale.set(range, range, 1);
     m.coneMat.color.setHex(world.alert === 2 ? 0xff3030 : g.meter > 0.3 ? 0xffa030 : 0xffe066);
     m.coneMat.opacity = 0.18 + g.meter * 0.25;
     m.q.visible = g.st === 'investigate'; m.ex.visible = g.st === 'chase' || g.st === 'search';
+    if (!live) m.q.visible = m.ex.visible = false;
   });
   // door + switches + extract
   doorMesh.position.y = THREE.MathUtils.lerp(doorMesh.position.y, world.door ? -1.2 : 1.25, Math.min(1, dt * 3));
@@ -757,6 +936,7 @@ function render(dt) {
   markers[0].visible = f < 0.5;
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
   $('fpsVignette').style.opacity = f.toFixed(2);
+  updateFx(dt);
   renderer.render(scene, camera);
 }
 
@@ -779,6 +959,14 @@ function updateHud() {
     obj = solo ? 'Door open - reach EXTRACT' : `Door open - both get to EXTRACT (${n}/2 there)`;
   }
   $('objective').textContent = obj;
+  // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
+  $('ammo').textContent = 'P-9 ' + '|'.repeat(me.ammo) + (me.ammo ? '' : 'EMPTY') + ' ' + me.ammo + '/' + GUN.ammo + (world.kills ? '  KILLS ' + world.kills : '');
+  const mode = world.phase === 'play' && !me.td ? actMode() : 'none';
+  const act = $('btnAct'), label = mode === 'td' ? 'TAKE DOWN' : mode === 'use' ? 'USE' : mode === 'fire' ? 'FIRE' : 'ACT';
+  if (act.textContent !== label) act.textContent = label;
+  act.classList.toggle('kill', mode === 'td');
+  const pr = $('prompt'), ptxt = mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : '';
+  if (pr.textContent !== ptxt) { pr.textContent = ptxt; pr.classList.toggle('hidden', !ptxt); }
 }
 
 // ---------------------------------------------------------------- main loop
@@ -802,4 +990,5 @@ requestAnimationFrame(loop);
 
 // debug hook for automated tests
 window.__ds = { me, other, get world() { return world; }, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
-  TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch };
+  TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
+  doInteract, fireGun, takedownTarget, actMode, TD, GUN };

@@ -67,3 +67,10 @@ body.desktop #stickZone, body.desktop #buttons { display: none; }
   background: radial-gradient(ellipse at 50% 55%, rgba(0,0,0,0) 45%, rgba(0,0,0,.75) 100%); }
 body.fps #stance { color: #ffd27f; }
 @media (max-height: 420px) { button.act { width: 64px; height: 64px; font-size: 12px; } #buttons { gap: 8px; } }
+
+/* combat HUD */
+#ammo { position: absolute; left: calc(10px + env(safe-area-inset-left)); bottom: calc(34px + env(safe-area-inset-bottom));
+  font-size: 12px; background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 4px; color: #ffd27f; letter-spacing: 1px; white-space: pre; }
+#prompt { position: absolute; left: 0; right: 0; bottom: 22%; text-align: center; font-size: 18px; font-weight: bold; color: #ff6a5a;
+  text-shadow: 0 0 6px #000, 0 2px 2px #000; letter-spacing: 3px; animation: blink .6s steps(2) infinite; }
+button.act.kill { background: rgba(150, 20, 20, .85); border-color: #ff6a5a; color: #fff; font-size: 12px; }

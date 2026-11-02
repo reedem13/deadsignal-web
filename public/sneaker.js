@@ -4,6 +4,9 @@
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
 // respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
+// Combat overlays (layered on top of the base pose): aim (handgun drawn, two-hand grip, recoil on s.shot change),
+// takedown (attacker: choke hold from behind + knife jabs, s.takedown = 0..1 progress) and held (victim: head back,
+// clawing at the arm, knees buckle, s.held = 0..1 progress -> then dead).
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------- tiny seeded RNG so textures are identical every load
@@ -92,6 +95,12 @@ function textures(kit = 'player') {
       px(x, shade(SKIN, 0.72), 15, 15, 2, 6); px(x, shade(SKIN, 0.62), 14, 20, 4, 1); // nose
       px(x, '#7a4e3c', 12, 24, 8, 1); px(x, shade(SKIN, 0.85), 11, 27, 10, 2); // mouth + chin shadow
     }),
+    gun: canvasTex(16, (x, S) => { // gunmetal: dark slide with serration ticks + a lighter top edge
+      facets(x, S, [40, 42, 46], 121, 2, 0.3, 0.08);
+      px(x, '#6a6e74', 0, 0, S, 1); for (let i = 2; i < S; i += 3) px(x, '#1a1b1d', i, 3, 1, 4);
+      px(x, '#24262a', 0, S - 4, S, 4);
+    }),
+    blade: canvasTex(16, (x, S) => { facets(x, S, [150, 156, 160], 131, 2, 0.35, 0.06); px(x, '#e8eef0', 0, 0, S, 2); px(x, '#5a5e60', 0, S - 2, S, 2); }),
     glove: canvasTex(32, (x, S) => { // fingerless glove: black with skin finger tips at the bottom
       facets(x, S, BLACK, 101, 3, 0.25, 0.06);
       px(x, shade(SKIN, 1), 0, S - 9, S, 9); for (let i = 0; i < S; i += 8) px(x, shade(SKIN, 0.7), i, S - 9, 1, 9);
@@ -182,6 +191,7 @@ export function makeSneaker(scene, opts = {}) {
     patch: new THREE.MeshLambertMaterial({ color: new THREE.Color(opts.accent ?? 0x6fb0ff).multiplyScalar(0.55), flatShading: true }),
   };
   if (enemy) { M.helmet = L(T.helmet); M.lens = new THREE.MeshBasicMaterial({ map: T.lens }); }
+  else { M.gun = L(T.gun); M.blade = L(T.blade); }
   const suitFrontMat = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
   const torsoMats = [suitFrontMat, M.suit, M.suit, M.suit, M.suit, M.suit];
@@ -201,6 +211,7 @@ export function makeSneaker(scene, opts = {}) {
 
   // --- legs
   const legs = [];
+  let holstered = null;
   for (const side of [-1, 1]) { // -1 = left (-z), 1 = right (+z)
     const hip = pivot(hips, 0, -0.04, side * 0.11);
     at(box(0.21, THIGH, 0.19, M.suit), 0, -THIGH / 2, 0, hip);
@@ -208,6 +219,12 @@ export function makeSneaker(scene, opts = {}) {
       at(box(0.14, 0.2, 0.06, M.pouch), 0.01, -0.2, 0.12, hip);
       at(box(0.06, 0.28, 0.04, M.gear), 0.02, -0.12, 0.15, hip);
       at(box(0.22, 0.04, 0.21, M.gear), 0, -0.14, 0, hip); at(box(0.22, 0.04, 0.21, M.gear), 0, -0.3, 0, hip);
+      if (!enemy) { // holstered pistol: slide sunk in the holster, grip + hammer sticking out the top, angled back
+        holstered = pivot(hip, 0.0, -0.08, 0.15);
+        at(box(0.05, 0.2, 0.035, M.gun), 0.02, -0.08, 0, holstered); // slide (mostly inside the holster)
+        const grip = at(box(0.1, 0.05, 0.04, M.gun), -0.04, 0.02, 0, holstered); grip.rotation.z = -0.25;
+        at(box(0.03, 0.03, 0.03, M.gear), 0.02, 0.035, 0, holstered); // hammer / rear sight
+      }
     }
     const knee = pivot(hip, 0, -THIGH, 0);
     at(box(0.18, SHIN, 0.17, M.suit), 0, -SHIN / 2, 0, knee);
@@ -273,6 +290,24 @@ export function makeSneaker(scene, opts = {}) {
     at(box(0.04, 0.05, 0.03, M.glove), 0.05, -0.03, -side * 0.04, wr); // thumb
     arms.push({ sh, el, wr, side });
   }
+  // right hand props (player kit). Wrist-local: -y = along the forearm (barrel / blade direction), -x = "down" when aiming.
+  let drawn = null, knife = null, flash = null;
+  if (!enemy) {
+    const wr = arms[1].wr;
+    drawn = pivot(wr, 0, 0, 0);
+    at(box(0.05, 0.22, 0.04, M.gun), 0.035, -0.13, 0, drawn); // slide + barrel, runs past the fist
+    at(box(0.1, 0.05, 0.04, M.gun), -0.02, -0.07, 0, drawn).rotation.z = 0.2; // grip in the fist, raked back
+    at(box(0.03, 0.06, 0.035, M.gear), -0.005, -0.13, 0, drawn); // trigger guard / frame
+    at(box(0.015, 0.02, 0.015, M.metal), 0.065, -0.21, 0, drawn); // front sight
+    at(box(0.07, 0.03, 0.03, M.gear), -0.075, -0.07, 0, drawn); // magazine base
+    flash = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), new THREE.MeshBasicMaterial({ color: 0xffe080, transparent: true, opacity: 0.95, depthWrite: false }));
+    flash.position.set(0.035, -0.3, 0); flash.scale.set(0.8, 1.6, 0.8); drawn.add(flash); flash.visible = false;
+    knife = pivot(wr, 0, 0, 0);
+    at(box(0.04, 0.06, 0.035, M.gear), 0.0, -0.1, 0, knife); // handle in the fist
+    at(box(0.025, 0.04, 0.05, M.metal), 0.0, -0.14, 0, knife); // guard
+    at(box(0.012, 0.2, 0.035, M.blade), 0.0, -0.26, 0, knife); // blade
+    drawn.visible = knife.visible = false;
+  }
 
   if (enemy) { // slung carbine across the vest (low-poly: receiver, barrel, mag, stock)
     const rifle = pivot(torso, 0.19, 0.28, 0); rifle.rotation.x = 0.75;
@@ -294,8 +329,10 @@ export function makeSneaker(scene, opts = {}) {
   // out, so stance changes / starts / stops roll through instead of popping. Gait phase is distance-driven
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
-  const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4) };
-  let phase = 0, prevSpd = 0, prevYaw = null;
+  const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
+    aim: K(0.07), td: K(0.08), held: K(0.06) };
+  let phase = 0, prevSpd = 0, prevYaw = null, lastShot = 0, recoil = 0, flashT = 0;
+  const bump = (x, a, b) => { const u = clamp((x - a) / (b - a), 0, 1); return Math.sin(u * Math.PI); }; // 0 -> 1 -> 0 over [a,b]
   const mix = (a, b, k) => a + (b - a) * k;
   const sstep = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
   function damp(st, target, dt) {
@@ -310,7 +347,16 @@ export function makeSneaker(scene, opts = {}) {
     // speed in m/s: real speed from the game if given, else derived from the flags (character.html preview)
     const flagSpd = s.moving && !s.dead ? (s.prone ? FALLBACK.prone : s.crouch ? FALLBACK.crouch : s.run ? FALLBACK.run : FALLBACK.walk) : 0;
     const spd = Math.max(0, damp(W.spd, s.dead ? 0 : (s.speed ?? flagSpd), dt));
-    const crouchK = sstep(damp(W.crouch, s.crouch && !s.prone ? 1 : 0, dt));
+    let crouchK = sstep(damp(W.crouch, s.crouch && !s.prone ? 1 : 0, dt));
+    // combat overlays (weights + progress)
+    const tdP = s.takedown ?? 0, heldP = s.held ?? 0;
+    const tdK = sstep(damp(W.td, s.takedown != null && !s.dead ? 1 : 0, dt));
+    const heldK = sstep(damp(W.held, s.held != null && !s.dead ? 1 : 0, dt));
+    const aimK = sstep(damp(W.aim, s.aim && s.takedown == null && !s.dead ? 1 : 0, dt));
+    if (s.shot && s.shot !== lastShot) { recoil = 1; flashT = 0.07; lastShot = s.shot; }
+    recoil = Math.max(0, recoil - dt * 7); flashT = Math.max(0, flashT - dt);
+    // takedown: attacker sinks into a braced half-crouch; victim's knees give out as the hold finishes
+    crouchK = Math.max(crouchK, tdK * 0.45, heldK * sstep((heldP - 0.45) / 0.55) * 0.8);
     const proneK = sstep(damp(W.prone, s.prone && !s.dead ? 1 : 0, dt));
     const deadK = sstep(damp(W.dead, s.dead ? 1 : 0, dt));
     // gait amplitude ramps up with speed (momentum: first steps are short, full stride only at cruising speed)
@@ -403,6 +449,62 @@ export function makeSneaker(scene, opts = {}) {
       for (const lg of legs) lg.knee.rotation.x = 0;
       for (const a of arms) a.el.rotation.x = 0;
     }
+    for (const a of arms) a.sh.rotation.y = 0;
+    // ---- HANDGUN AIM: right arm straight out along the facing, left hand cups the grip (Weaver-ish). Compensates the
+    // torso lean so the barrel stays level in crouch. Prone: arm reaches forward past the head (rig is laid on its front).
+    if (aimK > 0.001) {
+      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.3;
+      const aimZ = mix(Math.PI / 2 + up, Math.PI - 0.15 - 0.14, pk), aimX = 0;
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZ, k); Rr.sh.rotation.y = mix(0, 0.32 * (1 - pk), k); Rr.sh.rotation.x = mix(Rr.sh.rotation.x, aimX, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.04 + recoil * 0.35, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.25, k);
+      L.sh.rotation.z = mix(L.sh.rotation.z, mix(Math.PI / 2 - 0.12 + up, Math.PI - 0.35, pk), k); L.sh.rotation.y = mix(0, -0.62 * (1 - pk), k);
+      L.sh.rotation.x = mix(L.sh.rotation.x, pk * 0.5, k);
+      L.el.rotation.z = mix(L.el.rotation.z, 0.35 + recoil * 0.2, k); L.el.rotation.x = mix(L.el.rotation.x, 0, k);
+      torso.rotation.y = mix(torso.rotation.y, -0.12 * (1 - pk), k); // blade the body a touch
+    }
+    // ---- TAKEDOWN (attacker, from behind): reach in, hook the left forearm across the guard's throat, two knife jabs
+    // with the right hand, then lower him down.
+    if (tdK > 0.001) {
+      const [L, Rr] = arms, k = tdK, p = tdP;
+      const reach = sstep(p / 0.18), release = sstep((p - 0.86) / 0.14);
+      const hold = reach * (1 - release);
+      torso.rotation.z = mix(torso.rotation.z, -0.18 - 0.2 * release, k);
+      headPivot.rotation.z = mix(headPivot.rotation.z, 0.1, k);
+      // choke arm: up and across the throat
+      L.sh.rotation.z = mix(L.sh.rotation.z, mix(0.3, 1.75, hold), k); L.sh.rotation.y = mix(0, -0.3 * hold, k);
+      L.sh.rotation.x = mix(L.sh.rotation.x, 0, k);
+      L.el.rotation.z = mix(L.el.rotation.z, mix(0.3, 0.25, hold), k); L.el.rotation.x = mix(L.el.rotation.x, -1.5 * hold, k);
+      L.wr.rotation.z = mix(L.wr.rotation.z, 0, k);
+      // knife arm: cocked low by the hip, punches forward into the guard's side on each jab
+      const jab = Math.max(bump(p, 0.32, 0.48), bump(p, 0.56, 0.72));
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, mix(0.25, 0.55 + jab * 0.45, hold), k); Rr.sh.rotation.y = mix(0, -0.2 * hold, k);
+      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, -0.15 * hold, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, mix(0.2, 1.6 - jab * 0.75, hold), k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -0.3 * hold, k);
+    }
+    // ---- HELD (victim): yanked back by the throat, head tipped up, both hands clawing at the forearm, struggle fades
+    if (heldK > 0.001) {
+      const k = heldK, p = heldP, fight = (1 - sstep((p - 0.3) / 0.6));
+      const thr = Math.sin(t * 23) * fight, thr2 = Math.sin(t * 17 + 1) * fight;
+      torso.rotation.z = mix(torso.rotation.z, 0.22 + 0.06 * thr2 - 0.25 * sstep((p - 0.75) / 0.25), k);
+      headPivot.rotation.z = mix(headPivot.rotation.z, 0.55 - 0.5 * sstep((p - 0.7) / 0.3), k);
+      headPivot.rotation.y = mix(headPivot.rotation.y, thr * 0.15, k);
+      for (const a of arms) {
+        const lim = 1 - sstep((p - 0.72) / 0.28);
+        a.sh.rotation.z = mix(a.sh.rotation.z, mix(0.1, 1.15 + 0.18 * (a.side > 0 ? thr : thr2), lim), k);
+        a.sh.rotation.y = mix(0, a.side * 0.25 * lim, k);
+        a.sh.rotation.x = mix(a.sh.rotation.x, -a.side * 0.15, k);
+        a.el.rotation.z = mix(a.el.rotation.z, mix(0.2, 2.0, lim), k); a.el.rotation.x = mix(a.el.rotation.x, 0, k);
+        a.wr.rotation.z = mix(a.wr.rotation.z, 0, k);
+      }
+    }
+    if (holstered) {
+      const out = aimK > 0.35;
+      holstered.visible = !out; drawn.visible = out;
+      knife.visible = tdK > 0.3 && tdP > 0.12 && tdP < 0.95 && !out;
+      flash.visible = flashT > 0 && out; flash.rotation.y = t * 40;
+    }
     // lay flat (prone) / topple forward (death, game-over screen). Rig pivots at the feet, so shift it back to stay centred.
     const flat = Math.max(deadK, pk);
     inner.rotation.z = -flat * Math.PI / 2;
@@ -411,7 +513,9 @@ export function makeSneaker(scene, opts = {}) {
     rig.rotation.x = roll * (1 - flat); // bank into turns from the feet
   }
   update(0, {});
-  return { g, inner, update, materials: M, head: headPivot };
+  // world position of the pistol muzzle (for tracers); falls back to chest height in front of the body
+  const muzzleWorld = (v) => { if (flash) { g.updateMatrixWorld(true); return flash.getWorldPosition(v); } return v.set(g.position.x, 1.25, g.position.z); };
+  return { g, inner, update, materials: M, head: headPivot, muzzleWorld };
 }
 
 // enemy head: balaclava (head box), helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.

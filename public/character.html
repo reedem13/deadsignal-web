@@ -5,8 +5,8 @@
 #ui{position:fixed;left:8px;top:8px}button{font:inherit;margin:2px;padding:6px 10px;background:#223;color:#cfd;border:1px solid #456}</style>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script></head>
 <body><canvas id="c"></canvas>
-<div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead&amp;spin=0)<br>
-<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
+<div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead|aim|crouchaim|proneaim|takedown&amp;spin=0)<br>
+<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><button data-p="aim">aim</button><button data-p="crouchaim">crouch-aim</button><button data-p="proneaim">prone-aim</button><button data-p="takedown">takedown</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
 <script type="module">
 import * as THREE from 'three';
 import { makeSneaker, makeEnemy } from './sneaker.js';
@@ -25,15 +25,24 @@ const spin = qs.get('spin') !== '0';
 document.querySelectorAll('button').forEach((b) => b.onclick = () => { if (b.dataset.p) pose = b.dataset.p; if (b.dataset.w) who = b.dataset.w; });
 function size() { r.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
 addEventListener('resize', size); size();
-let last = performance.now();
+let last = performance.now(), tdT = 0, shotT = 0, shot = 0;
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.5;
   const low = /prone|crawl/.test(pose), dist = +(qs.get('dist') || 5); const ly = qs.has('ly') ? +qs.get('ly') : low ? 0.25 : 0.8; cam.position.set(Math.cos(ang) * dist, qs.has('cy') ? +qs.get('cy') : low ? 1.5 : 1.6, Math.sin(ang) * dist); cam.lookAt(0, ly, 0);
   const sp = /prone|crawl/.test(pose) ? 0.75 : 0.6, px = -Math.sin(ang) * sp, pz = Math.cos(ang) * sp;
+  if (pose === 'takedown') { // sneaker behind a guard, both facing +x; loops: hold 2.2s (= TD_TIME in main.js) then guard lies dead for 1s
+    tdT = (tdT + dt) % 3.2; const p = qs.has('p') ? +qs.get('p') : Math.min(1, tdT / 2.2), done = !qs.has('p') && tdT > 2.2;
+    for (const m of [...P, ...E]) m.g.visible = m === P[0] || m === E[0];
+    P[0].g.position.set(-0.42, 0, 0); E[0].g.position.set(0, 0, 0); P[0].g.rotation.y = E[0].g.rotation.y = 0;
+    P[0].update(dt, { takedown: done ? null : p }); E[0].update(dt, done ? { dead: true } : { held: p });
+    r.render(scene, cam); requestAnimationFrame(loop); return;
+  }
   const pair = who === 'enemy' ? E : who === 'both' ? [P[0], E[0]] : P;
   for (const m of [...P, ...E]) m.g.visible = pair.includes(m) && !(qs.get('one') && m === pair[1]);
   if (qs.get('one')) pair[0].g.position.set(0, 0, 0); else { pair[0].g.position.set(px, 0, pz); pair[1].g.position.set(-px, 0, -pz); }
-  const s = { moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead' };
+  shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; }
+  const s = { moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead',
+    aim: /aim/.test(pose), shot };
   for (const m of [...P, ...E]) m.update(dt, s);
   r.render(scene, cam); requestAnimationFrame(loop);
 }
