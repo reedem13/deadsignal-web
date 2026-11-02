@@ -1,5 +1,8 @@
 // Project Deadsignal - browser co-op stealth prototype.
-// Camera choice: fixed angled top-down follow cam (north is always up) - easiest to read & control on phones.
+// Camera choice: third-person chase cam (MGS / Splinter Cell style): behind + above your sneaker, looking past the
+// shoulder along your facing. Yaw trails your facing smoothly; it pulls in when a wall is behind you and backs off a bit
+// in portrait. Outside tunnels stick / WASD are CAMERA-relative (up = away from the camera); the basis latches when you
+// start pushing so holding a direction doesn't send you in circles while the camera swings round (see ctlYaw).
 // Tunnels: roofed crawlspaces (TUNNELS below) link map sections. Inside one the LOCAL camera switches to first person;
 // each client decides that for its own player only. Guards can't enter, see or catch you inside a tunnel.
 // Netcode: listen-server style. Host simulates guards, alert, door, extract & win. Each client owns its own
@@ -722,9 +725,20 @@ function updateLocal(dt) {
   let mag = Math.hypot(jx, jz);
   if (mag > 1) { jx /= mag; jz /= mag; mag = 1; }
   const play = world.phase === 'play';
+  // third person: turn the screen-space stick into a world direction using the camera yaw. ctlYaw latches when you start
+  // pushing (no orbiting while the camera catches up) and only drifts toward the camera while you push mostly forward,
+  // so a slight sideways lean makes a gentle curve. Tunnels keep their own FPS tank controls (raw stick).
+  const sjz = jz; // raw screen up / down (ropes + ladders use it: W = up whatever way you face)
+  if (me.tun < 0) {
+    if (mag < 0.15) { ctlHeld = false; ctlYaw = camYaw; }
+    else if (!ctlHeld) { ctlHeld = true; ctlYaw = camYaw; }
+    else if (-jz / mag > 0.82) ctlYaw = lerpA(ctlYaw, camYaw, Math.min(1, dt * 1.5));
+    const fx = Math.cos(ctlYaw), fz = Math.sin(ctlYaw), wx = -jz * fx - jx * fz, wz = -jz * fz + jx * fx; // right = (-fz, fx)
+    jx = wx; jz = wz;
+  } else ctlHeld = false;
   me.thud = Math.max(0, me.thud - dt);
   if (me.tr && !play) me.tr = null; // mission ended mid-climb: let go
-  if (me.tr) { updateTrav(dt, jx, jz, mag); me.tun = -1; $('stance').textContent = me.tr ? travStance() : 'STILL'; return; }
+  if (me.tr) { updateTrav(dt, jx, jz, mag, sjz); me.tun = -1; $('stance').textContent = me.tr ? travStance() : 'STILL'; return; }
   const baseSp = () => (me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
   // desired velocity (tvx, tvz) from input; actual velocity me.vx/me.vz chases it with limited accel = momentum
   let tvx = 0, tvz = 0, wantDir = null;
@@ -795,7 +809,7 @@ function updateLocal(dt) {
   $('stance').textContent = (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
     + (me.tun >= 0 ? ' · TUNNEL' : '') + (me.y > 0.5 ? ' · HIGH' : '');
 }
-let fpsLatch = false;
+let fpsLatch = false, ctlHeld = false, ctlYaw = me.a; // ctlYaw: camera-relative input basis (third person)
 // a standing drop from high up thuds (guards hear it); crouched you hang-drop silently
 const noiseOf = (p) => (p.thud > 0 ? TRAV.landNoise : !p.moving ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
 
@@ -920,12 +934,12 @@ function applyCo(co) {
   stopMe(); me.c = me.p = false; me.eq && (me.gunT = 0); syncStanceButtons(); beep(climb ? 420 : 300, 0.08, 'triangle', 0.08);
 }
 const _gp = { x: 0, y: 0, z: 0 };
-function updateTrav(dt, jx, jz, mag) {
+function updateTrav(dt, jx, jz, mag, sjz = jz) {
   const T = me.tr; T.t += dt; stopMe(); me.run = false; me.vy = 0; me.moving = false;
   switch (T.k) {
     case 'ld': {
       const c = CLIMBS[T.i], d = mag > 0.15 ? jx * Math.cos(c.a) + jz * Math.sin(c.a) : 0;
-      const up = mag < 0.15 ? 0 : Math.abs(d) > 0.35 ? d : -jz; // push into the wall (or W / up) = climb, away = down
+      const up = mag < 0.15 ? 0 : Math.abs(sjz) >= 0.35 ? -sjz : Math.abs(d) > 0.35 ? d : 0; // W / up = climb, S = down (else push into / away from the wall)
       const hang = c.top - TRAV.hangBelow, y0 = me.y;
       me.y = clamp(me.y + clamp(up * 1.3, -1, 1) * TRAV.climbSpeed[c.kind] * dt, 0, hang);
       me.x = c.x; me.z = c.z; me.a = c.a; me.moving = Math.abs(me.y - y0) > 1e-4;
@@ -942,7 +956,7 @@ function updateTrav(dt, jx, jz, mag) {
       if (u >= 1) { me.x = T.tx; me.y = T.ty; me.z = T.tz; me.tr = T.k === 'md' ? { k: 'ld', i: T.i, t: 0 } : null; if (T.k === 'mt') beep(150, 0.05, 'sine', 0.06); }
       break;
     }
-    case 'gp': case 'rp': lineStep(T, dt, jx, jz, mag); break;
+    case 'gp': case 'rp': lineStep(T, dt, jx, jz, mag, sjz); break;
     case 'kn': { const g = COOP_G[T.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[T.i].a + Math.PI; if (mag > 0.6) me.tr = null; break; }
     default: coopStep(T);
   }
@@ -961,12 +975,12 @@ function lineEnter(T, ph) {
   if (ph === 'land') { T.my = T.ly; beep(110, 0.08, 'sine', 0.1); }
 }
 // rope stick axis: screen up / down (W / S) is up / down the rope; sideways input counts only if it pushes into / away from the wall
-function lineAxis(L, jx, jz, mag) {
+function lineAxis(L, jx, jz, mag, sjz = jz) {
   if (mag < 0.15) return 0;
-  if (Math.abs(jz) >= 0.35) return -jz;
+  if (Math.abs(sjz) >= 0.35) return -sjz;
   const d = jx * L.dx + jz * L.dz; return Math.abs(d) > 0.35 ? d : 0;
 }
-function lineStep(T, dt, jx, jz, mag) {
+function lineStep(T, dt, jx, jz, mag, sjz = jz) {
   const L = LINKS[T.i], up = T.k === 'gp';
   T.pt += dt;
   if (T.ph !== 'line') {
@@ -983,7 +997,7 @@ function lineStep(T, dt, jx, jz, mag) {
     return;
   }
   // ---- on the line: player-driven
-  const ax = lineAxis(L, jx, jz, mag), want = Math.abs(ax) > 0.3 ? Math.sign(ax) : 0;
+  const ax = lineAxis(L, jx, jz, mag, sjz), want = Math.abs(ax) > 0.3 ? Math.sign(ax) : 0;
   if (want > 0 && T.ly >= L.hang - 1e-3) { lineEnter(T, 'mantle'); return lineStep(T, 0, 0, 0, 0); }
   if (want < 0 && T.ly <= L.y0 + 1e-3) { lineEnter(T, 'land'); return lineStep(T, 0, 0, 0, 0); }
   if (want) {
@@ -1403,9 +1417,30 @@ function drawRadar() {
 }
 
 // ---------------------------------------------------------------- render
-const topCam = new THREE.Vector3(me.x, 15, me.z + 9), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
+// third-person chase cam tuning (metres / radians-per-second). Portrait phones back off + widen so the body and the
+// ground ahead both read on a tall narrow screen.
+const TPC = { dist: 3.7, distPortrait: 1.9, h: 2.5, hCrouch: 1.9, hProne: 1.35, look: 1.15, lookCrouch: 0.85, lookProne: 0.4,
+  ahead: 1.6, shoulder: 0.42, fov: 56, fovPortrait: 18, yawMove: 2.6, yawIdle: 1.3, yawTrav: 3.2, minDist: 0.35 };
+const tpCam = new THREE.Vector3(me.x - Math.cos(me.a) * TPC.dist, TPC.h, me.z - Math.sin(me.a) * TPC.dist), tpLook = new THREE.Vector3(), camPiv = new THREE.Vector3(me.x, 0, me.z), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
 const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
-let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
+let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0, camD = TPC.dist, camH = TPC.h, camLk = TPC.look, camSh = 0;
+// camera collision: how far (0..1) along pivot -> camera the first solid box is (tall walls / buildings / closed door).
+// Thin gantry posts are ignored so the camera doesn't twitch past them.
+function camClip(ax, ay, az, bx, by, bz) {
+  const dx = bx - ax, dy = by - ay, dz = bz - az, m = 0.22; let best = 1;
+  for (const w of WALLS) {
+    if (w.kind === 'post' || (w.kind === 'door' && world.door)) continue;
+    let t0 = 0, t1 = best;
+    const slab = (o, d, lo, hi) => {
+      if (Math.abs(d) < 1e-6) return o >= lo && o <= hi;
+      let u = (lo - o) / d, v = (hi - o) / d; if (u > v) { const q = u; u = v; v = q; }
+      t0 = Math.max(t0, u); t1 = Math.min(t1, v); return t0 <= t1;
+    };
+    if (!slab(ax, dx, w.x1 - m, w.x2 + m) || !slab(az, dz, w.z1 - m, w.z2 + m) || !slab(ay, dy, -1, w.h + m)) continue;
+    if (t0 > 1e-4) best = t0; // starting inside a box (hugging it) doesn't count
+  }
+  return best;
+}
 // which climb spot / grapple ring to highlight (whatever ACT would use)
 function travNear() {
   const m = curTm; if (!m || me.tr) return null;
@@ -1477,33 +1512,49 @@ function render(dt) {
     s.light.material.color.setHex(world.door ? 0x40ff80 : armed ? 0xffd040 : 0x660000);
   });
   extractMesh.material.opacity = world.door ? 0.5 + 0.4 * Math.sin(performance.now() / 200) : 0.25;
-  // camera: angled top-down follow (zoomed out a bit more in portrait), blended into FIRST PERSON while MY player is in a tunnel.
+  // camera: THIRD PERSON chase cam behind + above my sneaker, blended into FIRST PERSON while MY player is in a tunnel.
   // Purely local: each client only looks at its own me.tun, so the partner's camera is never affected.
-  const zoom = (camera.aspect < 1 ? 1.35 + (1 - camera.aspect) * 0.7 : 1) * 1.25;
-  const camDist = Math.hypot(15, 9) * zoom;
-  topCam.x += (me.x - topCam.x) * Math.min(1, dt * 6);
-  topCam.z += (me.z + 9 * zoom - topCam.z) * Math.min(1, dt * 6);
-  camY += (me.y - camY) * Math.min(1, dt * 4); // follow the climber up (keeps the same framing on roofs)
-  topCam.y = 15 * zoom + camY;
-  topLook.set(topCam.x, camY, topCam.z - 9 * zoom - 0.5);
+  const portrait = camera.aspect < 1 ? Math.min(1, (1 - camera.aspect) / 0.55) : 0; // 0 landscape .. 1 tall phone
+  camPiv.x += (me.x - camPiv.x) * Math.min(1, dt * 14);
+  camPiv.z += (me.z - camPiv.z) * Math.min(1, dt * 14);
+  camY += (me.y - camY) * Math.min(1, dt * (me.tr ? 7 : 5)); // follow the climber up / down the wall
   fpsK += ((role && me.tun >= 0 ? 1 : 0) - fpsK) * Math.min(1, dt * 4.5);
   if (fpsK < 0.002) fpsK = 0; if (fpsK > 0.998) fpsK = 1;
   const f = fpsK * fpsK * (3 - 2 * fpsK); // smoothstep
-  camYaw = lerpA(camYaw, me.a, Math.min(1, dt * 12));
+  // yaw trails facing: brisk while moving / on a wall, lazy recentre when idle, and slow if you walk toward the camera
+  const dYaw = Math.abs(angDiff(me.a, camYaw));
+  const yawRate = me.tun >= 0 ? 12 : me.tr || me.td ? TPC.yawTrav : me.moving ? TPC.yawMove * (dYaw > 2.3 ? 0.35 : 1) : TPC.yawIdle;
+  camYaw = lerpA(camYaw, me.a, Math.min(1, dt * yawRate));
   eyeH += ((me.p ? 0.3 : 0.92) - eyeH) * Math.min(1, dt * 6);
   eyeF += ((me.p ? 0.42 : 0.12) - eyeF) * Math.min(1, dt * 6);
-  const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
+  const ks = Math.min(1, dt * 5), onWall = !!me.tr;
+  camH += ((me.p && !onWall ? TPC.hProne : me.c && !onWall ? TPC.hCrouch : TPC.h) - camH) * ks;
+  camLk += ((me.p && !onWall ? TPC.lookProne : me.c && !onWall ? TPC.lookCrouch : TPC.look) - camLk) * ks;
+  camSh += ((me.eq && !onWall ? TPC.shoulder : 0) - camSh) * ks; // over the right shoulder with the P-9 drawn
+  const cy = Math.cos(camYaw), sy = Math.sin(camYaw), rx = -sy, rz = cy; // forward + right
+  const want = TPC.dist + TPC.distPortrait * portrait;
+  const hx = camPiv.x + rx * camSh * 0.5, hy = camY + camLk, hz0 = camPiv.z + rz * camSh * 0.5; // head pivot
+  const bx = camPiv.x - cy * want + rx * camSh, by = camY + camH, bz = camPiv.z - sy * want + rz * camSh;
+  const clipD = Math.max(TPC.minDist, camClip(hx, hy, hz0, bx, by, bz) * want - 0.15);
+  camD += (clipD - camD) * Math.min(1, dt * (clipD < camD ? 18 : 3)); // snap in fast, ease back out
+  const kd = camD / want;
+  // pulled in by a wall: ride up the wall face (it's vertical, so straight up stays outside the box) and look down
+  // and tip the view down onto me so I stay in frame
+  const kp = 1 - kd;
+  tpCam.set(hx + (bx - hx) * kd, hy + (by - hy) * kd + kp * 2.1, hz0 + (bz - hz0) * kd);
+  const ah = TPC.ahead * (1 - kp * 0.55);
+  tpLook.set(camPiv.x + cy * ah + rx * camSh * 0.6, camY + camLk - 0.1 - kp * 0.75, camPiv.z + sy * ah + rz * camSh * 0.6);
   fpsEye.set(me.x + cy * eyeF, eyeH, me.z + sy * eyeF);
   fpsLook.set(fpsEye.x + cy * 4, eyeH - 0.15, fpsEye.z + sy * 4);
-  camera.position.lerpVectors(topCam, fpsEye, f);
-  camLook.lerpVectors(topLook, fpsLook, f);
+  camera.position.lerpVectors(tpCam, fpsEye, f);
+  camLook.lerpVectors(tpLook, fpsLook, f);
   camera.lookAt(camLook);
-  const fov = 40 + 32 * f;
+  const fov = THREE.MathUtils.lerp(TPC.fov + TPC.fovPortrait * portrait, 72, f);
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.near = 0.1 - 0.06 * f; camera.updateProjectionMatrix(); }
-  scene.fog.near = THREE.MathUtils.lerp(camDist + 4, 0.6, f); scene.fog.far = THREE.MathUtils.lerp(camDist + 30, 17, f);
+  scene.fog.near = THREE.MathUtils.lerp(16, 0.6, f); scene.fog.far = THREE.MathUtils.lerp(52, 17, f);
   scene.fog.color.lerpColors(SKY, TUNNEL_FOG, f); scene.background.copy(scene.fog.color);
-  meMesh.g.visible = f < 0.6; // don't render my own head in first person
-  markers[0].visible = f < 0.5;
+  meMesh.g.visible = f < 0.6; // show me in third person (a jammed-in camera rides up the wall, above my head); hide in first person
+  markers[0].visible = false; // my own marker is redundant behind my shoulder (partner's stays)
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
   $('fpsVignette').style.opacity = f.toFixed(2);
   updateFx(dt);
@@ -1553,7 +1604,7 @@ function updateHud() {
 
 // ---------------------------------------------------------------- main loop
 let last = performance.now(), sendAcc = 0, stateAcc = 0, pingAcc = 0;
-camera.position.copy(topCam);
+camera.position.copy(tpCam);
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (role) {
