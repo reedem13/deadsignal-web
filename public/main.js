@@ -58,7 +58,12 @@ const GUARD_PATHS = [
   [[-17, -1], [-17, -12], [-2, -12], [-2, -7], [-2, -12], [-17, -12]],
 ];
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
-const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.8, investigate: 2.6, chase: 4.6 };
+// guards: patrol 1.8 -> 1.4, investigate 2.6 -> 2.2, chase 4.6 -> 4.1 (still slower than a running player)
+const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
+// patrol pauses: at every waypoint a guard stops for min..min+rand seconds and slowly looks around (+-sweep rad)
+const PAUSE = { min: 2.2, rand: 1.4, sweep: 0.45, rate: 1.1 };
+// laser sight on the drawn P-9 (tight red beam + dot), locks onto the auto-aim target when there is one
+const LASER = { color: 0xff1a1a, width: 0.035, dot: 0.07 };
 const NOISE = { run: 6, walk: 2.2 };
 // Momentum (players only): velocity ramps toward the stick/keys target instead of snapping. Kept light for stealth:
 // walk reaches full speed in ~0.2s, run in ~0.33s; stops coast for ~0.15s (walk) / ~0.25s (run).
@@ -96,7 +101,7 @@ let lastAlert = 0, lastPhase = 'play';
 function freshWorld() {
   return {
     // st: patrol | investigate | chase | search | held (being taken down, tdT = seconds into it) | dead
-    guards: GUARD_PATHS.map((p) => ({ x: p[0][0], z: p[0][1], a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0,
+    guards: GUARD_PATHS.map((p) => ({ x: p[0][0], z: p[0][1], a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
       rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1 })),
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
     ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, kills: 0, // dead: index of the player who died (-1 = nobody)
@@ -310,6 +315,60 @@ function updateFx(dt) {
   }
 }
 
+// laser sight: one beam + dot per player rig. Beam is a thin unlit box stretched from the muzzle to the first thing it
+// hits (tall wall / guard), so it reads at the chunky pixel scale where a 1px THREE.Line would vanish.
+function makeLaser() {
+  const mat = new THREE.MeshBasicMaterial({ color: LASER.color, transparent: true, opacity: 0.7, depthWrite: false, fog: false });
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(1, LASER.width, LASER.width), mat);
+  const dot = new THREE.Mesh(new THREE.OctahedronGeometry(LASER.dot, 0), new THREE.MeshBasicMaterial({ color: 0xff4040, transparent: true, opacity: 0.95, depthWrite: false, fog: false }));
+  // core: a 1px line that never breaks up at low res; the box above is the soft glow around it
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+  const core = new THREE.Line(lg, new THREE.LineBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.95, depthWrite: false, fog: false }));
+  mat.opacity = 0.35;
+  beam.frustumCulled = dot.frustumCulled = core.frustumCulled = false; beam.renderOrder = dot.renderOrder = core.renderOrder = 5;
+  beam.visible = dot.visible = core.visible = false;
+  scene.add(beam, dot, core); return { beam, dot, core, on: 0 };
+}
+const _lz = new THREE.Vector3(), _ld = new THREE.Vector3();
+// first live guard the ray x,z,a crosses (body radius ~0.32) before maxD, as a distance, or maxD
+function laserGuardHit(x, z, a, maxD) {
+  const cx = Math.cos(a), cz = Math.sin(a); let best = maxD;
+  for (const g of world.guards) {
+    if (g.st === 'dead') continue;
+    const gx = (g.rx ?? g.x) - x, gz = (g.rz ?? g.z) - z, t = gx * cx + gz * cz;
+    if (t < 0.2 || t > best) continue;
+    if (Math.abs(gx * -cz + gz * cx) < 0.32) best = t - 0.2;
+  }
+  return best;
+}
+// show / aim a laser. lockX/lockZ (optional) = auto-aim target to snap the beam onto.
+function updateLaser(L, mesh, show, x, z, a, dt, lockX, lockZ) {
+  L.on = show ? Math.min(1, L.on + dt * 6) : 0;
+  L.beam.visible = L.dot.visible = L.core.visible = L.on > 0.05;
+  if (!L.beam.visible) return;
+  mesh.muzzleWorld(_lz);
+  let ex, ez, ey = _lz.y;
+  if (lockX != null) { ex = lockX; ez = lockZ; ey = Math.max(0.35, Math.min(1.2, _lz.y)); }
+  else {
+    // anything taller than the beam stops it (so a crouched / prone laser lands on crates instead of passing through)
+    const bx = x + Math.cos(a) * GUN.range, bz = z + Math.sin(a) * GUN.range; let tm = 1;
+    for (const b of solids()) { if (b.h < _lz.y) continue; const t = segT(x, z, bx, bz, b); if (t !== null && t > 0.01 && t < tm) tm = t; }
+    const gd = laserGuardHit(x, z, a, GUN.range * tm);
+    ex = x + Math.cos(a) * gd; ez = z + Math.sin(a) * gd;
+  }
+  _ld.set(ex - _lz.x, ey - _lz.y, ez - _lz.z);
+  const len = Math.max(0.05, _ld.length() * L.on); // beam "extends" over ~0.15s on draw
+  L.beam.scale.set(len, 1, 1);
+  L.beam.position.copy(_lz).addScaledVector(_ld.normalize(), len / 2);
+  L.beam.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), _ld);
+  L.beam.material.opacity = 0.3 + 0.08 * Math.sin(performance.now() * 0.03); // faint shimmer
+  const cp = L.core.geometry.attributes.position; cp.setXYZ(0, _lz.x, _lz.y, _lz.z);
+  cp.setXYZ(1, _lz.x + _ld.x * len, _lz.y + _ld.y * len, _lz.z + _ld.z * len); cp.needsUpdate = true;
+  L.dot.position.copy(_lz).addScaledVector(_ld, len); L.dot.visible = L.on > 0.95;
+  L.dot.rotation.y += dt * 8;
+}
+const myLaser = makeLaser(), otherLaser = makeLaser();
+
 function resize() {
   const w = innerWidth, h = innerHeight;
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2) * PIXEL_SCALE);
@@ -449,22 +508,27 @@ function hostTakedown(gi, pidx) {
   if (peerConnected) sendState();
   return true;
 }
-function fireGun() {
-  if (!me.eq || me.cd > 0) return;
-  if (me.ammo <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
-  me.ammo--; me.cd = GUN.cooldown; me.gunT = GUN.drawTime; me.shot++;
-  // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
+// auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
+function autoTarget() {
   const cone = me.tun >= 0 ? GUN.fpsCone : GUN.cone;
   let tgt = -1, best = 1e9;
   world.guards.forEach((g, i) => {
     if (g.st === 'dead') return;
-    const dx = g.x - me.x, dz = g.z - me.z, d = Math.hypot(dx, dz);
+    const gx = g.rx ?? g.x, gz = g.rz ?? g.z; // guest: use the smoothed on-screen guard
+    const dx = gx - me.x, dz = gz - me.z, d = Math.hypot(dx, dz);
     if (d > GUN.range) return;
     const off = Math.abs(angDiff(Math.atan2(dz, dx), me.a));
     if (off > cone && d > 1.0) return;
-    if (!clearShot(me.x, me.z, g.x, g.z)) return;
+    if (!clearShot(me.x, me.z, gx, gz)) return;
     const score = d + off * 8; if (score < best) { best = score; tgt = i; }
   });
+  return tgt;
+}
+function fireGun() {
+  if (!me.eq || me.cd > 0) return;
+  if (me.ammo <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
+  me.ammo--; me.cd = GUN.cooldown; me.gunT = GUN.drawTime; me.shot++;
+  const tgt = autoTarget();
   let end;
   if (tgt >= 0) { const g = world.guards[tgt]; if (me.tun < 0) me.a = Math.atan2(g.z - me.z, g.x - me.x); end = { x: g.x, z: g.z }; }
   else end = rayEnd(me.x, me.z, me.a, GUN.range);
@@ -633,9 +697,16 @@ function hostUpdate(dt) {
       }
     }
     // --- act
-    if (g.st === 'patrol') {
+    if (g.st !== 'patrol') g.pause = 0;
+    if (g.st === 'patrol' && g.pause > 0) { // idle at a waypoint: stand still, slow look left/right around his heading
+      g.pause -= dt; g.pauseT += dt;
+      g.a = g.look0 + Math.sin(g.pauseT * PAUSE.rate) * PAUSE.sweep * Math.min(1, g.pauseT * 1.5);
+    } else if (g.st === 'patrol') {
       const [tx, tz] = g.path[g.wp];
-      if (moveToward(g, tx, tz, SPEED.patrol, dt)) g.wp = (g.wp + 1) % g.path.length;
+      if (moveToward(g, tx, tz, SPEED.patrol, dt)) {
+        g.wp = (g.wp + 1) % g.path.length;
+        g.pause = PAUSE.min + Math.random() * PAUSE.rand; g.pauseT = 0; g.look0 = g.a;
+      }
     } else if (g.st === 'investigate') {
       g.give -= dt;
       if (moveToward(g, g.tx, g.tz, SPEED.investigate, dt) || g.give <= 0 || g.stuck > 1) {
@@ -888,7 +959,7 @@ function render(dt) {
   const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
   meMesh.g.position.set(me.x, 0, me.z); meMesh.g.rotation.y = -me.a;
   meMesh.update(dt, { moving: me.moving, run: me.run, speed: Math.hypot(me.vx, me.vz), crouch: me.c && !me.p, prone: me.p, dead: deadMe,
-    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.gunT > 0, armed: me.eq, shot: me.shot });
+    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: me.eq || me.gunT > 0, armed: me.eq, shot: me.shot }); // drawn = always in the forward aim stance
   // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
   // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
   if (dt > 0) { const vNet = Math.hypot(other.nvx, other.nvz), vScr = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt;
@@ -897,7 +968,12 @@ function render(dt) {
   otherMesh.g.visible = peerConnected;
   otherMesh.g.position.set(other.rx, 0, other.rz); otherMesh.g.rotation.y = -other.ra;
   otherMesh.update(dt, { moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 ? otherSpeed : 0,
-    crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd, armed: !!other.eq, shot: other.shot });
+    crouch: other.c && !other.p, prone: other.p, dead: deadOther, takedown: other.td >= 0 ? other.td : null, aim: !!other.gd || !!other.eq, armed: !!other.eq, shot: other.shot });
+  // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
+  { const play = world.phase === 'play';
+    const lockI = me.eq && !me.td && play ? autoTarget() : -1, lg = lockI >= 0 ? world.guards[lockI] : null;
+    updateLaser(myLaser, meMesh, me.eq && !me.td && play && !deadMe, me.x, me.z, me.a, dt, lg ? (lg.rx ?? lg.x) : null, lg ? (lg.rz ?? lg.z) : null);
+    updateLaser(otherLaser, otherMesh, peerConnected && !!other.eq && other.td < 0 && play && !deadOther, other.rx, other.rz, other.ra, dt); }
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
