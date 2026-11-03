@@ -23,6 +23,9 @@
 // Anything that changes guards / LIFE / who is dead (and therefore which bodies have loot) goes through the host.
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
+// Water (WATERS): walk off a bank into the dock slip or the cooling basin and you surface-swim — slower than a walk,
+// quiet, same stick. C / CROUCH / PRONE takes a short dive and you come back up. Step onto a bank to walk. Guards
+// stay on the concrete. Swim state is on the player packet (0 dry, 1 surface, 2 dive) so every client shows it.
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
@@ -59,7 +62,7 @@ const WALLS = [
   // north dock (z -28..-16)
   B(4, -29.5, 24, 1, 2.5, 'wall'), B(-7.5, -23, 1, 14, 2.5, 'wall'), B(15.5, -23, 1, 14, 2.5, 'wall'),
   B(0, -24.8, 4.4, 3.2, L2, 'building'),                                                             // CRANE CAB
-  B(9, -21.2, 1.6, 1.2, 1), B(-6.2, -20, 1.3, 1.3, 1),
+  B(11.2, -19.4, 1.6, 1.2, 1), B(-6.2, -20, 1.3, 1.3, 1), // pier cover, clear of the slip's south bank
   // extraction compound (north-east), door between the two switches
   B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -13.925, 0.5, 2.65, 2.5, 'wall'), B(4.25, -9.325, 0.5, 2.15, 2.5, 'wall'), // gap = T3 drain
   B(11.5, -8.25, 3, 0.5, 2.5, 'door'),
@@ -143,15 +146,27 @@ const GUARDS = [
   { y: 0, home: [-19, -9, -6, 11], path: [[-16, -2], [-12, 2], [-16, 6], [-13, 8], [-16, 2]] },     // west yard (original), between culvert and barracks
   { y: 0, home: [-20, 20, 16.8, 30.5], path: [[-16, 18.2], [-16, 29], [13, 29], [13, 20.6], [-1, 20.6], [-1, 18.2]] }, // motor pool
   { y: L1, area: ANNEX_L1, path: [[-8, 24], [-3, 24], [6, 23.5], [12, 23.5], [6, 23.5], [-6, 23.2]] }, // shed roof + annex catwalk
-  { y: 0, home: [21.5, 38.5, -0.5, 16.5], path: [[22.2, 4.2], [27.5, 4.2], [27.5, 14.2], [37.2, 14.2], [37.2, 3.2], [27.5, 3.2]] }, // cooling yard
+  { y: 0, home: [21.5, 38.5, 2.85, 16.5], path: [[22.2, 4.2], [27.5, 4.2], [27.5, 14.2], [37.2, 14.2], [37.2, 3.45], [27.5, 3.45]] }, // cooling yard (basin is the north fence)
   { y: L1, area: EAST_L1, path: [[22, 5.85], [29, 5.85], [29, 12.4], [34, 12.4], [29, 12.4], [29, 2.8], [33, 2.8], [25, 2.8], [25, 5.85]] }, // east catwalks
   { y: L2, area: EAST_L2, path: [[33, 5.5], [35.5, 5.5], [35.8, 8], [35.5, 10.4], [32, 10.4], [30.7, 8], [30.7, 5.6]] }, // cooling tower roof, around the penthouse
   { y: 0, home: [-35.2, -21.5, -2.6, 12.5], path: [[-23, 3], [-23, 10], [-34, 10], [-34, 8], [-24, 8], [-24, 0.5], [-28, 0.5], [-23, 1]] }, // service yard
   { y: L2, area: LOOK_L2, path: [[-33.5, -1], [-31.5, -1], [-31.5, 0.3], [-33.5, 0.3]] },            // lookout roof
-  { y: 0, home: [-7, 14.5, -26.6, -16.6], path: [[-5, -18.5], [10, -18.5], [12, -23], [6, -25.5], [-5, -25.5], [-5, -21]] }, // dock
+  { y: 0, home: [-6.8, 14.2, -21.6, -16.6], path: [[-5.2, -18.3], [11.4, -18.3], [12.6, -20.7], [3.2, -21.15], [-4.6, -20.75], [-5.4, -19]] }, // dock pier (slip to the north is water)
   { y: L1, area: DOCK_L1, path: [[-3, -19], [5, -19], [5, -22], [-3, -22]] },                        // dock rack
 ];
 const GUARD_PATHS = GUARDS.map((g) => g.path);
+// Surface-swim volumes (world XZ). The visible sheet sits on the shore (y ≈ 0); the mesh sinks into a cut basin.
+// Dock: two slips around the crane cab, joined along the north fence, with a dry pad on the crane's north face
+// (grapple foot). Cooling: a channel along the north fence, under the catwalk, beside the yard patrol.
+const WATERS = [
+  { name: 'DOCK SLIP', x1: -6.55, x2: -2.15, z1: -28.6, z2: -23.05 },
+  { name: 'DOCK SLIP', x1: 2.15, x2: 14.2, z1: -28.6, z2: -23.05 },
+  { name: 'DOCK SLIP', x1: -2.28, x2: -1.02, z1: -28.6, z2: -26.48 },
+  { name: 'DOCK SLIP', x1: 1.02, x2: 2.28, z1: -28.6, z2: -26.48 },
+  { name: 'DOCK SLIP', x1: -1.14, x2: 1.14, z1: -28.6, z2: -27.38 },
+  { name: 'COOLING BASIN', x1: 22.3, x2: 38.5, z1: -0.92, z2: 2.4 },
+];
+const waterVolume = (x, z, pad = 0) => WATERS.find((w) => x >= w.x1 - pad && x <= w.x2 + pad && z >= w.z1 - pad && z <= w.z2 + pad) || null;
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
 // guards: patrol 1.8 -> 1.4, investigate 2.6 -> 2.2, chase 4.6 -> 4.1 (still slower than a running player)
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
@@ -159,7 +174,10 @@ const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, inves
 const PAUSE = { min: 2.2, rand: 1.4, sweep: 0.45, rate: 1.1 };
 // laser sight on the drawn P-9 (tight red beam + dot), locks onto the auto-aim target when there is one
 const LASER = { color: 0xff1a1a, width: 0.035, dot: 0.07 };
-const NOISE = { run: 6, walk: 2.2 };
+const NOISE = { run: 6, walk: 2.2, splash: 2.6 }; // a running entry splashes; steady strokes are silent
+// Zelda-style surface swim: slower than a walk, heavier to start and stop, wider turns. Dive is a short
+// submerge (no oxygen meter) — you come back up. gap = minimum time between dives.
+const SWIM = { speed: 1.9, dive: 1.25, accel: 7.5, decel: 5.2, turn: 4.6, diveT: 0.82, gap: 0.38 };
 // Momentum (players only): velocity ramps toward the stick/keys target instead of snapping. Kept light for stealth:
 // walk reaches full speed in ~0.2s, run in ~0.33s; stops coast for ~0.15s (walk) / ~0.25s (run).
 const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
@@ -266,16 +284,17 @@ const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false
   // gear: inv[id] = count (-1 = not carried; toggles 1), wpn = weapon in the weapon slot (null = bare hands),
   // itm = item in the item slot (null = empty). sd / box / scope = suppressor fitted / hiding in the box / binoculars up,
   // stimT = steady-hands timer, burst = FR-5 rounds left. A mission starts with every count at -1.
-  inv: Object.fromEntries(Object.keys(ITEMS).map((k) => [k, -1])), wpn: null, itm: null, sd: false, box: false, scope: false, stimT: 0, burst: 0, burstT: 0 };
+  inv: Object.fromEntries(Object.keys(ITEMS).map((k) => [k, -1])), wpn: null, itm: null, sd: false, box: false, scope: false, stimT: 0, burst: 0, burstT: 0,
+  sw: false, dive: 0, diveCd: 0, splash: 0 };
 // remote traversal: y, tk = move code ('' none), ti = spot / link index, tp = progress 0..1; ry = smoothed on-screen y
 // one remote record per slot (others[mySlot] is unused - that's `me`). on = connected (server roster).
 const others = SPAWNS.map((sp, s) => ({ s, on: false, x: sp.x, z: sp.z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: sp.x, rz: sp.z, ra: 0, nvx: 0, nvz: 0, pt: 0,
-  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, box: 0, w: '', bxK: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
+  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, box: 0, w: '', bxK: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z, sw: 0 }));
 const peers = () => others.filter((o) => o.on && o.s !== mySlot);
 const pOf = (s) => (s === mySlot ? me : others[s]);
 function resetLoadout() { me.td = null; me.eq = false; me.ammo = 0; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0;
-  for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; o.w = ''; }
-  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; resetInv(); syncGunButton(); }
+  for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; o.w = ''; o.sw = 0; }
+  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; me.sw = false; me.dive = 0; me.diveCd = 0; me.splash = 0; resetInv(); syncGunButton(); }
 function resetInv() {
   for (const id of Object.keys(ITEMS)) me.inv[id] = -1;
   me.wpn = null; me.itm = null; me.sd = me.box = me.scope = false; me.stimT = 0; me.burst = 0;
@@ -307,7 +326,8 @@ const solids = () => WALLS.filter((w) => !(w.kind === 'door' && world.door));
 
 function collide(p, r, guard = false) {
   if (guard && p.y > 0.3) return collideHigh(p, r);
-  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS) : solids());
+  // guards patrol the piers — water is a wall for them, a route for players
+  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS, WATERS) : solids());
 }
 // elevated guards: only what sticks up above their deck blocks them (walls, door, tall buildings, rails), then they are
 // clamped onto the nearest of their deck rects so they never walk off a catwalk.
@@ -453,12 +473,102 @@ scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
 const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
 
 const mat = (c, extra = {}) => new THREE.MeshLambertMaterial({ color: c, flatShading: true, ...extra });
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP.x2 - MAP.x1, MAP.z2 - MAP.z1), mat(0x26352e));
-ground.rotation.x = -Math.PI / 2; ground.position.set((MAP.x1 + MAP.x2) / 2, 0, (MAP.z1 + MAP.z2) / 2); scene.add(ground);
+// Ground slabs with the swim basins cut out, so a sunk swimmer isn't hidden under the yard plane.
+function xzSlab(x1, z1, x2, z2, holes) {
+  const s = new THREE.Shape();
+  s.moveTo(x1, -z1); s.lineTo(x2, -z1); s.lineTo(x2, -z2); s.lineTo(x1, -z2); s.closePath();
+  for (const h of holes) {
+    if (h.x2 <= x1 || h.x1 >= x2 || h.z2 <= z1 || h.z1 >= z2) continue;
+    const a = Math.max(h.x1, x1), b = Math.min(h.x2, x2), c = Math.max(h.z1, z1), d = Math.min(h.z2, z2);
+    const p = new THREE.Path();
+    p.moveTo(a, -c); p.lineTo(b, -c); p.lineTo(b, -d); p.lineTo(a, -d); p.closePath();
+    s.holes.push(p);
+  }
+  const g = new THREE.ShapeGeometry(s); g.rotateX(-Math.PI / 2); return g;
+}
+const ground = new THREE.Mesh(xzSlab(MAP.x1, MAP.z1, MAP.x2, MAP.z2, WATERS), mat(0x26352e));
+scene.add(ground);
 const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236); grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
-// wing floors sit a hair above the yard so the new ground reads as a different pad
+// wing floors sit a hair above the yard so the new ground reads as a different pad (basins stay open)
 for (const [x, z, w, d, c] of [[0, 23.5, 40, 15, 0x243028], [30, 8, 18, 18, 0x2a332c], [-28.5, 5, 15, 16, 0x2c3428], [4, -22.5, 22, 13, 0x2a3036]]) {
-  const fl = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat(c)); fl.rotation.x = -Math.PI / 2; fl.position.set(x, 0.012, z); scene.add(fl);
+  const fl = new THREE.Mesh(xzSlab(x - w / 2, z - d / 2, x + w / 2, z + d / 2, WATERS), mat(c));
+  fl.position.y = 0.012; scene.add(fl);
+}
+// ---- water: a cut basin (floor + shore walls) and a PS1 sheet on the shoreline. Swimmers sink into the cut.
+const BASIN = -1.88, SURFACE = 0.055;
+const waterTex = pixTex(32, (x, S) => {
+  x.fillStyle = '#1a7898'; x.fillRect(0, 0, S, S);
+  x.strokeStyle = '#d6f4ff'; x.lineWidth = 1; x.globalAlpha = 0.9;
+  for (let row = 0; row < 4; row++) {
+    const y0 = 3 + row * 8; x.beginPath(); x.moveTo(0, y0);
+    for (let i = 0; i <= 8; i++) x.lineTo(i * 4, y0 + (i % 2 ? -2 : 2));
+    x.stroke();
+  }
+  x.globalAlpha = 0.45; x.fillStyle = '#e9fbff';
+  x.fillRect(2, 6, 3, 1); x.fillRect(18, 14, 5, 1); x.fillRect(9, 22, 3, 1); x.fillRect(24, 5, 2, 1);
+}, [1, 1]);
+const waterMat = new THREE.MeshLambertMaterial({ map: waterTex, color: 0xc5eeff, transparent: true, opacity: 0.48, depthWrite: false, side: THREE.DoubleSide });
+const basinMat = mat(0x0c3340), wetWall = mat(0x1a4550), lipMat = mat(0x7d8c86);
+const waterSheets = [];
+const spanOverlap = (a1, a2, b1, b2) => Math.min(a2, b2) - Math.max(a1, b1);
+function cutSpans(lo, hi, cuts) {
+  let segs = [[lo, hi]];
+  for (const [a, b] of cuts) {
+    const next = [];
+    for (const [s, e] of segs) {
+      if (b <= s + 0.05 || a >= e - 0.05) { next.push([s, e]); continue; }
+      if (a > s + 0.08) next.push([s, a]);
+      if (b < e - 0.08) next.push([b, e]);
+    }
+    segs = next.filter(([s, e]) => e - s > 0.4);
+  }
+  return segs;
+}
+function shoreCuts(w, axis, at) {
+  const cuts = [];
+  for (const o of WATERS) if (o !== w) {
+    const touch = axis === 'z' ? (Math.abs(o.z1 - at) < 0.35 || Math.abs(o.z2 - at) < 0.35) : (Math.abs(o.x1 - at) < 0.35 || Math.abs(o.x2 - at) < 0.35);
+    if (!touch) continue;
+    const a = axis === 'z' ? spanOverlap(w.x1, w.x2, o.x1, o.x2) : spanOverlap(w.z1, w.z2, o.z1, o.z2);
+    if (a < 0.25) continue;
+    cuts.push(axis === 'z' ? [Math.max(w.x1, o.x1), Math.min(w.x2, o.x2)] : [Math.max(w.z1, o.z1), Math.min(w.z2, o.z2)]);
+  }
+  return cuts;
+}
+function addShore(x1, x2, z1, z2) {
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.08, x2 - x1), -BASIN, Math.max(0.08, z2 - z1)), wetWall);
+  wall.position.set((x1 + x2) / 2, BASIN / 2, (z1 + z2) / 2); scene.add(wall);
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.08, x2 - x1), 0.07, Math.max(0.08, z2 - z1)), lipMat);
+  lip.position.set((x1 + x2) / 2, 0.04, (z1 + z2) / 2); scene.add(lip);
+}
+for (const w of WATERS) {
+  const lx = w.x2 - w.x1, lz = w.z2 - w.z1, cx = (w.x1 + w.x2) / 2, cz = (w.z1 + w.z2) / 2;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(lx, lz), basinMat);
+  floor.rotation.x = -Math.PI / 2; floor.position.set(cx, BASIN + 0.02, cz); scene.add(floor);
+  const geo = new THREE.PlaneGeometry(lx, lz), uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * lx * 0.42, uv.getY(i) * lz * 0.42);
+  const sheet = new THREE.Mesh(geo, waterMat); sheet.rotation.x = -Math.PI / 2; sheet.position.set(cx, SURFACE, cz); scene.add(sheet); waterSheets.push(sheet);
+  const T = 0.2;
+  for (const [a, b] of cutSpans(w.x1, w.x2, shoreCuts(w, 'z', w.z1))) addShore(a, b, w.z1 - T * 0.5, w.z1 + T * 0.5);
+  for (const [a, b] of cutSpans(w.x1, w.x2, shoreCuts(w, 'z', w.z2))) addShore(a, b, w.z2 - T * 0.5, w.z2 + T * 0.5);
+  for (const [a, b] of cutSpans(w.z1, w.z2, shoreCuts(w, 'x', w.x1))) addShore(w.x1 - T * 0.5, w.x1 + T * 0.5, a, b);
+  for (const [a, b] of cutSpans(w.z1, w.z2, shoreCuts(w, 'x', w.x2))) addShore(w.x2 - T * 0.5, w.x2 + T * 0.5, a, b);
+}
+function updateWater() {
+  const t = performance.now() / 1000;
+  waterTex.offset.x = t * 0.04; waterTex.offset.y = Math.sin(t * 0.65) * 0.025;
+  const bob = Math.sin(t * 1.35) * 0.012;
+  for (const m of waterSheets) m.position.y = SURFACE + bob;
+}
+// Rig drop under the shoreline. Surface leaves the head and the stroke above the sheet; a dive puts the head under it.
+function waterSink(mesh, code, moving, dt) {
+  // Waist-deep on the surface so the stroke reads from the top-down cam; a dive ducks the head to the sheet.
+  const target = code > 1 ? 1.28 : code === 1 ? 0.58 : 0;
+  mesh.sink = (mesh.sink || 0) + (target - (mesh.sink || 0)) * Math.min(1, Math.max(0, dt) * (target < (mesh.sink || 0) ? 8 : 3.2));
+  if (mesh.sink < 0.02) return 0;
+  const t = performance.now() / 1000;
+  const bob = (code === 1 ? Math.sin(t * (moving ? 6.2 : 2.3)) * (moving ? 0.045 : 0.028) : Math.sin(t * 2.6) * 0.018) * Math.min(1, mesh.sink);
+  return mesh.sink - bob;
 }
 const compoundFloor = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.5), mat(0x2f3a44));
 compoundFloor.rotation.x = -Math.PI / 2; compoundFloor.position.set(12.25, 0.02, -11.75); scene.add(compoundFloor);
@@ -948,9 +1058,23 @@ document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
 
 // stance: stand <-> crouch (C), anything <-> prone (Z/X). Tunnels are too low to stand in.
-function syncStanceButtons() { $('btnCrouch').classList.toggle('on', me.c && !me.p); $('btnProne').classList.toggle('on', me.p); }
+// In the water both buttons (and Z/X) take a short dive instead of changing stance.
+function syncStanceButtons() {
+  $('btnCrouch').classList.toggle('on', me.dive > 0 || (me.c && !me.p));
+  $('btnProne').classList.toggle('on', me.p && !me.sw);
+  const c = $('btnCrouch'), p = $('btnProne');
+  const cl = me.sw ? 'DIVE' : 'CROUCH', pl = me.sw ? 'DIVE' : 'PRONE';
+  if (c.textContent !== cl) c.textContent = cl;
+  if (p.textContent !== pl) p.textContent = pl;
+}
+function startDive() {
+  if (!me.sw || me.dive > 0 || me.diveCd > 0 || me.td || me.tr) return;
+  me.dive = SWIM.diveT; beep(140, 0.07, 'sine', 0.05);
+  syncStanceButtons();
+}
 function toggleCrouch() {
   if (me.td || me.tr) return;
+  if (me.sw) { startDive(); return; }
   if (me.p) me.p = false; // prone -> crouch
   else if (me.c && me.tun >= 0) toast('Too low to stand', 800, '#ccc');
   else me.c = !me.c;
@@ -958,6 +1082,7 @@ function toggleCrouch() {
 }
 function toggleProne() {
   if (me.td || me.tr) return;
+  if (me.sw) { startDive(); return; }
   if (me.p) me.p = false; // prone -> crouch (stay low)
   else { me.p = true; me.c = true; }
   syncStanceButtons();
@@ -984,6 +1109,7 @@ function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.re
 const nearSwitch = () => SWITCHES.some((s) => Math.abs(me.y - s.y) < 0.3 && Math.hypot(me.x - s.x, me.z - s.z) < 1.8);
 let curTm = null; // traversal option ACT would use right now (refreshed every frame in updateHud)
 function actMode() {
+  if (me.sw) return 'none'; // hands are busy swimming — no fire, no takedown, no climb
   if (me.tr) return me.tr.k === 'ld' || (ON_LINE(me.tr.k) && me.tr.ph === 'line') ? 'letgo' : me.tr.k === 'kn' ? 'stand' : 'busy';
   if (takedownTarget(me) >= 0) return 'td';
   if (nearSwitch()) return 'use';
@@ -1006,7 +1132,7 @@ function doInteract() {
 // ---------------------------------------------------------------- combat: takedown + handgun
 // Guard index p can take down from behind, or -1. Uses each client's latest guard state (host: authoritative, guest: net).
 function takedownTarget(p, range = TD.range, behind = TD.behind) {
-  if (p.tun >= 0 || p.td || p.tr) return -1;
+  if (p.tun >= 0 || p.td || p.tr || p.sw) return -1;
   let best = -1, bd = 1e9;
   world.guards.forEach((g, i) => {
     if (!alive(g) || Math.abs((p.y || 0) - (g.y || 0)) > 0.3) return; // same floor only (ground or his deck)
@@ -1099,7 +1225,7 @@ function useItem(id) {
 function toggleBox(on = !me.box) {
   if (on) {
     if (me.inv.box <= 0) return;
-    if (me.tr || me.td || me.tun >= 0) { toast('Can\'t use the box here', 800, '#ccc'); return; }
+    if (me.tr || me.td || me.tun >= 0 || me.sw) { toast(me.sw ? 'Can\'t use the box in the water' : 'Can\'t use the box here', 800, '#ccc'); return; }
     me.box = true; me.eq = false; me.burst = 0; me.p = false; me.c = false; me.gunT = 0; me.itm = 'box';
     beep(200, 0.08, 'triangle', 0.08); toast('C.BOX - stay still and they walk past', 1200, '#d8b080');
   } else { if (!me.box) return; me.box = false; beep(260, 0.06, 'triangle', 0.07); toast('OUT OF THE BOX', 700, '#d8b080'); }
@@ -1107,6 +1233,7 @@ function toggleBox(on = !me.box) {
 }
 // FIRE: guns shoot, STUN.G throws, C4 plants. Only while the weapon is drawn (G / weapon button).
 function fireGun() {
+  if (me.sw) { if (me.cd <= 0) { toast('Can\'t fire in the water', 700, '#9fd4ee'); me.cd = 0.45; } return; }
   if (!me.eq || !me.wpn || me.cd > 0 || me.tr || me.box || me.burst > 0) return;
   const id = me.wpn;
   if (id === 'stun') return throwNade();
@@ -1120,7 +1247,7 @@ function stepBurst(dt) { // FR-5: the rest of a 3-round burst comes out rof apar
   if (me.burst <= 0) return;
   me.burstT -= dt;
   while (me.burst > 0 && me.burstT <= 0) {
-    if (me.wpn !== 'fr5' || !me.eq || me.tr || me.td || me.box || me.inv.fr5 <= 0 || world.phase !== 'play') { me.burst = 0; break; }
+    if (me.wpn !== 'fr5' || !me.eq || me.tr || me.td || me.box || me.sw || me.inv.fr5 <= 0 || world.phase !== 'play') { me.burst = 0; break; }
     shootRound('fr5'); me.burst--; me.burstT += WPN.fr5.rof;
   }
 }
@@ -1262,6 +1389,32 @@ function hostHeal(idx) {
 }
 
 // ---------------------------------------------------------------- local movement (both roles)
+// Over a basin, on the ground (not a deck): surface swim. pad keeps you in until you're actually on the bank.
+function swimSpot(x, z, y) {
+  if ((y || 0) > 1.2) return null;
+  if (groundAt(x, z, Math.max(y || 0, 0)) > 0.4) return null;
+  return waterVolume(x, z, me.sw ? 0.22 : -0.02);
+}
+function beginSwim(w) {
+  const loud = me.run || me.y > 0.55;
+  me.sw = true; me.run = false; me.p = false; me.c = false; me.burst = 0;
+  if (me.box) { me.box = false; syncGunButton(); }
+  me.splash = loud ? 0.55 : 0;
+  syncStanceButtons();
+  toast((w.name || 'WATER') + ' — swim  ·  C dives', 1400, '#8fd8f0');
+  if (loud) { beep(170, 0.08, 'sine', 0.05); beep(90, 0.12, 'triangle', 0.04); }
+}
+function endSwim() {
+  if (!me.sw) return;
+  me.sw = false; me.dive = 0; me.splash = 0;
+  const sp = Math.hypot(me.vx, me.vz);
+  if (sp > 0.15) {
+    const ox = me.x, oz = me.z;
+    me.x += (me.vx / sp) * 0.18; me.z += (me.vz / sp) * 0.18; collidePlayer(me, 0.38);
+    if (waterVolume(me.x, me.z, -0.02)) { me.x = ox; me.z = oz; }
+  }
+  syncStanceButtons();
+}
 function updateLocal(dt) {
   me.cd = Math.max(0, me.cd - dt); me.gunT = Math.max(0, me.gunT - dt); me.stimT = Math.max(0, me.stimT - dt);
   me.bloom = Math.max(0, me.bloom - dt * (me.gunT > GUN.drawTime - 1.2 ? GUN.bloomDecay : GUN.bloomRest) * (me.stimT > 0 ? 2 : 1)); me.wob = Math.max(0, me.wob - dt * 1.8);
@@ -1284,10 +1437,12 @@ function updateLocal(dt) {
   if (mag > 1) { jx /= mag; jz /= mag; mag = 1; }
   const play = world.phase === 'play';
   me.thud = Math.max(0, me.thud - dt);
+  me.splash = Math.max(0, me.splash - dt);
   if (me.tr && !play) me.tr = null; // mission ended mid-climb: let go
-  if (me.tr) { updateTrav(dt, jx, jz, mag); me.tun = -1; $('stance').textContent = me.tr ? travStance() : 'STILL'; return; }
+  if (me.tr) { updateTrav(dt, jx, jz, mag); me.tun = -1; if (me.sw) endSwim(); $('stance').textContent = me.tr ? travStance() : 'STILL'; return; }
   if (me.box) me.run = false;
-  const baseSp = () => (me.box ? SPEED.crouch * 0.9 : me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
+  const baseSp = () => (me.sw ? (me.dive > 0 ? SWIM.dive : SWIM.speed) * (kb ? 1 : clamp(mag / 0.85, 0.42, 1))
+    : me.box ? SPEED.crouch * 0.9 : me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
   // desired velocity (tvx, tvz) from input; actual velocity me.vx/me.vz chases it with limited accel = momentum
   let tvx = 0, tvz = 0, wantDir = null;
   if (me.tun >= 0 || fpsOn) {
@@ -1296,8 +1451,8 @@ function updateLocal(dt) {
     // so walking in with D doesn't suddenly start spinning you.
     if (fpsLatch && mag < 0.15) fpsLatch = false;
     const fwd = fpsLatch ? mag : -jz, turn = fpsLatch ? 0 : jx;
-    if (play) me.a += turn * 2.6 * dt;
-    me.run = me.tun < 0 && fwd > 0.15 && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : fwd > 0.92); // can run outside tunnels
+    if (play) me.a += turn * (me.sw ? 1.45 : 2.6) * dt;
+    me.run = !me.sw && me.tun < 0 && fwd > 0.15 && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : fwd > 0.92); // can run outside tunnels / water
     if (play && Math.abs(fwd) > 0.15) {
       const sp = baseSp() * (fwd < 0 ? 0.6 : 1) * Math.sign(fwd);
       tvx = Math.cos(me.a) * sp; tvz = Math.sin(me.a) * sp;
@@ -1307,7 +1462,7 @@ function updateLocal(dt) {
     }
   } else {
     const wants = mag > 0.15 && play;
-    me.run = wants && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
+    me.run = wants && !me.sw && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
     if (wants) { const sp = baseSp(); tvx = (jx / mag) * sp; tvz = (jz / mag) * sp; wantDir = Math.atan2(jz, jx); }
   }
   // accelerate toward the target velocity. Speeding up uses accel, slowing down uses (slightly stronger) decel;
@@ -1316,7 +1471,7 @@ function updateLocal(dt) {
   if (dv > 1e-6) {
     const cur = Math.hypot(me.vx, me.vz), tgt = Math.hypot(tvx, tvz);
     const align = cur > 0.05 && tgt > 0.05 ? (me.vx * tvx + me.vz * tvz) / (cur * tgt) : 1;
-    const rate = tgt < 0.05 ? MOVE.decel : align < 0.7 ? MOVE.turnAccel : tgt >= cur ? MOVE.accel : MOVE.decel;
+    const rate = me.sw ? (tgt < 0.05 ? SWIM.decel : SWIM.accel) : tgt < 0.05 ? MOVE.decel : align < 0.7 ? MOVE.turnAccel : tgt >= cur ? MOVE.accel : MOVE.decel;
     const step = Math.min(dv, rate * dt);
     me.vx += (dvx / dv) * step; me.vz += (dvz / dv) * step;
   }
@@ -1332,17 +1487,28 @@ function updateLocal(dt) {
   }
   const speed = Math.hypot(me.vx, me.vz);
   me.moving = speed > 0.25;
-  if (me.tun < 0 && wantDir !== null) turnToward(me, wantDir, dt * (me.p ? MOVE.proneTurnRate : MOVE.turnRate));
+  if (me.tun < 0 && wantDir !== null) turnToward(me, wantDir, dt * (me.sw ? SWIM.turn : me.p ? MOVE.proneTurnRate : MOVE.turnRate));
   if (!me.moving) me.run = false;
-  // vertical: stand on the highest walkable top under you (0.3 step-up), otherwise fall (keeps air control)
-  const gnd = groundAt(me.x, me.z, me.y);
-  if (me.y > gnd + 1e-3 || me.vy > 0) {
-    if (me.vy === 0) me.fallFrom = me.y;
-    me.vy -= GRAV * dt; me.y += me.vy * dt;
-    if (me.y <= gnd) { me.y = gnd; me.vy = 0; landed(me.fallFrom - gnd); }
-  } else { me.y = gnd; me.vy = 0; }
+  // vertical: basins catch you into a surface swim; otherwise stand on the highest walkable top (0.3 step-up) or fall
+  const wet = play && me.tun < 0 ? swimSpot(me.x, me.z, me.y) : null;
+  if (wet) {
+    if (!me.sw) beginSwim(wet);
+    if (me.dive > 0) { me.dive -= dt; if (me.dive <= 0) { me.dive = 0; me.diveCd = SWIM.gap; syncStanceButtons(); } }
+    else me.diveCd = Math.max(0, me.diveCd - dt);
+    me.vy = 0;
+    if (me.y > 0.02) me.y = Math.max(0, me.y - Math.max(5, me.y * 4) * dt);
+    else me.y = 0;
+  } else {
+    if (me.sw) endSwim();
+    const gnd = groundAt(me.x, me.z, me.y);
+    if (me.y > gnd + 1e-3 || me.vy > 0) {
+      if (me.vy === 0) me.fallFrom = me.y;
+      me.vy -= GRAV * dt; me.y += me.vy * dt;
+      if (me.y <= gnd) { me.y = gnd; me.vy = 0; landed(me.fallFrom - gnd); }
+    } else { me.y = gnd; me.vy = 0; }
+  }
   // auto-grab: keep pushing into a ladder / drainpipe from its foot for a moment = climb on (ACT does it instantly)
-  if (play && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p && !me.box) {
+  if (play && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p && !me.box && !me.sw) {
     const ci = CLIMBS.findIndex((c) => Math.abs(me.y - c.y0) < 0.05 && hz(me, c) < 0.75 && Math.abs(angDiff(c.a, wantDir)) < 0.6);
     me.grabT = ci >= 0 ? me.grabT + dt : 0;
     if (me.grabT > 0.25) { me.grabT = 0; startTrav({ m: 'climb', i: ci }); return; }
@@ -1355,12 +1521,15 @@ function updateLocal(dt) {
     if (!me.c) { me.c = true; syncStanceButtons(); }
     toast(TUNNELS[me.tun].name, 1100, '#ffd27f');
   }
-  $('stance').textContent = me.box ? (me.moving ? 'C.BOX (moving - suspicious)' : 'C.BOX (still - hidden)') + (me.y > 0.5 ? ' · HIGH' : '') : (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
-    + (me.tun >= 0 ? ' · TUNNEL' : fpsOn ? ' · 1ST PERSON' : '') + (me.y > 0.5 ? ' · HIGH' : '');
+  const swimTxt = me.sw ? (me.dive > 0 ? 'DIVE' : me.moving ? 'SWIM (quiet)' : 'TREADING WATER') + ' · C dive' : '';
+  $('stance').textContent = swimTxt || (me.box ? (me.moving ? 'C.BOX (moving - suspicious)' : 'C.BOX (still - hidden)') + (me.y > 0.5 ? ' · HIGH' : '') : (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
+    + (me.tun >= 0 ? ' · TUNNEL' : fpsOn ? ' · 1ST PERSON' : '') + (me.y > 0.5 ? ' · HIGH' : ''));
 }
 let fpsLatch = false;
-// a standing drop from high up thuds (guards hear it); crouched you hang-drop silently
-const noiseOf = (p) => (p.thud > 0 ? TRAV.landNoise : !p.moving || p.box ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
+// a standing drop from high up thuds (guards hear it); crouched you hang-drop silently. Swimming is quiet;
+// running or falling in makes one short splash.
+const noiseOf = (p) => (p.splash > 0 ? NOISE.splash : p.sw ? 0 : p.thud > 0 ? TRAV.landNoise : !p.moving || p.box ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
+const swimCode = (sw, dive) => (sw ? (dive > 0 ? 2 : 1) : 0);
 
 // ---------------------------------------------------------------- vertical traversal (climb / mantle / grapple / co-op)
 // me.tr = { k, i, t, ... }. k is sent on the wire:
@@ -1476,7 +1645,7 @@ function coopMode(i0, i1, ps) {
 // what ACT would start right now (null = nothing climbable here).
 // m: climb down mantle rappel haul ropeup ropewait kneel boost hoist pull solo2p   (o = partner slot for co-op moves)
 function travMode() {
-  if (!role || world.phase !== 'play' || me.td || me.tr || me.tun >= 0 || me.vy !== 0) return null;
+  if (!role || world.phase !== 'play' || me.td || me.tr || me.tun >= 0 || me.sw || me.vy !== 0) return null;
   const ps = partnerHere() ? peers() : [];
   let down = null, downD = 1e9; // ladder top vs a grapple ring close by: the nearer one wins
   for (let i = 0; i < CLIMBS.length; i++) {
@@ -1506,6 +1675,7 @@ function travMode() {
   return coopMode(COOPS.length, COOP_ALL.length, ps);
 }
 function startTrav(tm) {
+  if (me.sw) return;
   const keep = { ox: me.x, oy: me.y, oz: me.z };
   const solo1 = (k, i, extra) => {
     if (peers().some((o) => o.ti === i && ((o.tk === k && k === 'ld') || (ON_LINE(o.tk) && ON_LINE(k))))) { toast('Partner is on it - wait', 1000, '#ffb36b'); return; } // host-side rule (guest also re-checked by host)
@@ -1745,8 +1915,10 @@ function poseFor(tk, ti, tp, y) {
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
   const low = (tk) => tk === 'kn' || tk === 'lf' || tk === 'pl';
-  const list = [{ x: me.x, z: me.z, y: me.y, box: me.box, c: me.c || me.box || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: mySlot, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
-  for (const o of peers()) list.push({ x: o.x, z: o.z, y: o.y, box: !!o.box, c: o.c || !!o.box || low(o.tk), p: o.p, tun: tunAt(o.x, o.z, o.y), noise: o.noise, idx: o.s, rope: ON_LINE(o.tk), v: Math.hypot(o.nvx, o.nvz) });
+  const mine = swimCode(me.sw, me.dive);
+  // surface swim reads as a crouch (lower, quieter); a dive reads as prone. Same floor, so cones stay flat.
+  const list = [{ x: me.x, z: me.z, y: me.y, box: me.box && !me.sw, c: me.c || me.box || low(me.tr && me.tr.k) || mine === 1, p: me.p || mine === 2, tun: me.tun, noise: noiseOf(me), idx: mySlot, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
+  for (const o of peers()) list.push({ x: o.x, z: o.z, y: o.y, box: !!o.box && !o.sw, c: o.c || !!o.box || low(o.tk) || o.sw === 1, p: o.p || o.sw === 2, tun: tunAt(o.x, o.z, o.y), noise: o.noise, idx: o.s, rope: ON_LINE(o.tk), v: Math.hypot(o.nvx, o.nvz) });
   return list;
 }
 function armSwitch(pi) {
@@ -1933,8 +2105,8 @@ const r2 = (v) => Math.round(v * 100) / 100;
 const extNeed = () => (solo ? 1 : Math.min(2, 1 + peers().length)); // players needed on the extract pad
 // per-slot player array (same layout the old 2-player `h` used): [x, z, a, crouch, prone, vx, vz, takedown, aiming, drawn, y, tk, ti, tp]
 const plMe = () => [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0,
-  r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y), me.box ? 1 : 0, wkey()];
-const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0, o.box ? 1 : 0, o.w || ''];
+  r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y), me.box ? 1 : 0, wkey(), swimCode(me.sw, me.dive)];
+const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0, o.box ? 1 : 0, o.w || '', o.sw || 0];
 function sendState() {
   net.relay({ t: 's',
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0, g.ko || 0, g.loot || 0]), // [7] = ko (1 stunned, 2 asleep); [8] = loot bundle once down; st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
@@ -1950,7 +2122,7 @@ function sendState() {
 }
 const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
 function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
-  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y), bx: me.box ? 1 : 0, w: wkey() }); }
+  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y), bx: me.box ? 1 : 0, w: wkey(), sw: swimCode(me.sw, me.dive) }); }
 function netTrav(o, y, tk, ti, tp) { o.y = y || 0; o.tk = tk || ''; o.ti = ti ?? -1; o.tp = tp || 0; }
 // a teammate fired: tracer + recoil on their model (host also applies the hit)
 function remoteShot(d, by) {
@@ -1959,7 +2131,7 @@ function remoteShot(d, by) {
   gunFx(meshOf(by), d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null, !!W.rifle, W.tranq ? 0x9fe0ff : null);
   const vol = clamp(1 - Math.hypot(d.x - me.x, d.z - me.z) / 26, 0.15, 0.6); W.rifle ? rifleSound(vol) : W.quiet ? suppSound(vol) : gunSound(vol);
 }
-function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); o.box = h[14] || 0; o.w = h[15] == null ? '' : h[15]; }
+function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); o.box = h[14] || 0; o.w = h[15] == null ? '' : h[15]; o.sw = h[16] || 0; }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -1974,7 +2146,7 @@ function netSample(o, x, z, vx, vz) {
 function onGameMsg(d) {
   const from = d.from ?? 1, fo = others[from]; // guest -> host packets are tagged with the sender's slot by server.js
   if (role === 'host' && d.t !== 's' && (!fo || from === 0)) return;
-  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || ''; }
+  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || ''; fo.sw = d.sw || 0; }
   else if (d.t === 'tr' && role === 'host') { // guest solo climb / rope: veto if someone's already on that ladder / rope, it's over, or a ground grapple (top-only)
     const on = (k, i) => i === d.i && ((k === d.k && d.k === 'ld') || ((ON_LINE(k) || k === 'hr' || k === 'hp') && ON_LINE(d.k)));
     const busy = (me.tr && on(me.tr.k, me.tr.i)) || peers().some((o) => o.s !== from && on(o.tk, o.ti));
@@ -1985,7 +2157,7 @@ function onGameMsg(d) {
   else if (d.t === 'cox' && role === 'guest') toast('Can\'t - get in position', 900, '#ffb36b');
   else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
     const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
-    const ok = g && alive(g) && Math.abs((fo.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && (g.ko || Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind);
+    const ok = g && alive(g) && !fo.sw && !waterVolume(d.x, d.z, 0) && Math.abs((fo.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && (g.ko || Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind);
     if (!ok || !hostTakedown(d.g, from)) net.relay({ t: 'tdx' }, from);
     else { fo.x = d.x; fo.z = d.z; fo.td = 0; }
   }
@@ -2018,7 +2190,7 @@ function onGameMsg(d) {
       else if (me.tr && me.tr.id === id && Math.abs(me.tr.t - t) > 0.25) me.tr.t = t; // drift: follow the host clock
     } else world.co = null;
   } else if (d.t === 'tp' && role === 'guest') {
-    me.x = d.x; me.z = d.z; me.tun = -1; me.y = 0; me.vy = 0; me.tr = null; lastCoId = -1; stopMe(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
+    me.x = d.x; me.z = d.z; me.tun = -1; me.y = 0; me.vy = 0; me.tr = null; me.sw = false; me.dive = 0; me.splash = 0; lastCoId = -1; stopMe(); syncStanceButtons(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
 }
 
@@ -2173,6 +2345,8 @@ function drawRadar() {
   const W = radar.width, H = radar.height, sx = W / (MAP.x2 - MAP.x1), sz = H / (MAP.z2 - MAP.z1);
   const X = (x) => (x - MAP.x1) * sx, Z = (z) => (z - MAP.z1) * sz;
   rc.fillStyle = world.alert === 2 ? 'rgba(90,10,10,0.9)' : 'rgba(0,30,18,0.9)'; rc.fillRect(0, 0, W, H);
+  rc.fillStyle = 'rgba(42, 170, 198, 0.9)';
+  for (const w of WATERS) rc.fillRect(X(w.x1), Z(w.z1), (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
   rc.fillStyle = '#3c7a55';
   for (const b of solids()) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = 'rgba(216,176,40,0.35)'; // tunnels
@@ -2551,7 +2725,8 @@ function render(dt) {
   for (const o of peers()) { const [tx, tz] = ext(o); if (o.snap) { o.rx = tx; o.rz = tz; o.snap = false; } else { o.rx += (tx - o.rx) * kr; o.rz += (tz - o.rz) * kr; } o.ra = lerpA(o.ra, o.a, k); }
   const deadMe = world.phase === 'over' && world.dead === myIdx();
   hurtCheck();
-  meMesh.g.position.set(me.x, me.y, me.z); meMesh.g.rotation.y = -me.a;
+  const mySwim = swimCode(me.sw, me.dive);
+  meMesh.g.position.set(me.x, me.y - waterSink(meMesh, mySwim, me.moving, dt), me.z); meMesh.g.rotation.y = -me.a;
   // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
   const play = world.phase === 'play';
   const myTr = me.tr ? poseFor(me.tr.k, me.tr.i, trProg(me.tr, me.y, 1), me.y) : null, myBusy = !!me.tr; // climbing: hands busy, gun slung
@@ -2564,8 +2739,8 @@ function render(dt) {
     const side = Math.sin(tt) * 0.16 * w * d, upd = Math.sin(tt * 2 + 1) * 0.35 * w;
     myAim = { x: myAim.x - Math.sin(me.a) * side, y: myAim.y + upd, z: myAim.z + Math.cos(me.a) * side };
   }
-  meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe, hurt: meMesh.hurtN || 0, hurtFrom: meMesh.hurtA, hurtAmt: meMesh.hurtD,
-    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && myGun && !myBusy, armed: me.eq && myGun && !myBusy, shot: me.shot, trav: myTr, weapon: wkey() }); // drawn = always in the forward aim stance
+  meMesh.update(dt, { aimAt: mySwim ? null : myAim, moving: me.moving && !myTr, run: me.run && !mySwim, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy && !mySwim, prone: me.p && !myBusy && !mySwim, dead: deadMe, hurt: meMesh.hurtN || 0, hurtFrom: meMesh.hurtA, hurtAmt: meMesh.hurtD,
+    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: !mySwim && (me.eq || me.gunT > 0) && myGun && !myBusy, armed: !mySwim && me.eq && myGun && !myBusy, shot: me.shot, trav: myTr, weapon: wkey(), swim: !!mySwim && !myBusy, dive: mySwim > 1 && !myBusy }); // drawn = always in the forward aim stance
   placeBox(cboxes[mySlot], me.box && play, me.x, me.y, me.z, me.a, me.moving, 1);
   // remote players (up to 4): walk/run animation from the net velocity (smooth), falling back to on-screen motion
   const viewers = [me];
@@ -2578,11 +2753,12 @@ function render(dt) {
       const v = o.pt && now - o.pt < 300 ? vNet : vScr; o.spd += (Math.min(v, 8) - o.spd) * Math.min(1, dt * 8); }
     o.px = o.rx; o.pz = o.rz;
     o.ry = Math.abs(o.y - o.ry) > 4 ? o.y : o.ry + (o.y - o.ry) * kr;
-    mesh.g.position.set(o.rx, o.ry, o.rz); mesh.g.rotation.y = -o.ra;
-    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, oGun = isGun(o.w === 'sd' ? 'p9' : (o.w || '')), armed = !!o.eq && oGun && !o.box && o.td < 0 && !busy && play && !dead;
+    const oSwim = o.sw || 0;
+    mesh.g.position.set(o.rx, o.ry - waterSink(mesh, oSwim, o.spd > 0.4, dt), o.rz); mesh.g.rotation.y = -o.ra;
+    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, oGun = isGun(o.w === 'sd' ? 'p9' : (o.w || '')), armed = !oSwim && !!o.eq && oGun && !o.box && o.td < 0 && !busy && play && !dead;
     const aim = aimPoint({ x: o.rx, z: o.rz, y: o.ry, a: o.ra, tun: tunAt(o.rx, o.rz, o.ry) }, mesh, armed);
-    mesh.update(dt, { aimAt: aim, moving: o.spd > 0.4 && play && o.td < 0 && !tr, run: o.spd > 4.2 && !o.c, speed: play && o.td < 0 && !tr ? o.spd : 0,
-      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && oGun && !busy, armed: !!o.eq && oGun && !busy, shot: o.shot, trav: tr, weapon: o.w || '' });
+    mesh.update(dt, { aimAt: oSwim ? null : aim, moving: o.spd > 0.4 && play && o.td < 0 && !tr, run: !oSwim && o.spd > 4.2 && !o.c, speed: play && o.td < 0 && !tr ? o.spd : 0,
+      crouch: !oSwim && o.c && !o.p && !busy, prone: !oSwim && o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: !oSwim && (!!o.gd || !!o.eq) && oGun && !busy, armed: !oSwim && !!o.eq && oGun && !busy, shot: o.shot, trav: tr, weapon: o.w || '', swim: !!oSwim && !busy, dive: oSwim > 1 && !busy });
     updateRope(R, mesh, o.tk, o.ti, o.tp);
     updateLaser(remoteLasers[rk(s)], mesh, armed, dt);
     viewers.push({ x: o.rx, y: o.ry || 0, z: o.rz });
@@ -2592,7 +2768,7 @@ function render(dt) {
   updateCoopHint(dt);
   updateCutaway(dt);
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
-  updateLaser(myLaser, meMesh, me.eq && myGun && !me.td && !myBusy && play && !deadMe, dt);
+  updateLaser(myLaser, meMesh, !me.sw && me.eq && myGun && !me.td && !myBusy && play && !deadMe, dt);
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -2632,7 +2808,7 @@ function render(dt) {
   const camDist = Math.hypot(CAM_H, CAM_Z) * zoom;
   topCam.x += (me.x - topCam.x) * Math.min(1, dt * 6);
   topCam.z += (me.z + CAM_Z * zoom - topCam.z) * Math.min(1, dt * 6);
-  camY += (me.y - camY) * Math.min(1, dt * 4); // follow the climber up (keeps the same framing on roofs)
+  camY += ((me.y - (me.dive > 0 ? 0.85 : 0)) - camY) * Math.min(1, dt * 4); // follow the climber up; dip a little on a dive
   topCam.y = CAM_H * zoom + camY;
   topLook.set(topCam.x, camY, topCam.z - CAM_Z * zoom - 0.5);
   fpsK += ((role && (me.tun >= 0 || fpsOn) ? 1 : 0) - fpsK) * Math.min(1, dt * 4.5);
@@ -2640,7 +2816,7 @@ function render(dt) {
   if (fpsK < 0.002) fpsK = 0; if (fpsK > 0.998) fpsK = 1;
   const f = fpsK * fpsK * (3 - 2 * fpsK); // smoothstep
   camYaw = lerpA(camYaw, me.a, Math.min(1, dt * 12));
-  eyeH += ((me.p ? 0.3 : me.c || me.tun >= 0 || (me.tr && me.tr.k === 'kn') ? 0.92 : 1.5) - eyeH) * Math.min(1, dt * 6);
+  eyeH += ((me.sw ? (me.dive > 0 ? 0.05 : 0.46) : me.p ? 0.3 : me.c || me.tun >= 0 || (me.tr && me.tr.k === 'kn') ? 0.92 : 1.5) - eyeH) * Math.min(1, dt * 6);
   eyeF += ((me.p ? 0.42 : 0.12) - eyeF) * Math.min(1, dt * 6);
   const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
   fpsEye.set(me.x + cy * eyeF, me.y + eyeH, me.z + sy * eyeF);
@@ -2662,7 +2838,7 @@ function render(dt) {
   meMesh.marker.visible = f < 0.5;
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
   $('fpsVignette').style.opacity = (f * (0.35 + 0.65 * tunK)).toFixed(2);
-  updateFx(dt); updateBlood(dt); updateGearFx(dt);
+  updateWater(); updateFx(dt); updateBlood(dt); updateGearFx(dt);
   renderer.render(scene, camera);
 }
 
@@ -2737,7 +2913,7 @@ function updateHud() {
   act.classList.toggle('kill', mode === 'td');
   act.classList.toggle('climb', !!tl);
   const onRope = mode === 'letgo' && me.tr && ON_LINE(me.tr.k);
-  const pr = $('prompt'), ptxt = mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : onRope ? (isTouch ? 'STICK UP / DOWN = ROPE · ACT LET GO' : 'W UP · S DOWN · E LET GO')
+  const pr = $('prompt'), ptxt = me.sw ? (isTouch ? 'CROUCH = SHORT DIVE' : 'C  SHORT DIVE  ·  SWIM TO A BANK TO CLIMB OUT') : mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : onRope ? (isTouch ? 'STICK UP / DOWN = ROPE · ACT LET GO' : 'W UP · S DOWN · E LET GO')
     : tl && tl[1] ? (isTouch ? tl[1] : 'E  ' + tl[1]) : '';
   if (pr.textContent !== ptxt) { pr.textContent = ptxt; pr.classList.toggle('hidden', !ptxt); }
 }
@@ -2766,4 +2942,4 @@ window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, ge
   get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3 };
+  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3, WATERS, waterVolume, SWIM, swimSpot };

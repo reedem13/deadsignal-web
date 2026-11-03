@@ -744,9 +744,10 @@ export function makeSneaker(scene, opts = {}) {
   // arrive (higher = heavier). Locomotion and the pistol draw / aim are slow enough to read as weight; shoulder
   // tracking (aYaw / aPitch) stays quicker so the barrel still settles on a target. Gait phase is distance-driven
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
-  const K = (smooth) => ({ x: 0, v: 0, smooth });
+    const K = (smooth) => ({ x: 0, v: 0, smooth });
   const W = { crouch: K(0.24), prone: K(0.40), move: K(0.22), run: K(0.36), dead: K(0.34), spd: K(0.20), lean: K(0.30), roll: K(0.26), idle: K(0.55),
-    aim: K(0.22), td: K(0.08), held: K(0.06), armed: K(0.24), aYaw: K(0.16), aPitch: K(0.16), trav: K(0.07), raim: K(0.09), tail: K(0.25) };
+    aim: K(0.22), td: K(0.08), held: K(0.06), armed: K(0.24), aYaw: K(0.16), aPitch: K(0.16), trav: K(0.07), raim: K(0.09), tail: K(0.25),
+    swim: K(0.26), dive: K(0.2) };
   // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
   // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
   // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
@@ -819,6 +820,7 @@ export function makeSneaker(scene, opts = {}) {
     // walk 1.95, run 1.55, crouch 2.65, prone crawl 2.75. Swing / lift below are opened up so the slower cycle still covers the stride.
     const radPerM = mix(mix(mix(1.95, 1.55, runK), 2.65, crouchK), 2.75, proneK);
     phase += dt * Math.max(spd, moveK * 0.4) * radPerM;
+    if (s.swim && !s.dead) phase += dt * (0.6 + (s.dive ? 0.2 : moveK) * 2.6); // crawl stroke, slower than a land stride
     const sw = Math.sin(phase), t = performance.now() / 1000;
     // body reacts to momentum: lean into acceleration, rock back when braking, bank into turns
     const acc = dt > 0 ? (spd - prevSpd) / dt : 0; prevSpd = spd;
@@ -1023,6 +1025,41 @@ export function makeSneaker(scene, opts = {}) {
         _rv.set(...RIFLE.fore).applyMatrix4(rifle.matrix); armIK(arms[0], _rv, holdK, 0.1);
       }
       rflash.visible = flashT > 0 && holdK > 0.5; rflash.rotation.x = t * 40;
+    }
+    // ---- SWIM (surface crawl, or a short glide when diving). Overrides the walk so the stroke reads from above.
+    const swimK = sstep(damp(W.swim, s.swim && !s.dead && !s.trav ? 1 : 0, dt));
+    const diveK = sstep(damp(W.dive, !!(s.swim && s.dive) && !s.dead && !s.trav ? 1 : 0, dt));
+    if (swimK > 0.001) {
+      const glide = diveK, stroke = Math.sin(phase);
+      const bob = Math.sin(t * (1.5 + moveK * 3)) * (0.01 + moveK * 0.012);
+      hips.position.y = mix(hips.position.y, HIP_Y - 0.05 - glide * 0.28 + bob, swimK);
+      hips.position.z = mix(hips.position.z, glide * 0.04, swimK);
+      hips.rotation.y = mix(hips.rotation.y, stroke * 0.07 * (1 - glide), swimK);
+      torso.rotation.z = mix(torso.rotation.z, -0.34 - glide * 0.9, swimK);
+      torso.rotation.y = mix(torso.rotation.y, -stroke * 0.12 * moveK * (1 - glide), swimK);
+      torso.rotation.x = mix(torso.rotation.x, 0, swimK);
+      headPivot.rotation.z = mix(headPivot.rotation.z, 0.38 + glide * 0.45, swimK);
+      headPivot.rotation.y = mix(headPivot.rotation.y, 0, swimK);
+      for (const a of arms) {
+        const ph = a.side === 1 ? 0 : Math.PI;
+        const reach = mix((Math.sin(phase + ph) + 1) * 0.5, 0.94, glide);
+        a.sh.rotation.z = mix(a.sh.rotation.z, mix(-0.05, 1.7, reach), swimK);
+        a.sh.rotation.x = mix(a.sh.rotation.x, -a.side * (0.22 + 0.9 * reach) * (1 - glide * 0.25), swimK);
+        a.sh.rotation.y = mix(a.sh.rotation.y, a.side * 0.18 * (1 - reach), swimK);
+        a.el.rotation.z = mix(a.el.rotation.z, mix(1.02, 0.16, reach), swimK);
+        a.el.rotation.x = mix(a.el.rotation.x, 0, swimK);
+        a.wr.rotation.x = mix(a.wr.rotation.x, 0, swimK);
+        a.wr.rotation.y = mix(a.wr.rotation.y, 0, swimK);
+        a.wr.rotation.z = mix(a.wr.rotation.z, 0, swimK);
+      }
+      for (const lg of legs) {
+        const k = Math.sin(phase * 2 + (lg.side === 1 ? 0 : Math.PI));
+        lg.hip.rotation.z = mix(lg.hip.rotation.z, 0.12 + k * (0.2 + moveK * 0.22) * (1 - glide * 0.35), swimK);
+        lg.knee.rotation.z = mix(lg.knee.rotation.z, -0.42 - Math.max(0, -k) * 0.32, swimK);
+        lg.ankle.rotation.z = mix(lg.ankle.rotation.z, 0.22, swimK);
+        lg.hip.rotation.x = mix(lg.hip.rotation.x, 0, swimK);
+        lg.knee.rotation.x = mix(lg.knee.rotation.x, 0, swimK);
+      }
     }
     // ---- HIT REACT (flinch): snap away from the hit - rock back (front hit) / pitch forward (from behind), lean off the
     // side it came from, head whips, arms jerk up, knees give a little. Additive on top of whatever pose is running;
