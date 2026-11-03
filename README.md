@@ -4,7 +4,7 @@
 Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way around.
 
 > Original IP, inspired by PS1-era tactical stealth. No third-party names or assets.
-> Players default to the higher-detail sneak squad in `public/sneaker.js` (Reed, Wren, Sable, Dune, Iris — original olive / khaki / black / blue-grey suits, not copied models). Guards stay on the low-poly masked kit. Preview at `/character.html?squad=1`. The yard is still greybox.
+> Players default to the higher-detail sneak squad in `public/sneaker.js` (navy quilted vest, lighter sleeves, balaclava — original panels, not copied models). Guards stay on the low-poly enemy kit. Preview at `/character.html?squad=1`. The yard is still greybox.
 > **This is the browser test build. The Unreal Engine / Steam build comes later** and will reuse the design, not this code.
 
 ## What's in the slice

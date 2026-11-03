@@ -32,7 +32,7 @@ function build(id, detail) {
   const L = byId(id);
   return makeSneaker(scene, { kit: L.kit, accent: L.accent, tint: L.tint, detail: detail || (L.tier === 'sneak' ? 'hi' : 'low') });
 }
-const squad = AGENT_ROSTER.filter((a) => a.tier === 'sneak').map((L, i) => {
+const squad = AGENT_ROSTER.filter((a) => a.tier === 'sneak' && a.id !== 'bare').map((L, i) => {
   const m = makeSneaker(scene, { ...L, detail: 'hi' });
   m.g.position.x = (i - 2) * 0.78; m.g.visible = squadMode; return m;
 });

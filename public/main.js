@@ -2146,7 +2146,7 @@ function renderAgentPick() {
   const L = pickedLook == null ? null : AGENT_ROSTER[pickedLook];
   $('agentBlurb').textContent = L
     ? L.name + ' — ' + L.blurb
-    : 'AUTO wears your squad slot: host REED, then WREN, SABLE, DUNE, IRIS. CLASSIC swaps in the older kits.';
+    : 'AUTO wears your squad slot: host REED, then WREN, SABLE, DUNE, IRIS — balaclava on. BARE is Reed with the mask off. CLASSIC is the older kits.';
 }
 renderAgentPick();
 if (qs.get('solo') === '1') { $('soloBox').checked = true; setTimeout(() => $('btnHost').click(), 60); }
