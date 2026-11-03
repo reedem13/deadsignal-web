@@ -5,15 +5,17 @@
 // Grid order mirrors the reference screen (3 rows x 4): null = empty slot.
 // kind: wpn = goes in the weapon slot (G draws / holsters it, FIRE / ACT shoots, throws or plants it)
 //       item = goes in the item slot (Q / tap the item box uses it; tog = on/off gear)
+// No `start` counts: a mission begins with empty hands. Every weapon and item is a map locker / crate
+// or a one-time drop off a guard (main.js PICKUPS + LOOT).
 export const ITEMS = {
   supp:   { name: 'SUPP.',  kind: 'item', tog: true, desc: 'Suppressor for the P-9. ON = shots are near-silent (guards 3 m away hear it, not 12 m).' },
-  box:    { name: 'C.BOX',  kind: 'item', tog: true, start: 1, desc: 'Cardboard box. Hide inside: stand still and guards walk right past. Moving boxes look suspicious.' },
-  stun:   { name: 'STUN.G', kind: 'wpn', max: 6, start: 2, desc: 'Stun grenade. FIRE throws it ~7 m; the flash knocks out guards within 5 m for 7 s (no alert).' },
+  box:    { name: 'C.BOX',  kind: 'item', tog: true, desc: 'Cardboard box. Hide inside: stand still and guards walk right past. Moving boxes look suspicious.' },
+  stun:   { name: 'STUN.G', kind: 'wpn', max: 6, desc: 'Stun grenade. FIRE throws it ~7 m; the flash knocks out guards within 5 m for 7 s (no alert).' },
   fr5:    { name: 'FR-5',   kind: 'wpn', max: 90, desc: 'Bullpup assault rifle. 3-round bursts, heavy climb, LOUD. Drops guards at range.' },
   scope:  { name: 'SCOPE',  kind: 'item', tog: true, desc: 'Binoculars. ON = pull the view way out (top-down) or zoom in (first person).' },
-  p9:     { name: 'P-9',    kind: 'wpn', max: 36, start: 12, desc: 'Sidearm with laser sight. One hit drops a guard. Fit the SUPP. to make it quiet.' },
+  p9:     { name: 'P-9',    kind: 'wpn', max: 36, desc: 'Sidearm with laser sight. One hit drops a guard. Fit the SUPP. to make it quiet.' },
   mkt:    { name: 'MK-T',   kind: 'wpn', max: 12, desc: 'Tranquilizer pistol (built-in suppressor). A dart puts a guard to sleep for 30 s, nobody dies.' },
-  ration: { name: 'RATION', kind: 'item', max: 4, start: 1, desc: 'Field ration. Restores 40 LIFE.' },
+  ration: { name: 'RATION', kind: 'item', max: 4, desc: 'Field ration. Restores 40 LIFE.' },
   stim:   { name: 'STIM',   kind: 'item', max: 3, desc: 'Steadies your hands for 30 s: far less recoil bloom and no laser wobble.' },
   c4:     { name: 'C4',     kind: 'wpn', max: 4, desc: 'Plastic explosive. FIRE plants a charge at your feet; DET (T) blows every charge you planted.' },
 };

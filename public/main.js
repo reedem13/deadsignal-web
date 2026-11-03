@@ -18,22 +18,48 @@
 // V / the 1ST button toggles a first-person view for the local player (tunnels still force it).
 // GEAR (gear.js): MGS1-style equipment menu (GEAR button / I / Tab): 3x4 grid of weapons + items. Weapons: P-9 (+SUPP.),
 // FR-5 rifle (bursts), MK-T tranq (sleep), STUN.G (thrown flash, stuns), C4 (plant + DET). Items: RATION (+LIFE), C.BOX
-// (hide), SCOPE (zoom), STIM (steady aim). Start kit + map pickups are per player; anything that changes guards / LIFE
-// goes through the host (sh w=, ng, c4p / c4d, heal) like every other combat event.
+// (hide), SCOPE (zoom), STIM (steady aim). On-site procurement: you spawn with empty hands. Lockers / crates are per
+// player; a guard drops one bundle the moment he goes down (kill = loud kit, takedown = quiet kit) and never again.
+// Anything that changes guards / LIFE / who is dead (and therefore which bodies have loot) goes through the host.
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, L1, L2, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { TRAV, L1, L2, L3 as H3, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
 
 // ---------------------------------------------------------------- level data (vertical relay station - see traverse.js)
-// Three layers: ground (0), L1 catwalks / low roofs (3.2), L2 towers / bridges (6.4). Solid boxes below are walkable on
-// top (crates + buildings); open decks (WALKS) live in traverse.js and have nothing under them but legs.
+// Layers: ground (0), L1 catwalks / low roofs (3.2), L2 towers / bridges (6.4), L3 penthouse (9.6, east cooling wing).
+// The original yard is still the centre. Four wings sit outside the old fence, each through a gate (and, where noted,
+// a culvert): south motor pool, east cooling plant, west service yard, north dock.
+// Playable extents, used by the radar, the ground plane and co-op spot culling.
+const MAP = { x1: -38, x2: 40, z1: -30, z2: 32 };
+// Solid boxes below are walkable on top (crates + buildings); open decks (WALKS) live in traverse.js.
 const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
 const WALLS = [
-  // outer fence
-  B(0, -15.5, 42, 1, 2.5, 'wall'), B(0, 15.5, 42, 1, 2.5, 'wall'), B(-20.5, 0, 1, 32, 2.5, 'wall'), B(20.5, 0, 1, 32, 2.5, 'wall'),
+  // outer fence of the original yard, split so each wing has a gate (and the culverts have a mouth-sized hole)
+  B(-13.5, -15.5, 15, 1, 2.5, 'wall'), B(11.5, -15.5, 19, 1, 2.5, 'wall'),                         // north: gap x -6..2 (dock)
+  B(-19.5, 15.5, 3, 1, 2.5, 'wall'), B(-2.3, 15.5, 15.4, 1, 2.5, 'wall'), B(13.9, 15.5, 14.2, 1, 2.5, 'wall'), // south: gate x -18..-10, culvert mouth x 5.4..6.8
+  B(-20.5, -9.1, 1, 13.8, 2.5, 'wall'), B(-20.5, -0.4, 1, 0.8, 2.5, 'wall'), B(-20.5, 11.5, 1, 9, 2.5, 'wall'), // west: crawl z -2.2..-0.8, gate z 0..7
+  B(20.5, -7, 1, 18, 2.5, 'wall'), B(20.5, 14, 1, 8, 2.5, 'wall'),                                   // east: gate z 2..10
+  // south motor pool (z 16..32)
+  B(-20.5, 24, 1, 16, 2.5, 'wall'), B(20.5, 24, 1, 16, 2.5, 'wall'), B(0, 31.5, 42, 1, 2.5, 'wall'),
+  B(-6, 24, 8, 6, L1, 'building'),                                                                   // MOTOR SHED
+  B(-18, 20.5, 1.5, 1.4, 1), B(6, 24.5, 1.4, 1.4, 1), B(4, 27.5, 1.6, 1.6, 1), B(14, 24, 1.5, 1.2, 1),
+  // east cooling plant (x 21..40)
+  B(30.5, -1.5, 19, 1, 2.5, 'wall'), B(30.5, 17.5, 19, 1, 2.5, 'wall'), B(39.5, 8, 1, 20, 2.5, 'wall'),
+  B(33.5, 8.1, 7, 7, L2, 'building'),                                                                // COOLING TOWER
+  B(33, 7.95, 3.2, 2.9, H3, 'building'),                                                             // L3 PENTHOUSE on the tower roof
+  B(24, 12, 1.6, 1.4, 1), B(24.5, 6.2, 1.4, 1.4, 1), B(38.2, 8, 1.2, 1.2, 1), B(28, 15.4, 1.5, 1.2, 1),
+  // west service yard (x -36..-21)
+  B(-36.5, 5, 1, 18, 2.5, 'wall'), B(-29, -3.5, 16, 1, 2.5, 'wall'), B(-29, 13.5, 16, 1, 2.5, 'wall'),
+  B(-29.2, 4.3, 6, 5, L1, 'building'),                                                               // SERVICE SHED
+  B(-32.7, -0.5, 4.2, 3.4, L2, 'building'),                                                          // LOOKOUT
+  B(-25, 11.2, 1.4, 1.2, 1), B(-34.2, 5, 1.2, 1.2, 1), B(-26, -2.2, 1.3, 1.2, 1),
+  // north dock (z -28..-16)
+  B(4, -29.5, 24, 1, 2.5, 'wall'), B(-7.5, -23, 1, 14, 2.5, 'wall'), B(15.5, -23, 1, 14, 2.5, 'wall'),
+  B(0, -24.8, 4.4, 3.2, L2, 'building'),                                                             // CRANE CAB
+  B(9, -21.2, 1.6, 1.2, 1), B(-6.2, -20, 1.3, 1.3, 1),
   // extraction compound (north-east), door between the two switches
   B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -13.925, 0.5, 2.65, 2.5, 'wall'), B(4.25, -9.325, 0.5, 2.15, 2.5, 'wall'), // gap = T3 drain
   B(11.5, -8.25, 3, 0.5, 2.5, 'door'),
@@ -62,6 +88,9 @@ const TUNNELS = [
   { name: 'BARRACKS CRAWLSPACE', x1: -11.6, x2: -4.4, z1: -6.8, z2: -5.2, axis: 'x', roof: L1 - TUNNEL_H }, // under/through the barracks
   { name: 'COMPOUND DRAIN', x1: 0.6, x2: 7.6, z1: -12.3, z2: -10.7, axis: 'x', roof: 0.2 },  // west yard <-> inside the extraction compound
   { name: 'MAST UNDERPASS', x1: -2, x2: 2, z1: 2.5, z2: 4, axis: 'x', roof: L2 - TUNNEL_H },  // through the base of the atrium mast
+  { name: 'ANNEX CULVERT', x1: 5.4, x2: 6.8, z1: 12.2, z2: 20.4, axis: 'z', roof: 0.2 },       // south yard -> motor pool (mouth-width hole in the fence)
+  { name: 'COOLING CULVERT', x1: 16.2, x2: 26.4, z1: 6.9, z2: 8.3, axis: 'x', roof: 0.2 },     // east yard -> cooling plant, under the spine
+  { name: 'SERVICE CRAWL', x1: -24.6, x2: -17.4, z1: -2.2, z2: -0.8, axis: 'x', roof: 0.2 },   // west yard -> service wing, through the west fence
 ];
 for (const t of TUNNELS) {
   const W = TUNNEL_WALL, h = TUNNEL_H + 0.2;
@@ -88,16 +117,39 @@ const NP = SPAWNS.length; // max players per room (server.js MAX_GUESTS + 1)
 // GUARDS: y = the floor a guard lives on. Elevated guards (y > 0) stay on their decks: `area` = the walkable rects they
 // may stand in (overlapping where decks join, so they can walk across the seams); they chase / investigate to the
 // nearest edge, then hold there and use their FAMAS / vertical vision. 5 guards (was 3): 3 of them on decks / roofs; the
-// north yard has no ground guard - it is watched from the L2 overwatch above it.
+// The original north yard stays watched from the L2 overwatch. New wings each have their own patrols.
+// `home` clamps a ground guard's search so he doesn't path across the whole expanded yard and get stuck in a wing.
 const RING_AREA = [{ x1: -7, x2: 5, z1: -1.6, z2: -0.4 }, { x1: -7, x2: 5, z1: 7, z2: 8.2 }, { x1: -7, x2: -5.8, z1: -1.6, z2: 8.2 }, { x1: 3.8, x2: 5, z1: -1.6, z2: 8.2 }];
 const GANTRY_AREA = [{ x1: 4.2, x2: 17.5, z1: -3.3, z2: -2.3 }, { x1: 14.5, x2: 19.6, z1: -7.6, z2: -3.3 }, { x1: 14.5, x2: 17.5, z1: -7.6, z2: -2.3 }];
 const WEST_L2_AREA = [{ x1: -19.5, x2: -15.5, z1: -14.5, z2: -9.5 }, { x1: -16, x2: -5.5, z1: -14, z2: -13 }, { x1: -6, x2: -2.5, z1: -14.5, z2: -11.5 }];
+const ANNEX_L1 = [{ x1: -9.7, x2: -1.9, z1: 21.5, z2: 26.5 }, { x1: -2.3, x2: 13.5, z1: 23.05, z2: 23.95 }];
+const EAST_L1 = [
+  { x1: 20.6, x2: 30.1, z1: 5.35, z2: 6.35 }, { x1: 24.55, x2: 25.65, z1: 2.5, z2: 6.45 },
+  { x1: 24.4, x2: 35.6, z1: 2.35, z2: 3.5 }, { x1: 28.45, x2: 29.55, z1: 3.1, z2: 13.05 },
+  { x1: 28.5, x2: 36.8, z1: 11.85, z2: 13.1 },
+];
+const EAST_L2 = [
+  { x1: 30.35, x2: 36.65, z1: 4.85, z2: 6.5 }, { x1: 30.35, x2: 36.65, z1: 9.4, z2: 11.25 },
+  { x1: 30.35, x2: 31.25, z1: 6.1, z2: 9.8 }, { x1: 34.7, x2: 36.65, z1: 6.1, z2: 9.8 },
+];
+const DOCK_L1 = [{ x1: -4.8, x2: 6.6, z1: -22.5, z2: -17.7 }];
+const LOOK_L2 = [{ x1: -34.4, x2: -31.0, z1: -1.8, z2: 0.8 }];
 const GUARDS = [
-  { y: 0, path: [[-3.2, 0.6], [3, 0.6], [3, 6.2], [-3.2, 6.2]] },                                    // atrium floor, around the mast
+  { y: 0, home: [-8, 8, -2, 10], path: [[-3.2, 0.6], [3, 0.6], [3, 6.2], [-3.2, 6.2]] },             // atrium floor, around the mast
   { y: L1, area: RING_AREA, path: [[-6.4, -1], [4.4, -1], [4.4, 7.6], [-6.4, 7.6]] },                // atrium ring catwalk
-  { y: 0, path: [[2, -5.4], [19, -5.4]] },                                                          // switch lane (under the gantry)
+  { y: 0, home: [0, 19.5, -8, -3], path: [[2, -5.4], [19, -5.4]] },                                  // switch lane (under the gantry)
   { y: L1, area: GANTRY_AREA, path: [[5, -2.8], [16, -2.8], [16, -6.8], [19, -6.8], [16, -6.8], [16, -2.8]] }, // gantry + relay platform
   { y: L2, area: WEST_L2_AREA, path: [[-17.5, -12], [-15, -13.5], [-4.2, -13.5], [-4.2, -12.2], [-4.2, -13.5], [-15, -13.5]] }, // L2 overwatch
+  { y: 0, home: [-19, -9, -6, 11], path: [[-16, -2], [-12, 2], [-16, 6], [-13, 8], [-16, 2]] },     // west yard (original), between culvert and barracks
+  { y: 0, home: [-20, 20, 16.8, 30.5], path: [[-16, 18.2], [-16, 29], [13, 29], [13, 20.6], [-1, 20.6], [-1, 18.2]] }, // motor pool
+  { y: L1, area: ANNEX_L1, path: [[-8, 24], [-3, 24], [6, 23.5], [12, 23.5], [6, 23.5], [-6, 23.2]] }, // shed roof + annex catwalk
+  { y: 0, home: [21.5, 38.5, -0.5, 16.5], path: [[22.2, 4.2], [27.5, 4.2], [27.5, 14.2], [37.2, 14.2], [37.2, 3.2], [27.5, 3.2]] }, // cooling yard
+  { y: L1, area: EAST_L1, path: [[22, 5.85], [29, 5.85], [29, 12.4], [34, 12.4], [29, 12.4], [29, 2.8], [33, 2.8], [25, 2.8], [25, 5.85]] }, // east catwalks
+  { y: L2, area: EAST_L2, path: [[33, 5.5], [35.5, 5.5], [35.8, 8], [35.5, 10.4], [32, 10.4], [30.7, 8], [30.7, 5.6]] }, // cooling tower roof, around the penthouse
+  { y: 0, home: [-35.2, -21.5, -2.6, 12.5], path: [[-23, 3], [-23, 10], [-34, 10], [-34, 8], [-24, 8], [-24, 0.5], [-28, 0.5], [-23, 1]] }, // service yard
+  { y: L2, area: LOOK_L2, path: [[-33.5, -1], [-31.5, -1], [-31.5, 0.3], [-33.5, 0.3]] },            // lookout roof
+  { y: 0, home: [-7, 14.5, -26.6, -16.6], path: [[-5, -18.5], [10, -18.5], [12, -23], [6, -25.5], [-5, -25.5], [-5, -21]] }, // dock
+  { y: L1, area: DOCK_L1, path: [[-3, -19], [5, -19], [5, -22], [-3, -22]] },                        // dock rack
 ];
 const GUARD_PATHS = GUARDS.map((g) => g.path);
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
@@ -150,13 +202,48 @@ const TRANQ = { sleep: 30 };                                   // MK-T dart: gua
 const STUN = { range: 7, r: 5, fuse: 1.2, ko: 7, flight: 0.6 }; // stun grenade: throw distance, blast radius, fuse, stun time
 const C4 = { kill: 3.2, pr: 3, pdmg: 50, noise: 18, max: 12 };  // kill radius for guards, player damage radius / max dmg
 const RATION_HP = 40, STIM_T = 30;
-// map pickups (feet y from groundAt). n = rounds / count; re = respawns after `re` seconds (ammo), else once per mission
+// map pickups (feet y from groundAt). n = rounds / count; re = respawns after `re` seconds (ammo), else once per mission.
+// locker = tall cabinet instead of the olive crate. Nothing here is free at spawn — the south gate is the first kit.
 const PICKUPS = [
   { id: 'fr5', n: 30, x: -6.4, z: 3.5, lv: 3.2 }, { id: 'mkt', n: 6, x: -8, z: -7.8, lv: 3.2 }, { id: 'stun', n: 2, x: 8, z: 9, lv: 0, re: 45 },
   { id: 'c4', n: 2, x: 11.25, z: 3.25, lv: 6.4 }, { id: 'scope', n: 1, x: -17.5, z: -12, lv: 6.4 }, { id: 'supp', n: 1, x: -4.25, z: -13, lv: 6.4 },
   { id: 'ration', n: 1, x: 3, z: -2.9, lv: 3.2 }, { id: 'ration', n: 1, x: 14, z: 12, lv: 0, re: 60 }, { id: 'stim', n: 1, x: 10, z: -2.8, lv: 3.2 },
   { id: 'p9', n: 12, x: 1, z: 9, lv: 0, re: 40, ammo: 1 }, { id: 'fr5', n: 30, x: 17, z: -5.5, lv: 3.2, re: 45, ammo: 1 },
+  // south motor pool — first things you can reach from the spawn yard
+  { id: 'p9', n: 12, x: -15.2, z: 17.4, lv: 0, locker: 1 }, { id: 'stun', n: 2, x: -13.2, z: 19.8, lv: 0 },
+  { id: 'ration', n: 1, x: -17.2, z: 22.4, lv: 0, locker: 1 }, { id: 'box', n: 1, x: 10.5, z: 26.5, lv: 0, locker: 1 },
+  { id: 'stim', n: 1, x: 8, z: 23.5, lv: L1 }, { id: 'p9', n: 12, x: 12.5, z: 27.5, lv: 0, re: 40, ammo: 1 },
+  // east cooling plant
+  { id: 'mkt', n: 4, x: 33.2, z: 5.35, lv: L2 }, { id: 'c4', n: 2, x: 33, z: 7.9, lv: H3 },
+  { id: 'fr5', n: 30, x: 33, z: 12.45, lv: L1, re: 45, ammo: 1 }, { id: 'ration', n: 1, x: 23.4, z: 10.2, lv: 0, re: 55 },
+  // west service + north dock
+  { id: 'stun', n: 1, x: -30.5, z: 9.6, lv: 0 }, { id: 'stim', n: 1, x: -32.6, z: -0.3, lv: L2 },
+  { id: 'ration', n: 1, x: -23.6, z: 5.2, lv: 0, re: 50 },
+  { id: 'fr5', n: 30, x: 0.2, z: -24.7, lv: L2 }, { id: 'c4', n: 1, x: 8.2, z: -19.4, lv: 0, locker: 1 },
 ];
+// One bundle per guard, rolled on the host the moment he goes down for good (not on a stun / tranq nap) and synced
+// as g.loot. Loud kills favour the FAMAS mag (FR-5). Takedowns still hand you the rifle sometimes, but bias toward
+// the quiet kit (suppressor, darts, sidearm, ration, box). Index 0 is "no drop yet".
+const LOOT = [
+  null,
+  { fr5: 24 },
+  { fr5: 30, ration: 1 },
+  { fr5: 18, stun: 1 },
+  { fr5: 20, supp: 1 },
+  { fr5: 12, mkt: 4 },
+  { fr5: 18, stim: 1 },
+  { p9: 10, ration: 1 },
+  { fr5: 24, c4: 1 },
+  { fr5: 16, box: 1 },
+  { stun: 2, ration: 1 },
+  { mkt: 5, supp: 1 },
+  { fr5: 28, p9: 8 },
+  { scope: 1, fr5: 12 },
+  { fr5: 22, stun: 2 },
+];
+const LOOT_LOUD = [1, 1, 2, 3, 12, 14, 8, 6];
+const LOOT_QUIET = [4, 5, 7, 9, 10, 11, 3, 2, 13];
+const LOOT_ICON = LOOT.map((b) => (b ? ['fr5', 'p9', 'mkt', 'stun', 'c4', 'supp', 'ration', 'stim', 'box', 'scope'].find((id) => b[id]) : null));
 
 // ---------------------------------------------------------------- params / state
 const qs = new URLSearchParams(location.search);
@@ -176,22 +263,24 @@ let peerConnected = false;
 // climbing: y = feet height, vy = fall speed, tr = active traversal move (see updateTrav), thud = hard-landing noise timer
 const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0,
   td: null, eq: false, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0, y: 0, vy: 0, tr: null, thud: 0, fallFrom: 0, grabT: 0, bloom: 0, wob: 0, wobA: 0,
-  // gear: inv[id] = count (-1 = not carried; toggles 1), wpn = weapon in the weapon slot, itm = item in the item slot,
-  // sd / box / scope = suppressor fitted / hiding in the box / binoculars up, stimT = steady-hands timer, burst = FR-5 rounds left
-  inv: Object.fromEntries(Object.entries(ITEMS).map(([k, v]) => [k, v.start ?? -1])), wpn: 'p9', itm: 'ration', sd: false, box: false, scope: false, stimT: 0, burst: 0, burstT: 0 };
+  // gear: inv[id] = count (-1 = not carried; toggles 1), wpn = weapon in the weapon slot (null = bare hands),
+  // itm = item in the item slot (null = empty). sd / box / scope = suppressor fitted / hiding in the box / binoculars up,
+  // stimT = steady-hands timer, burst = FR-5 rounds left. A mission starts with every count at -1.
+  inv: Object.fromEntries(Object.keys(ITEMS).map((k) => [k, -1])), wpn: null, itm: null, sd: false, box: false, scope: false, stimT: 0, burst: 0, burstT: 0 };
 // remote traversal: y, tk = move code ('' none), ti = spot / link index, tp = progress 0..1; ry = smoothed on-screen y
 // one remote record per slot (others[mySlot] is unused - that's `me`). on = connected (server roster).
 const others = SPAWNS.map((sp, s) => ({ s, on: false, x: sp.x, z: sp.z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: sp.x, rz: sp.z, ra: 0, nvx: 0, nvz: 0, pt: 0,
-  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, box: 0, w: 'p9', bxK: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
+  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, box: 0, w: '', bxK: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
 const peers = () => others.filter((o) => o.on && o.s !== mySlot);
 const pOf = (s) => (s === mySlot ? me : others[s]);
-function resetLoadout() { me.td = null; me.eq = false; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0;
-  for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; }
+function resetLoadout() { me.td = null; me.eq = false; me.ammo = 0; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0;
+  for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; o.w = ''; }
   me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; resetInv(); syncGunButton(); }
 function resetInv() {
-  for (const [id, it] of Object.entries(ITEMS)) me.inv[id] = it.start ?? -1;
-  me.wpn = 'p9'; me.itm = 'ration'; me.sd = me.box = me.scope = false; me.stimT = 0; me.burst = 0;
+  for (const id of Object.keys(ITEMS)) me.inv[id] = -1;
+  me.wpn = null; me.itm = null; me.sd = me.box = me.scope = false; me.stimT = 0; me.burst = 0;
   if (typeof resetPickups === 'function') resetPickups();
+  if (typeof resetDrops === 'function') resetDrops();
   if (typeof closeInv === 'function') closeInv(true);
 }
 const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
@@ -201,8 +290,8 @@ let lastAlert = 0, lastPhase = 'play', lastHp = HP_MAX, shake = 0, hurtT = 0;
 function freshWorld() {
   return {
     // st: patrol | investigate | chase | search | held (being taken down, tdT = seconds into it) | dead
-    guards: GUARDS.map(({ path: p, y, area }) => ({ x: p[0][0], z: p[0][1], y, area, a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
-      rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false, stun: 0, ko: 0 })), // stun = seconds out, ko: 1 stunned (grenade) / 2 asleep (tranq)
+    guards: GUARDS.map(({ path: p, y, area, home }) => ({ x: p[0][0], z: p[0][1], y, area, home, a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
+      rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false, stun: 0, ko: 0, loot: 0 })), // stun = seconds out, ko: 1 stunned (grenade) / 2 asleep (tranq); loot = bundle code once down
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
     ext: Array(NP).fill(false), inv: Array(NP).fill(0), finalT: 0, dead: -1, kills: 0, // dead: slot of the player who died (-1 = nobody)
     hp: Array(NP).fill(HP_MAX), hitInv: Array(NP).fill(0), dmg: Array(NP).fill(0), kb: '', // per slot: LIFE (host-authoritative), post-hit i-frames, damage taken
@@ -358,15 +447,19 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPrefer
 const PIXEL_SCALE = 0.5; // chunky PS1-ish pixels, also keeps phones fast
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a1418);
-scene.fog = new THREE.Fog(0x0a1418, 22, 48);
+scene.fog = new THREE.Fog(0x0a1418, 28, 72);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 160);
 scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
 const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
 
 const mat = (c, extra = {}) => new THREE.MeshLambertMaterial({ color: c, flatShading: true, ...extra });
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(42, 32), mat(0x26352e));
-ground.rotation.x = -Math.PI / 2; scene.add(ground);
-const grid = new THREE.GridHelper(42, 21, 0x35503f, 0x2d4236); grid.position.y = 0.01; scene.add(grid);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP.x2 - MAP.x1, MAP.z2 - MAP.z1), mat(0x26352e));
+ground.rotation.x = -Math.PI / 2; ground.position.set((MAP.x1 + MAP.x2) / 2, 0, (MAP.z1 + MAP.z2) / 2); scene.add(ground);
+const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236); grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
+// wing floors sit a hair above the yard so the new ground reads as a different pad
+for (const [x, z, w, d, c] of [[0, 23.5, 40, 15, 0x243028], [30, 8, 18, 18, 0x2a332c], [-28.5, 5, 15, 16, 0x2c3428], [4, -22.5, 22, 13, 0x2a3036]]) {
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat(c)); fl.rotation.x = -Math.PI / 2; fl.position.set(x, 0.012, z); scene.add(fl);
+}
 const compoundFloor = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.5), mat(0x2f3a44));
 compoundFloor.rotation.x = -Math.PI / 2; compoundFloor.position.set(12.25, 0.02, -11.75); scene.add(compoundFloor);
 
@@ -522,7 +615,7 @@ const guardMeshes = GUARD_PATHS.map(() => {
 });
 
 // gun fx: short-lived tracer lines + impact puffs (pooled)
-const tracers = Array.from({ length: 18 }, () => { // 18: room for a couple of guards' FAMAS bursts at once
+const tracers = Array.from({ length: 32 }, () => { // room for several guards' FAMAS bursts at once on the bigger yard
   const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
   const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff0a0, transparent: true, opacity: 0 }));
   const puff = new THREE.Mesh(new THREE.OctahedronGeometry(0.12, 0), new THREE.MeshBasicMaterial({ color: 0xd8d0b0, transparent: true, opacity: 0 }));
@@ -870,9 +963,10 @@ function toggleProne() {
   syncStanceButtons();
 }
 // pistol: G / GUN button draws or holsters it. Holstered = ACT can only take down / use, F does nothing (no accidental shots).
-function syncGunButton() { const b = $('btnGun'); if (!b) return; b.classList.toggle('on', me.eq); const t = me.eq ? 'HOLSTER' : ITEMS[me.wpn].name; if (b.textContent !== t) b.textContent = t; }
+function syncGunButton() { const b = $('btnGun'); if (!b) return; b.classList.toggle('on', me.eq && !!me.wpn); const t = !me.wpn ? 'FISTS' : me.eq ? 'HOLSTER' : ITEMS[me.wpn].name; if (b.textContent !== t) b.textContent = t; }
 function toggleGun() {
   if (!role || world.phase !== 'play' || me.td) return;
+  if (!me.wpn || (me.inv[me.wpn] ?? -1) < 0) { toast('NO WEAPON — find one', 900, '#ccc'); beep(150, 0.04, 'square', 0.05); return; }
   if (me.box) toggleBox(false);
   me.eq = !me.eq; me.burst = 0;
   if (me.eq) { me.cd = Math.max(me.cd, 0.25); beep(520, 0.03, 'square', 0.05); setTimeout(() => beep(780, 0.03, 'square', 0.05), 60); } // draw: slide click, brief settle
@@ -883,7 +977,7 @@ function toggleGun() {
   if (role === 'guest') sendPlayer(); else if (peerConnected) sendState();
 }
 let hintT = 0;
-function holsterHint() { const now = performance.now(); if (now - hintT < 1500) return; hintT = now; toast(isTouch ? 'Holstered - tap ' + ITEMS[me.wpn].name + ' to draw' : 'Holstered - G to draw', 900, '#ccc'); }
+function holsterHint() { const now = performance.now(); if (now - hintT < 1500) return; hintT = now; const nm = me.wpn ? ITEMS[me.wpn].name : 'a weapon'; toast(isTouch ? 'Holstered - tap ' + nm + ' to draw' : 'Holstered - G to draw', 900, '#ccc'); }
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
 // ACT priority: takedown (only from behind) > door switch > climb / co-op / grapple (traversal) > fire handgun (only if drawn)
 // While mid-climb ACT = let go of a ladder / stand up from a boost kneel; F never fires while climbing.
@@ -959,7 +1053,7 @@ function autoTarget(p = me, tranq = false) {
 }
 // ---------------------------------------------------------------- GEAR: weapons + items (see gear.js for the table / art)
 const isGun = (id) => GUN_IDS.includes(id);
-const wkey = () => (me.wpn === 'p9' && me.sd ? 'sd' : me.wpn); // what the current gun is on the wire (sd = suppressed P-9)
+const wkey = () => (!me.wpn ? '' : me.wpn === 'p9' && me.sd ? 'sd' : me.wpn); // what the current gun is on the wire ('' = fists, sd = suppressed P-9)
 const HOTKEYS = ['p9', 'fr5', 'mkt', 'stun', 'c4']; // 1-5
 const ownedWeapons = () => GRID.filter((id) => id && ITEMS[id].kind === 'wpn' && me.inv[id] >= 0);
 const myCharges = () => (world.c4 || []).filter((c) => c.by === mySlot).length;
@@ -1013,7 +1107,7 @@ function toggleBox(on = !me.box) {
 }
 // FIRE: guns shoot, STUN.G throws, C4 plants. Only while the weapon is drawn (G / weapon button).
 function fireGun() {
-  if (!me.eq || me.cd > 0 || me.tr || me.box || me.burst > 0) return;
+  if (!me.eq || !me.wpn || me.cd > 0 || me.tr || me.box || me.burst > 0) return;
   const id = me.wpn;
   if (id === 'stun') return throwNade();
   if (id === 'c4') return plantC4();
@@ -1061,12 +1155,20 @@ function shootRound(w) {
 }
 // host: apply a shot (from any player). Bullets drop the guard; an MK-T dart puts him to sleep. The bang (if any) pulls
 // every live guard inside that weapon's noise radius.
+// host: a guard is down for good. One loot bundle, ever (loud clear vs a searched takedown).
+function killGuard(g, by, quiet) {
+  if (!g || g.st === 'dead') return;
+  g.st = 'dead'; g.by = by; g.stun = 0; g.ko = 0;
+  if (!g.loot) { const tab = quiet ? LOOT_QUIET : LOOT_LOUD; g.loot = tab[(Math.random() * tab.length) | 0]; }
+  world.kills++;
+  if (peerConnected) sendState();
+}
 function hostShot(m, pidx) {
   if (world.phase !== 'play') return;
   const W = WPN[m.w] || WPN.p9, g = world.guards[m.g];
   if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < W.range + 2 && clearShot(m.x, m.z, g.x, g.z, m.y || 0, g.y || 0)) {
     if (W.tranq) { if (g.st !== 'held') koGuard(g, TRANQ.sleep, 2); }
-    else { g.st = 'dead'; g.by = pidx; g.stun = 0; g.ko = 0; world.kills++; }
+    else killGuard(g, pidx, false);
   }
   hearBang(m.x, m.z, W.noise);
   if (peerConnected) sendState();
@@ -1141,7 +1243,7 @@ function hostDet(by) {
     for (const g of world.guards) {
       if (g.st === 'dead') continue;
       const gy = g.y || 0; if (Math.abs(gy - c.y) > 1.8) continue;
-      if (Math.hypot(g.x - c.x, g.z - c.z) < C4.kill && clearShot(c.x, c.z, g.x, g.z, c.y, gy)) { g.st = 'dead'; g.by = by; g.stun = 0; g.ko = 0; world.kills++; }
+      if (Math.hypot(g.x - c.x, g.z - c.z) < C4.kill && clearShot(c.x, c.z, g.x, g.z, c.y, gy)) killGuard(g, by, false);
     }
     hearBang(c.x, c.z, C4.noise);
     for (const p of players()) {
@@ -1285,7 +1387,7 @@ function genCoops() {
   const blocked = (x, z, y, r = 0.3) => WALLS.some((b) => b.h > y + 0.05 && x > b.x1 - r && x < b.x2 + r && z > b.z1 - r && z < b.z2 + r)
     || railsAt(y).some((b) => x > b.x1 - r && x < b.x2 + r && z > b.z1 - r && z < b.z2 + r);
   const ceiling = (x, z, y, top) => WALK_TOPS.some((b) => b.h > y + 0.3 && b.h < top + 0.5 && x >= b.x1 - 0.05 && x <= b.x2 + 0.05 && z >= b.z1 - 0.05 && z <= b.z2 + 0.05);
-  const inMap = (p) => Math.abs(p.x) < 19.5 && Math.abs(p.z) < 14.5;
+  const inMap = (p) => p.x > MAP.x1 + 1.2 && p.x < MAP.x2 - 1.2 && p.z > MAP.z1 + 1.2 && p.z < MAP.z2 - 1.2;
   const crowded = (x, z) => COOPS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.8) || CLIMBS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.2)
     || LINKS.some((L) => Math.hypot(L.face.x - x, L.face.z - z) < 1.1);
   const tops = WALLS.filter((b) => (b.kind === 'building' || b.kind === 'crate') && b.h > TRAV.mantleMax).concat(WALKS);
@@ -1738,7 +1840,7 @@ function hostUpdate(dt) {
     if (g.st === 'dead') continue;
     if (g.st === 'held') { // being taken down: frozen, blind, deaf. Drops dead when the hold finishes.
       g.tdT += dt; g.shooting = false; g.bl = 0;
-      if (g.tdT >= TD.time) { g.st = 'dead'; world.kills++; }
+      if (g.tdT >= TD.time) killGuard(g, g.by, true);
       continue;
     }
     if (g.stun > 0) { // knocked out (stun flash / tranq dart): blind, deaf, frozen. Wakes up confused -> investigates
@@ -1796,7 +1898,10 @@ function hostUpdate(dt) {
       else if (moveToward(g, g.tx, g.tz, SPEED.chase, dt) || g.give <= 0 || g.stuck > 1) { g.st = 'search'; g.wait = 2.5; }
     } else if (g.st === 'search') {
       g.a += dt * 2.4; g.wait -= dt;
-      if (g.wait <= 0) { g.st = 'chase'; g.tx = clamp(g.x + (Math.random() - 0.5) * 10, -19, 19); g.tz = clamp(g.z + (Math.random() - 0.5) * 10, -14, 14); g.give = 4; }
+      if (g.wait <= 0) {
+        const h = g.home, x1 = h ? h[0] : MAP.x1 + 2, x2 = h ? h[1] : MAP.x2 - 2, z1 = h ? h[2] : MAP.z1 + 2, z2 = h ? h[3] : MAP.z2 - 2;
+        g.st = 'chase'; g.tx = clamp(g.x + (Math.random() - 0.5) * 10, x1, x2); g.tz = clamp(g.z + (Math.random() - 0.5) * 10, z1, z2); g.give = 4;
+      }
     }
     // --- FAMAS (ALERT chase with line of sight)
     guardGun(g, world.guards.indexOf(g), ps, dt);
@@ -1829,10 +1934,10 @@ const extNeed = () => (solo ? 1 : Math.min(2, 1 + peers().length)); // players n
 // per-slot player array (same layout the old 2-player `h` used): [x, z, a, crouch, prone, vx, vz, takedown, aiming, drawn, y, tk, ti, tp]
 const plMe = () => [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0,
   r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y), me.box ? 1 : 0, wkey()];
-const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0, o.box ? 1 : 0, o.w || 'p9'];
+const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0, o.box ? 1 : 0, o.w || ''];
 function sendState() {
   net.relay({ t: 's',
-    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0, g.ko || 0]), // [7] = ko (1 stunned, 2 asleep); st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
+    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0, g.ko || 0, g.loot || 0]), // [7] = ko (1 stunned, 2 asleep); [8] = loot bundle once down; st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo, k: world.kills, hp: world.hp, dm: world.dmg, kb: world.kb,
     // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = aiming (just fired), h[9] = pistol drawn
@@ -1854,7 +1959,7 @@ function remoteShot(d, by) {
   gunFx(meshOf(by), d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null, !!W.rifle, W.tranq ? 0x9fe0ff : null);
   const vol = clamp(1 - Math.hypot(d.x - me.x, d.z - me.z) / 26, 0.15, 0.6); W.rifle ? rifleSound(vol) : W.quiet ? suppSound(vol) : gunSound(vol);
 }
-function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); o.box = h[14] || 0; o.w = h[15] || 'p9'; }
+function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); o.box = h[14] || 0; o.w = h[15] == null ? '' : h[15]; }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -1869,7 +1974,7 @@ function netSample(o, x, z, vx, vz) {
 function onGameMsg(d) {
   const from = d.from ?? 1, fo = others[from]; // guest -> host packets are tagged with the sender's slot by server.js
   if (role === 'host' && d.t !== 's' && (!fo || from === 0)) return;
-  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || 'p9'; }
+  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || ''; }
   else if (d.t === 'tr' && role === 'host') { // guest solo climb / rope: veto if someone's already on that ladder / rope, it's over, or a ground grapple (top-only)
     const on = (k, i) => i === d.i && ((k === d.k && d.k === 'ld') || ((ON_LINE(k) || k === 'hr' || k === 'hp') && ON_LINE(d.k)));
     const busy = (me.tr && on(me.tr.k, me.tr.i)) || peers().some((o) => o.s !== from && on(o.tk, o.ti));
@@ -1899,7 +2004,7 @@ function onGameMsg(d) {
   else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(from); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
-    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; g.shooting = !!a[6]; g.ko = a[7] || 0; });
+    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; g.shooting = !!a[6]; g.ko = a[7] || 0; if (a.length > 8) g.loot = a[8] || 0; });
     world.c4 = (d.c4 || []).map(([id, x, y, z, by]) => ({ id, x, y, z, by }));
     const pad = (v, f) => { const r = Array(NP).fill(f); (v || []).forEach((x, i) => { if (i < NP) r[i] = x; }); return r; };
     Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: pad(d.ext, false), dead: d.dd ?? -1, kills: d.k || 0,
@@ -1978,6 +2083,7 @@ function enterGame() {
     $('lobby').classList.add('hidden'); $('hud').classList.remove('hidden');
     const s = SPAWNS[mySlot] || SPAWNS[1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout();
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
+    setTimeout(() => { if (role && world.phase === 'play' && !me.wpn) toast('UNARMED — P-9 locker through the south gate', 2600, '#ffd27f'); }, role === 'host' && !solo ? 1800 : 500);
   }
   applyPlayerLooks();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
@@ -2064,18 +2170,18 @@ $('ovMenu').onclick = () => { // leave the room and go back to Host/Join
 // ---------------------------------------------------------------- radar (top-right, Soliton-style)
 const radar = $('radar'), rc = radar.getContext('2d');
 function drawRadar() {
-  const W = radar.width, H = radar.height, sx = W / 42, sz = H / 32;
-  const X = (x) => (x + 21) * sx, Z = (z) => (z + 16) * sz;
+  const W = radar.width, H = radar.height, sx = W / (MAP.x2 - MAP.x1), sz = H / (MAP.z2 - MAP.z1);
+  const X = (x) => (x - MAP.x1) * sx, Z = (z) => (z - MAP.z1) * sz;
   rc.fillStyle = world.alert === 2 ? 'rgba(90,10,10,0.9)' : 'rgba(0,30,18,0.9)'; rc.fillRect(0, 0, W, H);
   rc.fillStyle = '#3c7a55';
   for (const b of solids()) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = 'rgba(216,176,40,0.35)'; // tunnels
   for (const t of TUNNELS) rc.fillRect(X(t.x1), Z(t.z1), (t.x2 - t.x1) * sx, (t.z2 - t.z1) * sz);
-  for (const b of WALKS) { // catwalks / bridges: L1 pale blue, L2 brighter
-    rc.fillStyle = b.h > 5 ? 'rgba(190,235,255,0.7)' : 'rgba(120,200,255,0.45)';
+  for (const b of WALKS) { // catwalks / bridges: L1 pale blue, L2 brighter, L3 almost white
+    rc.fillStyle = b.h > 8 ? 'rgba(230,245,255,0.85)' : b.h > 5 ? 'rgba(190,235,255,0.7)' : 'rgba(120,200,255,0.45)';
     rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   }
-  rc.fillStyle = 'rgba(190,235,255,0.35)'; // L2 tower roofs
+  rc.fillStyle = 'rgba(190,235,255,0.35)'; // tower roofs (L2 / L3)
   for (const b of WALLS) if (b.kind === 'building' && b.h > 5) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
   rc.fillStyle = '#ffd040'; for (const c of CLIMBS) rc.fillRect(X(c.x) - 1.5, Z(c.z) - 1.5, 3, 3); // ladders / pipe
   for (const c of COOPS) rc.fillRect(X(c.x) - 2.5, Z(c.z) - 1, 5, 2);
@@ -2087,7 +2193,8 @@ function drawRadar() {
     rc.fillStyle = 'rgba(255,224,102,0.35)'; rc.beginPath(); rc.moveTo(X(g.rx), Z(g.rz));
     rc.arc(X(g.rx), Z(g.rz), SIGHT.stand * sx, g.ra - SIGHT.fovHalf, g.ra + SIGHT.fovHalf); rc.fill();
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
-    if (g.y > 0.3) { rc.strokeStyle = g.y > 5 ? '#ffffff' : '#ffb0b0'; rc.strokeRect(X(g.rx) - 3.5, Z(g.rz) - 3.5, 7, 7); } // up on a deck / roof
+    if (g.y > 0.3) { rc.strokeStyle = g.y > 8 ? '#ffffff' : g.y > 5 ? '#ffe0c0' : '#ffb0b0'; rc.strokeRect(X(g.rx) - 3.5, Z(g.rz) - 3.5, 7, 7); } // up on a deck / roof
+    if (g.loot && g.st === 'dead' && dropMeshes[i] && !dropMeshes[i].taken) { rc.fillStyle = '#ffb060'; rc.fillRect(X(dropMeshes[i].x) - 1.5, Z(dropMeshes[i].z) - 1.5, 3, 3); }
   }
   for (const pk of pickups) if (pk.on) { rc.fillStyle = Math.abs(pk.y - me.y) < 1 ? '#7fd6ff' : 'rgba(127,214,255,0.5)'; rc.fillRect(X(pk.x) - 1.5, Z(pk.z) - 1.5, 3, 3); }
   for (const c of world.c4 || []) if (c.by === mySlot) { rc.fillStyle = (performance.now() / 250 | 0) % 2 ? '#ff3030' : '#601010'; rc.fillRect(X(c.x) - 2, Z(c.z) - 2, 4, 4); }
@@ -2096,41 +2203,102 @@ function drawRadar() {
 }
 
 // ---------------------------------------------------------------- GEAR: map pickups, box / grenade / C4 visuals, gear menu
-// PICKUPS (per player, local): a floating icon card over a small olive crate + ring. Walk over it to take it. Ammo-type
-// spots respawn (re seconds); unique gear (FR-5, MK-T, SCOPE, SUPP., C4...) is there once per mission per player.
-const crateMat = mat(0x5a6a3a), pickRingMat = new THREE.MeshBasicMaterial({ color: 0x7fd6ff, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+// PICKUPS (per player, local): a floating icon card over a small olive crate (or a grey locker) + ring. Walk over it
+// to take it. Ammo-type spots respawn (re seconds); unique gear is there once per mission per player. Both teammates
+// can take each spot. Guard drops (below) use the same grant, but the host decides when the body has loot.
+const crateMat = mat(0x5a6a3a), lockerMat = mat(0x4a5560), pickRingMat = new THREE.MeshBasicMaterial({ color: 0x7fd6ff, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+const iconTex = {};
+function gearTex(id) {
+  if (!iconTex[id]) {
+    const t = new THREE.CanvasTexture(iconCanvas(id)); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.colorSpace = THREE.SRGBColorSpace;
+    iconTex[id] = t;
+  }
+  return iconTex[id];
+}
 const pickups = PICKUPS.map((d) => {
   const y = groundAt(d.x, d.z, d.lv + 0.05), g = new THREE.Group(); g.position.set(d.x, y, d.z);
-  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.3), crateMat); crate.position.y = 0.13; g.add(crate);
+  const crate = d.locker
+    ? new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.92, 0.34), lockerMat)
+    : new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.3), crateMat);
+  crate.position.y = d.locker ? 0.46 : 0.13; g.add(crate);
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 16), pickRingMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; g.add(ring);
-  const t = new THREE.CanvasTexture(iconCanvas(d.id)); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.colorSpace = THREE.SRGBColorSpace;
-  const card = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true })); card.scale.set(0.95, 0.6, 1); card.position.y = 0.85; g.add(card);
-  scene.add(g); return { ...d, y, g, card, on: true, t: 0 };
+  const card = new THREE.Sprite(new THREE.SpriteMaterial({ map: gearTex(d.id), depthTest: true })); card.scale.set(0.95, 0.6, 1); card.position.y = d.locker ? 1.25 : 0.85; g.add(card);
+  scene.add(g); return { ...d, y, g, card, baseY: card.position.y, on: true, t: 0 };
 });
 function resetPickups() { for (const p of pickups) { p.on = true; p.t = 0; p.g.visible = true; } }
-// what a pickup adds right now (0 = you're full / already have it -> leave it there)
+// what `n` of id adds right now (0 = full / already carrying a toggle)
+function itemGain(id, n) {
+  const it = ITEMS[id]; if (!it || n <= 0) return 0;
+  const have = me.inv[id] ?? -1;
+  if (it.tog || !it.max) return have >= 1 ? 0 : 1;
+  return Math.max(0, Math.min(n, it.max - Math.max(0, have)));
+}
 function pickupGain(p) {
-  const it = ITEMS[p.id], have = me.inv[p.id];
-  if (it.tog || (!it.max)) return have >= 1 ? 0 : 1;
-  if (p.ammo && have < 0) return 0; // ammo for a gun you don't carry
-  return Math.max(0, Math.min(p.n, it.max - Math.max(0, have)));
+  if (p.ammo && (me.inv[p.id] ?? -1) < 0) return 0; // ammo for a gun you don't carry yet
+  return itemGain(p.id, p.n);
+}
+// add whatever fits. The first weapon / item you find fills the empty slot but stays holstered.
+function grantItems(entries) {
+  const got = [];
+  for (const [id, n] of entries) {
+    const g = itemGain(id, n); if (g <= 0) continue;
+    const fresh = (me.inv[id] ?? -1) < 0;
+    me.inv[id] = Math.max(0, me.inv[id]) + g;
+    const it = ITEMS[id];
+    if (fresh && it.kind === 'wpn' && !me.wpn) { me.wpn = id; me.eq = false; }
+    if (fresh && it.kind === 'item' && !me.itm) me.itm = id;
+    got.push(it.tog ? it.name : it.name + ' +' + g);
+  }
+  if (got.length) syncGunButton();
+  return got;
 }
 function updatePickups(dt) {
   const now = performance.now() / 1000;
   for (const p of pickups) {
     if (!p.on) { if (p.re && (p.t -= dt) <= 0) { p.on = true; p.g.visible = true; } continue; }
-    p.card.position.y = 0.85 + Math.sin(now * 3 + p.x) * 0.08;
+    p.card.position.y = p.baseY + Math.sin(now * 3 + p.x) * 0.08;
     if (me.tr || me.tun >= 0 || Math.abs(me.y - p.y) > 0.7 || Math.hypot(me.x - p.x, me.z - p.z) > 0.8) continue;
     const n = pickupGain(p), it = ITEMS[p.id];
     if (n <= 0) { if (!p.full || now - p.full > 3) { p.full = now; toast(it.name + ' FULL', 700, '#ccc'); } continue; }
-    const fresh = me.inv[p.id] < 0;
-    me.inv[p.id] = Math.max(0, me.inv[p.id]) + n;
+    const fresh = (me.inv[p.id] ?? -1) < 0;
+    grantItems([[p.id, n]]);
     p.on = false; p.g.visible = false; p.t = p.re || 0;
     pickupSound();
-    toast(it.tog ? 'GOT ' + it.name : it.name + (p.ammo ? ' AMMO' : '') + '  +' + n, 1200, '#7fd6ff');
-    if (fresh && it.kind === 'item' && !it.tog) me.itm = p.id;
+    toast((p.locker ? 'LOCKER  ' : 'GOT ') + (it.tog ? it.name : it.name + (p.ammo ? ' AMMO' : '') + '  +' + n), 1200, '#7fd6ff');
     if (fresh && isTouch) setTimeout(() => toast('GEAR menu: equip ' + it.name, 1200, '#9fd9b0'), 1250);
-    syncGunButton();
+  }
+  updateDrops(dt);
+}
+// BODY LOOT. One mesh per guard. The host rolls g.loot when the guard dies; every client shows it until THAT player
+// has searched the body (per player, same as crates — a partner still gets their own search). Nothing respawns.
+const dropRingMat = new THREE.MeshBasicMaterial({ color: 0xffb060, transparent: true, opacity: 0.75, depthWrite: false, side: THREE.DoubleSide });
+const dropMeshes = GUARDS.map(() => {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.36, 0.48, 14), dropRingMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.04; g.add(ring);
+  const card = new THREE.Sprite(new THREE.SpriteMaterial({ map: gearTex('fr5'), depthTest: true })); card.scale.set(0.85, 0.54, 1); card.position.y = 0.7; g.add(card);
+  g.visible = false; scene.add(g);
+  return { g, card, x: 0, z: 0, y: 0, code: 0, taken: false };
+});
+function resetDrops() { for (const d of dropMeshes) { d.taken = false; d.code = 0; d.g.visible = false; } }
+function updateDrops(dt) {
+  const now = performance.now() / 1000;
+  for (let i = 0; i < world.guards.length; i++) {
+    const g = world.guards[i], d = dropMeshes[i]; if (!d) continue;
+    const show = g.st === 'dead' && g.loot && !d.taken;
+    if (show && d.code !== g.loot) {
+      d.code = g.loot; d.x = g.x; d.z = g.z; d.y = g.y || 0;
+      d.g.position.set(d.x, d.y, d.z);
+      const icon = LOOT_ICON[g.loot]; if (icon) d.card.material.map = gearTex(icon);
+    }
+    d.g.visible = !!show; if (!show) continue;
+    d.card.position.y = 0.7 + Math.sin(now * 3 + i) * 0.06;
+    if (me.tr || me.tun >= 0 || world.phase !== 'play' || Math.abs(me.y - d.y) > 0.8 || Math.hypot(me.x - d.x, me.z - d.z) > 0.95) continue;
+    const bundle = LOOT[g.loot]; if (!bundle) continue;
+    const got = grantItems(Object.entries(bundle));
+    if (!got.length) { if (!d.full || now - d.full > 3) { d.full = now; toast('NOTHING YOU CAN CARRY', 700, '#ccc'); } continue; }
+    d.taken = true; d.g.visible = false;
+    pickupSound();
+    toast('BODY  ' + got.join('  '), 1400, '#ffb060');
   }
 }
 // CARDBOARD BOX: one per slot, worn over the rig (sneaker hidden while it's on)
@@ -2252,7 +2420,7 @@ function drawInv(force) {
 function openInv(focus) {
   if (!role || world.phase !== 'play' || invOpen) return;
   invOpen = true; input.keys.clear(); input.jx = input.jz = 0; stickId = null; base.classList.add('hidden'); stopMe();
-  const want = focus === 'item' ? me.itm : focus === 'wpn' ? me.wpn : me.wpn; const i = GRID.indexOf(want); if (i >= 0) invSel = i;
+  const want = focus === 'item' ? me.itm : me.wpn; const i = want ? GRID.indexOf(want) : GRID.indexOf(focus === 'item' ? 'ration' : 'p9'); if (i >= 0) invSel = i;
   $('inv').classList.remove('hidden'); document.body.classList.add('invOpen'); menuSound(1320); drawInv(true);
   $('invPause').textContent = solo ? 'PAUSED' : 'CO-OP: WORLD STILL MOVING';
 }
@@ -2286,8 +2454,12 @@ function drawGearHud() {
   const blink = (performance.now() / 400 | 0) % 2 === 0;
   const h = JSON.stringify([me.inv, me.wpn, me.eq, me.itm, me.sd, me.box, me.scope, me.stimT > 0, myCharges(), me.box && blink]);
   if (h === hudHash) return; hudHash = h;
-  const ws = slotState(me.wpn); drawSlot(wpnCtx, me.wpn, { ...ws, owned: true, dim: !me.eq, tag: me.eq ? (me.wpn === 'p9' && me.sd ? 'SD' : null) : 'OFF', tagCol: '#5a6068' });
-  const it = slotState(me.itm); if (it.tag === 'SET') it.tag = null; drawSlot(itemCtx, me.itm, { ...it, owned: (me.inv[me.itm] ?? -1) >= 0 && !(ITEMS[me.itm].tog && me.inv[me.itm] <= 0), dim: false, sel: me.box && me.itm === 'box', blink });
+  const hasW = !!(me.wpn && (me.inv[me.wpn] ?? -1) >= 0);
+  const ws = hasW ? slotState(me.wpn) : {};
+  drawSlot(wpnCtx, hasW ? me.wpn : null, { ...ws, owned: hasW, dim: !me.eq, tag: hasW ? (me.eq ? (me.wpn === 'p9' && me.sd ? 'SD' : null) : 'OFF') : null, tagCol: '#5a6068' });
+  const hasI = !!(me.itm && (me.inv[me.itm] ?? -1) >= 0 && !(ITEMS[me.itm].tog && me.inv[me.itm] <= 0));
+  const it = hasI ? slotState(me.itm) : {}; if (it.tag === 'SET') it.tag = null;
+  drawSlot(itemCtx, hasI ? me.itm : null, { ...it, owned: hasI, dim: false, sel: !!(me.box && me.itm === 'box'), blink });
 }
 
 // ---------------------------------------------------------------- render
@@ -2407,10 +2579,10 @@ function render(dt) {
     o.px = o.rx; o.pz = o.rz;
     o.ry = Math.abs(o.y - o.ry) > 4 ? o.y : o.ry + (o.y - o.ry) * kr;
     mesh.g.position.set(o.rx, o.ry, o.rz); mesh.g.rotation.y = -o.ra;
-    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, oGun = isGun(o.w === 'sd' ? 'p9' : o.w || 'p9'), armed = !!o.eq && oGun && !o.box && o.td < 0 && !busy && play && !dead;
+    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, oGun = isGun(o.w === 'sd' ? 'p9' : (o.w || '')), armed = !!o.eq && oGun && !o.box && o.td < 0 && !busy && play && !dead;
     const aim = aimPoint({ x: o.rx, z: o.rz, y: o.ry, a: o.ra, tun: tunAt(o.rx, o.rz, o.ry) }, mesh, armed);
     mesh.update(dt, { aimAt: aim, moving: o.spd > 0.4 && play && o.td < 0 && !tr, run: o.spd > 4.2 && !o.c, speed: play && o.td < 0 && !tr ? o.spd : 0,
-      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && oGun && !busy, armed: !!o.eq && oGun && !busy, shot: o.shot, trav: tr, weapon: o.w || 'p9' });
+      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && oGun && !busy, armed: !!o.eq && oGun && !busy, shot: o.shot, trav: tr, weapon: o.w || '' });
     updateRope(R, mesh, o.tk, o.ti, o.tp);
     updateLaser(remoteLasers[rk(s)], mesh, armed, dt);
     viewers.push({ x: o.rx, y: o.ry || 0, z: o.rz });
@@ -2482,7 +2654,7 @@ function render(dt) {
   const fov = (40 + 32 * f) * (1 - 0.55 * scopeK * f); // first person + SCOPE = zoomed binoculars
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.near = 0.1 - 0.06 * f; camera.updateProjectionMatrix(); }
   const ft = f * tunK, L3 = THREE.MathUtils.lerp;
-  scene.fog.near = L3(L3(camDist + 4, 10, f), 0.6, ft); scene.fog.far = L3(L3(camDist + 30, 46, f), 17, ft);
+  scene.fog.near = L3(L3(camDist + 6, 12, f), 0.6, ft); scene.fog.far = L3(L3(camDist + 42, 70, f), 17, ft);
   scene.fog.color.lerpColors(SKY, TUNNEL_FOG, ft); scene.background.copy(scene.fog.color);
   meMesh.g.visible = f < 0.6 && !(me.box && play); // don't render my own head in first person; box covers the rig
   if (f >= 0.6) cboxes[mySlot].visible = false; // inside the box in first person: the slit overlay does the job
@@ -2548,8 +2720,8 @@ function updateHud() {
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
   // weapon status line (the MGS weapon / item boxes are canvases drawn by drawGearHud)
-  const W = me.wpn, qty = Math.max(0, me.inv[W] ?? 0), nm = ITEMS[W].name + (W === 'p9' && me.sd ? ' SD' : '');
-  const ammoTxt = (me.box ? 'IN C.BOX' + (isTouch ? '' : '  [E] out') : me.eq ? nm + ' ' + (isGun(W) ? (qty ? '|'.repeat(Math.min(qty, 12)) : 'EMPTY') : qty ? 'READY' : 'EMPTY')
+  const W = me.wpn, qty = W ? Math.max(0, me.inv[W] ?? 0) : 0, nm = W ? ITEMS[W].name + (W === 'p9' && me.sd ? ' SD' : '') : 'FISTS';
+  const ammoTxt = (!W ? 'UNARMED' : me.box ? 'IN C.BOX' + (isTouch ? '' : '  [E] out') : me.eq ? nm + ' ' + (isGun(W) ? (qty ? '|'.repeat(Math.min(qty, 12)) : 'EMPTY') : qty ? 'READY' : 'EMPTY')
     : 'HOLSTERED ' + nm + (isTouch ? '' : '  [G] draw')) + (myCharges() ? '  C4 x' + myCharges() + (isTouch ? '' : ' [T] DET') : '') + (me.stimT > 0 ? '  STIM ' + Math.ceil(me.stimT) : '')
     + (world.kills ? '  KILLS ' + world.kills : '') + (isTouch ? '' : '  [I] GEAR');
   const ammoEl = $('ammo'); if (ammoEl.textContent !== ammoTxt) ammoEl.textContent = ammoTxt;
@@ -2594,4 +2766,4 @@ window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, ge
   get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };
+  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3 };
