@@ -16,9 +16,14 @@
 // Co-op boost / pull-up works on almost every building face, tall crate and catwalk lip (generated COOP_ALL spots).
 // Up to 5 players (slot 0 = host, 1..4 = guests). Puzzles (door switches, extract) still only need 2 agents.
 // V / the 1ST button toggles a first-person view for the local player (tunnels still force it).
+// GEAR (gear.js): MGS1-style equipment menu (GEAR button / I / Tab): 3x4 grid of weapons + items. Weapons: P-9 (+SUPP.),
+// FR-5 rifle (bursts), MK-T tranq (sleep), STUN.G (thrown flash, stuns), C4 (plant + DET). Items: RATION (+LIFE), C.BOX
+// (hide), SCOPE (zoom), STIM (steady aim). Start kit + map pickups are per player; anything that changes guards / LIFE
+// goes through the host (sh w=, ng, c4p / c4d, heal) like every other combat event.
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
+import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
 import { TRAV, L1, L2, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
 
@@ -134,6 +139,24 @@ const GUN = { ammo: 12, cooldown: 0.5, range: 13, cone: 0.35, fpsCone: 0.14, noi
 const HP_MAX = 100;
 const FAMAS = { range: 12, minR: 1.4, aim: 0.5, burst: 3, rof: 0.085, cool: 0.85, coolRand: 0.7, dmg: 9, spread: 0.05,
   climbYaw: 0.035, climb: 0.05, moveSpread: 0.06, noise: 14, hitInv: 0, melee: 20, meleeR: 0.95, meleeInv: 1.1, turn: 9 };
+// PLAYER WEAPONS (key = what rides the wire as sh.w; sd = P-9 with the suppressor). noise = radius guards hear the shot.
+const WPN = {
+  p9:  { ammo: 'p9', cd: GUN.cooldown, range: GUN.range, spread0: GUN.spread0, bloom: GUN.bloom, bloomMax: GUN.bloomMax, noise: GUN.noise, kick: GUN.kickShake, wob: 1 },
+  sd:  { ammo: 'p9', cd: GUN.cooldown, range: GUN.range, spread0: GUN.spread0, bloom: GUN.bloom, bloomMax: GUN.bloomMax, noise: 3, kick: 0.08, wob: 0.8, quiet: true },
+  fr5: { ammo: 'fr5', cd: 0.4, burst: 3, rof: 0.09, range: 15, spread0: 0.03, bloom: 0.05, bloomMax: 0.32, noise: 16, kick: 0.12, wob: 0.6, rifle: true },
+  mkt: { ammo: 'mkt', cd: 1.1, range: 11, spread0: 0.012, bloom: 0.04, bloomMax: 0.18, noise: 2.5, kick: 0.05, wob: 0.5, quiet: true, tranq: true },
+};
+const TRANQ = { sleep: 30 };                                   // MK-T dart: guard sleeps this long (then wakes + investigates)
+const STUN = { range: 7, r: 5, fuse: 1.2, ko: 7, flight: 0.6 }; // stun grenade: throw distance, blast radius, fuse, stun time
+const C4 = { kill: 3.2, pr: 3, pdmg: 50, noise: 18, max: 12 };  // kill radius for guards, player damage radius / max dmg
+const RATION_HP = 40, STIM_T = 30;
+// map pickups (feet y from groundAt). n = rounds / count; re = respawns after `re` seconds (ammo), else once per mission
+const PICKUPS = [
+  { id: 'fr5', n: 30, x: -6.4, z: 3.5, lv: 3.2 }, { id: 'mkt', n: 6, x: -8, z: -7.8, lv: 3.2 }, { id: 'stun', n: 2, x: 8, z: 9, lv: 0, re: 45 },
+  { id: 'c4', n: 2, x: 11.25, z: 3.25, lv: 6.4 }, { id: 'scope', n: 1, x: -17.5, z: -12, lv: 6.4 }, { id: 'supp', n: 1, x: -4.25, z: -13, lv: 6.4 },
+  { id: 'ration', n: 1, x: 3, z: -2.9, lv: 3.2 }, { id: 'ration', n: 1, x: 14, z: 12, lv: 0, re: 60 }, { id: 'stim', n: 1, x: 10, z: -2.8, lv: 3.2 },
+  { id: 'p9', n: 12, x: 1, z: 9, lv: 0, re: 40, ammo: 1 }, { id: 'fr5', n: 30, x: 17, z: -5.5, lv: 3.2, re: 45, ammo: 1 },
+];
 
 // ---------------------------------------------------------------- params / state
 const qs = new URLSearchParams(location.search);
@@ -152,16 +175,25 @@ let peerConnected = false;
 // gunT = seconds the aim pose is held after a shot, shot = shot counter (recoil)
 // climbing: y = feet height, vy = fall speed, tr = active traversal move (see updateTrav), thud = hard-landing noise timer
 const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0,
-  td: null, eq: false, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0, y: 0, vy: 0, tr: null, thud: 0, fallFrom: 0, grabT: 0, bloom: 0, wob: 0, wobA: 0 };
+  td: null, eq: false, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0, y: 0, vy: 0, tr: null, thud: 0, fallFrom: 0, grabT: 0, bloom: 0, wob: 0, wobA: 0,
+  // gear: inv[id] = count (-1 = not carried; toggles 1), wpn = weapon in the weapon slot, itm = item in the item slot,
+  // sd / box / scope = suppressor fitted / hiding in the box / binoculars up, stimT = steady-hands timer, burst = FR-5 rounds left
+  inv: Object.fromEntries(Object.entries(ITEMS).map(([k, v]) => [k, v.start ?? -1])), wpn: 'p9', itm: 'ration', sd: false, box: false, scope: false, stimT: 0, burst: 0, burstT: 0 };
 // remote traversal: y, tk = move code ('' none), ti = spot / link index, tp = progress 0..1; ry = smoothed on-screen y
 // one remote record per slot (others[mySlot] is unused - that's `me`). on = connected (server roster).
 const others = SPAWNS.map((sp, s) => ({ s, on: false, x: sp.x, z: sp.z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: sp.x, rz: sp.z, ra: 0, nvx: 0, nvz: 0, pt: 0,
-  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
+  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, box: 0, w: 'p9', bxK: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
 const peers = () => others.filter((o) => o.on && o.s !== mySlot);
 const pOf = (s) => (s === mySlot ? me : others[s]);
 function resetLoadout() { me.td = null; me.eq = false; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0;
   for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; }
-  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; syncGunButton(); }
+  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; resetInv(); syncGunButton(); }
+function resetInv() {
+  for (const [id, it] of Object.entries(ITEMS)) me.inv[id] = it.start ?? -1;
+  me.wpn = 'p9'; me.itm = 'ration'; me.sd = me.box = me.scope = false; me.stimT = 0; me.burst = 0;
+  if (typeof resetPickups === 'function') resetPickups();
+  if (typeof closeInv === 'function') closeInv(true);
+}
 const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play', lastHp = HP_MAX, shake = 0, hurtT = 0;
@@ -170,10 +202,11 @@ function freshWorld() {
   return {
     // st: patrol | investigate | chase | search | held (being taken down, tdT = seconds into it) | dead
     guards: GUARDS.map(({ path: p, y, area }) => ({ x: p[0][0], z: p[0][1], y, area, a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
-      rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false })),
+      rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false, stun: 0, ko: 0 })), // stun = seconds out, ko: 1 stunned (grenade) / 2 asleep (tranq)
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
     ext: Array(NP).fill(false), inv: Array(NP).fill(0), finalT: 0, dead: -1, kills: 0, // dead: slot of the player who died (-1 = nobody)
     hp: Array(NP).fill(HP_MAX), hitInv: Array(NP).fill(0), dmg: Array(NP).fill(0), kb: '', // per slot: LIFE (host-authoritative), post-hit i-frames, damage taken
+    nades: [], c4: [], c4Id: 0, // host: live stun grenades { x, y, z, t, by }; planted C4 { id, x, y, z, by } (synced)
     co: null, coId: (Math.random() * 1e6) | 0, // co-op climb in progress (host-created): { id, k: boost|pull|rope, i, c: climber slot, h: helper slot, t, dur }
   };
 }
@@ -498,12 +531,12 @@ const tracers = Array.from({ length: 18 }, () => { // 18: room for a couple of g
 let tracerI = 0;
 const _mz = new THREE.Vector3();
 // ey = impact height (default: chest on a hit, muzzle height on a miss); rifle = guard FAMAS round (hotter orange tracer)
-function gunFx(mesh, ex, ez, hit, ey = null, rifle = false) {
+function gunFx(mesh, ex, ez, hit, ey = null, rifle = false, col = null) {
   const tr = tracers[tracerI++ % tracers.length];
   mesh.muzzleWorld(_mz);
   const y = ey ?? (hit ? 1.15 : _mz.y);
   const a = tr.line.geometry.attributes.position; a.setXYZ(0, _mz.x, _mz.y, _mz.z); a.setXYZ(1, ex, y, ez); a.needsUpdate = true;
-  tr.line.material.color.setHex(rifle ? 0xffb040 : 0xfff0a0);
+  tr.line.material.color.setHex(col ?? (rifle ? 0xffb040 : 0xfff0a0));
   tr.puff.position.set(ex, y, ez); tr.puff.material.color.setHex(hit ? 0x8a1010 : 0xd8d0b0); tr.t = 0.16;
 }
 function updateFx(dt) {
@@ -741,6 +774,25 @@ function rifleSound(vol = 1) {
   const src = actx.createBufferSource(), g = actx.createGain(); src.buffer = buf; g.gain.value = 0.3 * vol;
   src.connect(g); g.connect(actx.destination); src.start(); beep(110, 0.09, 'sine', 0.2 * vol);
 }
+// suppressed / tranq "pfft": tiny filtered puff + click
+function suppSound(vol = 1) {
+  if (!actx || vol < 0.03) return;
+  const n = actx.sampleRate * 0.07, buf = actx.createBuffer(1, n, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 5);
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain(); f.type = 'lowpass'; f.frequency.value = 900;
+  src.buffer = buf; g.gain.value = 0.22 * vol; src.connect(f); f.connect(g); g.connect(actx.destination); src.start(); beep(1800, 0.02, 'square', 0.03 * vol);
+}
+// explosion: long rumbling noise + sub thump (C4 = big, stun = sharp crack + ringing)
+function boomSound(k, vol = 1) {
+  if (!actx || vol < 0.03) return;
+  const len = k === 'c4' ? 0.9 : 0.35, n = actx.sampleRate * len, buf = actx.createBuffer(1, n, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, k === 'c4' ? 2 : 4);
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain(); f.type = 'lowpass'; f.frequency.value = k === 'c4' ? 700 : 3500;
+  src.buffer = buf; g.gain.value = (k === 'c4' ? 0.6 : 0.4) * vol; src.connect(f); f.connect(g); g.connect(actx.destination); src.start();
+  if (k === 'c4') beep(45, 0.6, 'sine', 0.35 * vol); else beep(3200, 0.5, 'sine', 0.025 * vol); // stun: ears ring
+}
+const pickupSound = () => { beep(660, 0.06, 'square', 0.06); setTimeout(() => beep(880, 0.06, 'square', 0.06), 70); setTimeout(() => beep(1320, 0.12, 'square', 0.06), 140); };
+const menuSound = (f = 980) => beep(f, 0.04, 'square', 0.05);
 const hurtSound = () => { beep(220, 0.08, 'sawtooth', 0.12); setTimeout(() => beep(150, 0.14, 'sawtooth', 0.1), 60); };
 const stabSound = () => { beep(140, 0.06, 'triangle', 0.12); setTimeout(() => beep(95, 0.09, 'triangle', 0.12), 70); };
 
@@ -748,7 +800,12 @@ const stabSound = () => { beep(140, 0.06, 'triangle', 0.12); setTimeout(() => be
 const input = { jx: 0, jz: 0, kRun: false, keys: new Set() };
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
+  if (role && (e.code === 'KeyI' || e.code === 'Tab')) { e.preventDefault(); if (!e.repeat) { unlockAudio(); invOpen ? closeInv() : openInv(); } return; }
+  if (invOpen) { e.preventDefault(); if (!e.repeat || /Arrow|Key[WASD]/.test(e.code)) invKey(e.code); return; } // menu eats the keys (no walking while it's up)
   input.keys.add(e.code);
+  if (/^Digit[1-5]$/.test(e.code) && !e.repeat) { const id = HOTKEYS[+e.code.slice(5) - 1]; unlockAudio(); if ((me.inv[id] ?? -1) >= 0) equipWeapon(id); else if (role && world.phase === 'play') toast('NO ' + ITEMS[id].name + ' YET', 700, '#ccc'); }
+  if (e.code === 'KeyQ' && !e.repeat) { unlockAudio(); useItem(me.itm); }
+  if (e.code === 'KeyT' && !e.repeat) { unlockAudio(); detonate(); }
   if (e.code === 'KeyC' || e.code === 'ControlLeft') toggleCrouch();
   if (e.code === 'KeyZ' || e.code === 'KeyX') toggleProne();
   if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) doInteract(); }
@@ -782,6 +839,10 @@ $('btnProne').addEventListener('pointerdown', (e) => { e.preventDefault(); unloc
 $('btnAct').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); doInteract(); });
 $('btnGun').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleGun(); });
 $('btnView').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleView(); });
+$('btnInv').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); invOpen ? closeInv() : openInv(); });
+$('btnDet').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); detonate(); });
+$('wpnBox').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); openInv('wpn'); });
+$('itemBox').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); if (me.inv[me.itm] > 0) useItem(me.itm); else openInv('item'); });
 // first-person toggle (local only): top-down <-> eye view. Tunnels still switch to first person on their own.
 function toggleView() {
   if (!role) return;
@@ -809,18 +870,20 @@ function toggleProne() {
   syncStanceButtons();
 }
 // pistol: G / GUN button draws or holsters it. Holstered = ACT can only take down / use, F does nothing (no accidental shots).
-function syncGunButton() { const b = $('btnGun'); if (!b) return; b.classList.toggle('on', me.eq); b.textContent = me.eq ? 'HOLSTER' : 'GUN'; }
+function syncGunButton() { const b = $('btnGun'); if (!b) return; b.classList.toggle('on', me.eq); const t = me.eq ? 'HOLSTER' : ITEMS[me.wpn].name; if (b.textContent !== t) b.textContent = t; }
 function toggleGun() {
   if (!role || world.phase !== 'play' || me.td) return;
-  me.eq = !me.eq;
+  if (me.box) toggleBox(false);
+  me.eq = !me.eq; me.burst = 0;
   if (me.eq) { me.cd = Math.max(me.cd, 0.25); beep(520, 0.03, 'square', 0.05); setTimeout(() => beep(780, 0.03, 'square', 0.05), 60); } // draw: slide click, brief settle
   else { me.gunT = 0; beep(300, 0.05, 'triangle', 0.06); }
-  toast(me.eq ? 'P-9 DRAWN' : 'P-9 HOLSTERED', 600, me.eq ? '#ffd27f' : '#9fd9b0');
+  const nm = ITEMS[me.wpn].name + (me.wpn === 'p9' && me.sd ? ' SD' : '');
+  toast(me.eq ? (isGun(me.wpn) ? nm + ' DRAWN' : nm + ' READY') : nm + ' HOLSTERED', 600, me.eq ? '#ffd27f' : '#9fd9b0');
   syncGunButton();
   if (role === 'guest') sendPlayer(); else if (peerConnected) sendState();
 }
 let hintT = 0;
-function holsterHint() { const now = performance.now(); if (now - hintT < 1500) return; hintT = now; toast(isTouch ? 'Holstered - tap GUN to draw' : 'Holstered - G to draw', 900, '#ccc'); }
+function holsterHint() { const now = performance.now(); if (now - hintT < 1500) return; hintT = now; toast(isTouch ? 'Holstered - tap ' + ITEMS[me.wpn].name + ' to draw' : 'Holstered - G to draw', 900, '#ccc'); }
 function flash(el) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 180); }
 // ACT priority: takedown (only from behind) > door switch > climb / co-op / grapple (traversal) > fire handgun (only if drawn)
 // While mid-climb ACT = let go of a ladder / stand up from a boost kneel; F never fires while climbing.
@@ -831,12 +894,13 @@ function actMode() {
   if (takedownTarget(me) >= 0) return 'td';
   if (nearSwitch()) return 'use';
   curTm = travMode(); if (curTm) return curTm.m;
-  return me.eq ? 'fire' : 'none';
+  return me.box ? 'unbox' : me.eq ? 'fire' : 'none';
 }
 function doInteract() {
   if (!role || world.phase !== 'play' || me.td) return;
   flash($('btnAct'));
   if (me.tr) { trAct(); return; }
+  if (me.box) { toggleBox(false); return; } // ACT = climb out of the box first
   const gi = takedownTarget(me);
   if (gi >= 0) { startTakedown(gi); return; }
   if (nearSwitch()) { beep(660, 0.08); if (role === 'host') armSwitch(0); else net.relay({ t: 'i' }); return; }
@@ -854,7 +918,7 @@ function takedownTarget(p, range = TD.range, behind = TD.behind) {
     if (!alive(g) || Math.abs((p.y || 0) - (g.y || 0)) > 0.3) return; // same floor only (ground or his deck)
     const dx = p.x - g.x, dz = p.z - g.z, d = Math.hypot(dx, dz);
     if (d > range || d >= bd) return;
-    if (Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < behind) return; // in front of / beside him -> no
+    if (!g.ko && Math.abs(angDiff(Math.atan2(dz, dx), g.a)) < behind) return; // in front of / beside him -> no (KO'd guard: any side)
     if (!lineOfSight(g, { x: p.x, z: p.z, y: p.y || 0, c: true })) return; // nothing in between (crates count)
     best = i; bd = d;
   });
@@ -872,72 +936,235 @@ function startTakedown(gi) {
 function hostTakedown(gi, pidx) {
   const g = world.guards[gi];
   if (!g || !alive(g) || world.phase !== 'play') return false;
-  g.st = 'held'; g.by = pidx; g.tdT = 0; g.meter = 0;
+  g.st = 'held'; g.by = pidx; g.tdT = 0; g.meter = 0; g.stun = 0; g.ko = 0;
   if (peerConnected) sendState();
   return true;
 }
 // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
-function autoTarget(p = me) {
+function autoTarget(p = me, tranq = false) {
   const cone = p.tun >= 0 || (p === me && fpsOn) ? GUN.fpsCone : GUN.cone;
   const px = p.x, pz = p.z, pa = p.a;
   let tgt = -1, best = 1e9;
   world.guards.forEach((g, i) => {
-    if (g.st === 'dead') return;
+    if (g.st === 'dead' || (tranq && g.ko === 2)) return; // darts skip guards already asleep
     const gx = g.rx ?? g.x, gz = g.rz ?? g.z; // guest: use the smoothed on-screen guard
     const dx = gx - px, dz = gz - pz, d = Math.hypot(dx, dz);
-    if (d > GUN.range) return;
+    if (d > GUN.range + 2) return;
     const off = Math.abs(angDiff(Math.atan2(dz, dx), pa));
     if (off > cone && d > 1.0) return;
     if (!clearShot(px, pz, gx, gz, p.y || 0, g.y || 0)) return;
-    const score = d + off * 8; if (score < best) { best = score; tgt = i; }
+    const score = d + off * 8 + (g.ko ? 4 : 0); if (score < best) { best = score; tgt = i; }
   });
   return tgt;
 }
+// ---------------------------------------------------------------- GEAR: weapons + items (see gear.js for the table / art)
+const isGun = (id) => GUN_IDS.includes(id);
+const wkey = () => (me.wpn === 'p9' && me.sd ? 'sd' : me.wpn); // what the current gun is on the wire (sd = suppressed P-9)
+const HOTKEYS = ['p9', 'fr5', 'mkt', 'stun', 'c4']; // 1-5
+const ownedWeapons = () => GRID.filter((id) => id && ITEMS[id].kind === 'wpn' && me.inv[id] >= 0);
+const myCharges = () => (world.c4 || []).filter((c) => c.by === mySlot).length;
+const canAct = () => role && world.phase === 'play' && !me.td;
+// put a weapon in the weapon slot and draw it (from the menu / 1-5 / pickup)
+function equipWeapon(id, draw = true) {
+  if (!canAct() || !ITEMS[id] || ITEMS[id].kind !== 'wpn' || me.inv[id] < 0) return;
+  const was = me.wpn; me.wpn = id; me.burst = 0;
+  if (draw) { if (me.box) toggleBox(false); me.eq = true; me.cd = Math.max(me.cd, 0.3); }
+  beep(520, 0.03, 'square', 0.05); setTimeout(() => beep(780, 0.03, 'square', 0.05), 60);
+  const nm = ITEMS[id].name + (id === 'p9' && me.sd ? ' SD' : '');
+  if (was !== id || draw) toast(isGun(id) ? nm + ' EQUIPPED' : nm + ' READY - ' + (isTouch ? 'FIRE' : 'F') + (id === 'c4' ? ' plants' : ' throws'), 900, '#ffd27f');
+  syncGunButton(); netNow();
+}
+const netNow = () => { if (role === 'guest') sendPlayer(); else if (peerConnected) sendState(); };
+// use / toggle an item (menu USE, Q, tap the item box)
+function useItem(id) {
+  if (!canAct() || !id || !ITEMS[id] || ITEMS[id].kind !== 'item') return;
+  if (me.inv[id] <= 0) { toast('NO ' + ITEMS[id].name, 800, '#ccc'); beep(150, 0.04, 'square', 0.05); return; }
+  me.itm = id;
+  if (id === 'ration') {
+    const hp = world.hp[mySlot] ?? HP_MAX;
+    if (hp >= HP_MAX) { toast('LIFE IS FULL', 800, '#9fd9b0'); return; }
+    if (hp <= 0) return;
+    me.inv.ration--; healFx();
+    toast('RATION  +' + Math.min(RATION_HP, HP_MAX - hp) + ' LIFE', 1100, '#7fff9f');
+    if (role === 'host') hostHeal(mySlot); else net.relay({ t: 'heal' });
+  } else if (id === 'stim') {
+    me.inv.stim--; me.stimT = STIM_T; me.bloom = 0; me.wob = 0;
+    beep(440, 0.08, 'triangle', 0.08); setTimeout(() => beep(660, 0.12, 'triangle', 0.08), 90);
+    toast('STIM - steady hands ' + STIM_T + 's', 1100, '#ff9a9a');
+  } else if (id === 'box') toggleBox();
+  else if (id === 'supp') {
+    me.sd = !me.sd; menuSound(me.sd ? 700 : 420);
+    toast(me.sd ? 'SUPP. ON - P-9 is quiet' : 'SUPP. OFF', 900, '#ffd27f');
+  } else if (id === 'scope') {
+    me.scope = !me.scope; menuSound(me.scope ? 1200 : 600);
+    toast(me.scope ? 'SCOPE ON' : 'SCOPE OFF', 700, '#9fd9b0');
+  }
+  netNow();
+}
+// cardboard box: hide inside. Still = invisible to guards (unless ALERT and nose-to-box), moving = very low profile.
+function toggleBox(on = !me.box) {
+  if (on) {
+    if (me.inv.box <= 0) return;
+    if (me.tr || me.td || me.tun >= 0) { toast('Can\'t use the box here', 800, '#ccc'); return; }
+    me.box = true; me.eq = false; me.burst = 0; me.p = false; me.c = false; me.gunT = 0; me.itm = 'box';
+    beep(200, 0.08, 'triangle', 0.08); toast('C.BOX - stay still and they walk past', 1200, '#d8b080');
+  } else { if (!me.box) return; me.box = false; beep(260, 0.06, 'triangle', 0.07); toast('OUT OF THE BOX', 700, '#d8b080'); }
+  syncStanceButtons(); syncGunButton(); netNow();
+}
+// FIRE: guns shoot, STUN.G throws, C4 plants. Only while the weapon is drawn (G / weapon button).
 function fireGun() {
-  if (!me.eq || me.cd > 0 || me.tr) return;
-  if (me.ammo <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
-  me.ammo--; me.cd = GUN.cooldown; me.gunT = GUN.drawTime; me.shot++;
-  let tgt = autoTarget();
+  if (!me.eq || me.cd > 0 || me.tr || me.box || me.burst > 0) return;
+  const id = me.wpn;
+  if (id === 'stun') return throwNade();
+  if (id === 'c4') return plantC4();
+  const W = WPN[wkey()];
+  if ((me.inv[W.ammo] || 0) <= 0) { toast('NO AMMO', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
+  if (W.burst) { me.burst = W.burst; me.burstT = 0; me.cd = W.cd + W.rof * W.burst; stepBurst(0); return; }
+  me.cd = W.cd; shootRound(wkey());
+}
+function stepBurst(dt) { // FR-5: the rest of a 3-round burst comes out rof apart (stops if you holster / swap / run dry)
+  if (me.burst <= 0) return;
+  me.burstT -= dt;
+  while (me.burst > 0 && me.burstT <= 0) {
+    if (me.wpn !== 'fr5' || !me.eq || me.tr || me.td || me.box || me.inv.fr5 <= 0 || world.phase !== 'play') { me.burst = 0; break; }
+    shootRound('fr5'); me.burst--; me.burstT += WPN.fr5.rof;
+  }
+}
+function shootRound(w) {
+  const W = WPN[w];
+  me.inv[W.ammo]--; me.gunT = GUN.drawTime; me.shot++;
+  let tgt = autoTarget(me, !!W.tranq);
+  const steady = me.stimT > 0;
   // recoil bloom: the round leaves at aim + random throw; it only hits if that line still crosses the guard
-  const spread = GUN.spread0 + me.bloom + (me.moving ? GUN.moveSpread : 0), err = (Math.random() * 2 - 1) * spread;
+  const spread = W.spread0 + me.bloom + (me.moving ? GUN.moveSpread : 0) * (steady ? 0.5 : 1), err = (Math.random() * 2 - 1) * spread;
   let end, shotA = me.a;
   if (tgt >= 0) {
     const g = world.guards[tgt], gx = g.rx ?? g.x, gz = g.rz ?? g.z, d = Math.hypot(gx - me.x, gz - me.z);
-    if (me.tun < 0 && !fpsOn) me.a = Math.atan2(gz - me.z, gx - me.x);
-    shotA = Math.atan2(gz - me.z, gx - me.x) + err;
-    if (Math.abs(err) < Math.atan2(GUN.bodyW, Math.max(0.3, d))) end = { x: g.x, z: g.z };
-    else tgt = -1; // recoil threw it wide
-  } else shotA = me.a + err;
-  if (!end) end = rayEnd(me.x, me.z, shotA, GUN.range);
-  me.bloom = Math.min(GUN.bloomMax, me.bloom + GUN.bloom);
-  me.wob = GUN.wobble; me.wobA = Math.random() * 6.28; shake = Math.max(shake, GUN.kickShake);
+    if (d > W.range) tgt = -1;
+    else {
+      if (me.tun < 0 && !fpsOn) me.a = Math.atan2(gz - me.z, gx - me.x);
+      shotA = Math.atan2(gz - me.z, gx - me.x) + err;
+      if (Math.abs(err) < Math.atan2(GUN.bodyW, Math.max(0.3, d))) end = { x: g.x, z: g.z };
+      else tgt = -1; // recoil threw it wide
+    }
+  }
+  if (!end) { if (tgt < 0 && shotA === me.a) shotA = me.a + err; end = rayEnd(me.x, me.z, shotA, W.range); }
+  me.bloom = Math.min(W.bloomMax, me.bloom + W.bloom * (steady ? 0.35 : 1));
+  me.wob = steady ? 0 : W.wob; me.wobA = Math.random() * 6.28; shake = Math.max(shake, W.kick);
   meMesh.g.rotation.y = -me.a;
-  gunFx(meMesh, end.x, end.z, tgt >= 0, tgt >= 0 ? GUARDS[tgt].y + 1.15 : null); gunSound(1);
-  if (navigator.vibrate) navigator.vibrate(30);
-  const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), y: r2(me.y), ex: r2(end.x), ez: r2(end.z), by: mySlot };
+  gunFx(meMesh, end.x, end.z, tgt >= 0, tgt >= 0 ? GUARDS[tgt].y + 1.15 : null, !!W.rifle, W.tranq ? 0x9fe0ff : null);
+  W.rifle ? rifleSound(1) : W.quiet ? suppSound(1) : gunSound(1);
+  if (navigator.vibrate) navigator.vibrate(W.quiet ? 15 : 30);
+  const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), y: r2(me.y), ex: r2(end.x), ez: r2(end.z), by: mySlot, w };
   if (role === 'host') hostShot(msg, 0);
   net.relay(msg); // host: fx for every guest. guest: hit request + fx for the host (host re-broadcasts it to the others)
 }
-// host: apply a shot (from either player). A hit drops the guard; the bang pulls every live guard in earshot.
+// host: apply a shot (from any player). Bullets drop the guard; an MK-T dart puts him to sleep. The bang (if any) pulls
+// every live guard inside that weapon's noise radius.
 function hostShot(m, pidx) {
   if (world.phase !== 'play') return;
-  const g = world.guards[m.g];
-  if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < GUN.range + 2 && clearShot(m.x, m.z, g.x, g.z, m.y || 0, g.y || 0)) {
-    g.st = 'dead'; g.by = pidx; world.kills++;
+  const W = WPN[m.w] || WPN.p9, g = world.guards[m.g];
+  if (g && g.st !== 'dead' && Math.hypot(g.x - m.x, g.z - m.z) < W.range + 2 && clearShot(m.x, m.z, g.x, g.z, m.y || 0, g.y || 0)) {
+    if (W.tranq) { if (g.st !== 'held') koGuard(g, TRANQ.sleep, 2); }
+    else { g.st = 'dead'; g.by = pidx; g.stun = 0; g.ko = 0; world.kills++; }
   }
+  hearBang(m.x, m.z, W.noise);
+  if (peerConnected) sendState();
+}
+function hearBang(x, z, r) {
   for (const o of world.guards) {
-    if (!alive(o) || Math.hypot(o.x - m.x, o.z - m.z) > GUN.noise) continue;
+    if (!alive(o) || o.stun > 0 || Math.hypot(o.x - x, o.z - z) > r) continue;
     o.meter = Math.max(o.meter, 0.5);
-    if (world.alert === 2) { o.st = 'chase'; o.tx = m.x; o.tz = m.z; o.give = 8; }
-    else { o.st = 'investigate'; o.tx = m.x; o.tz = m.z; o.wait = 3.5; o.give = 9; }
+    if (world.alert === 2) { o.st = 'chase'; o.tx = x; o.tz = z; o.give = 8; }
+    else { o.st = 'investigate'; o.tx = x; o.tz = z; o.wait = 3.5; o.give = 9; }
   }
+}
+// knock a guard out (host): ko 1 = stunned (grenade), 2 = asleep (dart). Blind, deaf, frozen until stun runs out.
+function koGuard(g, t, ko) {
+  if (!alive(g)) return;
+  g.stun = Math.max(g.stun || 0, t); g.ko = Math.max(g.ko || 0, ko); g.meter = 0; g.shooting = false; g.bl = 0; g.aimT = 0;
+  if (g.st === 'chase' || g.st === 'search') { g.st = 'investigate'; g.tx = g.x; g.tz = g.z; g.wait = 3; g.give = 4; }
+}
+// STUN.G: lands ~7 m ahead (short of walls), host runs the fuse, everyone sees the arc + flash
+function throwNade() {
+  if ((me.inv.stun || 0) <= 0) { toast('NO STUN.G', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
+  me.inv.stun--; me.cd = 0.9; me.shot++; me.gunT = 0.6;
+  const e = rayEnd(me.x, me.z, me.a, STUN.range), back = 0.4, d = Math.max(0.5, Math.hypot(e.x - me.x, e.z - me.z) - back);
+  const tx = me.x + Math.cos(me.a) * d, tz = me.z + Math.sin(me.a) * d, ty = groundAt(tx, tz, me.y + 0.3);
+  const m = { t: 'ng', x: r2(me.x), y: r2(me.y + 1.4), z: r2(me.z), tx: r2(tx), ty: r2(ty), tz: r2(tz) };
+  beep(300, 0.12, 'triangle', 0.05); toast('STUN.G OUT', 600, '#fff');
+  if (role === 'host') hostNade(m, mySlot); else { net.relay(m); nadeFx(Object.assign({}, m, { by: mySlot })); }
+  if (me.inv.stun <= 0) { me.eq = false; syncGunButton(); }
+}
+function hostNade(m, by) {
+  if (world.phase !== 'play') return;
+  world.nades.push({ x: m.tx, y: m.ty, z: m.tz, t: STUN.fuse, by });
+  const fx = Object.assign({}, m, { t: 'ngx', by, from: undefined }); nadeFx(fx);
+  if (peerConnected) net.relay(fx);
+}
+function nadeBlast(n) { // host
+  for (const g of world.guards) {
+    if (!alive(g)) continue;
+    const gy = g.y || 0, d = Math.hypot(g.x - n.x, g.z - n.z, (gy - n.y) * 0.8);
+    if (d < STUN.r && clearShot(n.x, n.z, g.x, g.z, n.y, gy)) { koGuard(g, STUN.ko, 1); g.tx = n.x; g.tz = n.z; }
+  }
+  const fx = { t: 'bx', k: 'stun', x: r2(n.x), y: r2(n.y), z: r2(n.z) }; blastFx(fx);
+  if (peerConnected) { net.relay(fx); sendState(); }
+}
+// C4: FIRE plants one at your feet; DET (T / DET button / menu) sets off every charge you planted
+function plantC4() {
+  if ((me.inv.c4 || 0) <= 0) { toast('NO C4', 700, '#ccc'); beep(150, 0.04, 'square', 0.05); me.cd = 0.3; return; }
+  if (me.tun >= 0) { toast('No room to plant here', 800, '#ccc'); me.cd = 0.3; return; }
+  me.inv.c4--; me.cd = 0.7; me.gunT = 0;
+  beep(1400, 0.03, 'square', 0.05); setTimeout(() => beep(1400, 0.03, 'square', 0.05), 120);
+  toast('C4 PLANTED - ' + (isTouch ? 'DET' : 'T') + ' to detonate', 1300, '#ffb36b');
+  const m = { t: 'c4p', x: r2(me.x + Math.cos(me.a) * 0.3), y: r2(me.y), z: r2(me.z + Math.sin(me.a) * 0.3) };
+  if (role === 'host') hostC4(m, mySlot); else { net.relay(m); world.c4 = (world.c4 || []).concat([{ id: -1, x: m.x, y: m.y, z: m.z, by: mySlot }]); } // show it right away
+  if (me.inv.c4 <= 0) { me.eq = false; syncGunButton(); }
+}
+function hostC4(m, by) {
+  if (world.phase !== 'play') return;
+  world.c4.push({ id: ++world.c4Id, x: m.x, y: m.y, z: m.z, by });
+  if (world.c4.length > C4.max) world.c4.shift();
+  if (peerConnected) sendState();
+}
+function detonate() {
+  if (!canAct()) return;
+  if (!myCharges()) { if (me.wpn === 'c4' || (me.inv.c4 ?? -1) >= 0) toast('No C4 planted', 700, '#ccc'); return; }
+  beep(1800, 0.05, 'square', 0.05);
+  if (role === 'host') hostDet(mySlot); else net.relay({ t: 'c4d' });
+}
+function hostDet(by) {
+  if (world.phase !== 'play') return;
+  const mine = world.c4.filter((c) => c.by === by); world.c4 = world.c4.filter((c) => c.by !== by);
+  for (const c of mine) {
+    for (const g of world.guards) {
+      if (g.st === 'dead') continue;
+      const gy = g.y || 0; if (Math.abs(gy - c.y) > 1.8) continue;
+      if (Math.hypot(g.x - c.x, g.z - c.z) < C4.kill && clearShot(c.x, c.z, g.x, g.z, c.y, gy)) { g.st = 'dead'; g.by = by; g.stun = 0; g.ko = 0; world.kills++; }
+    }
+    hearBang(c.x, c.z, C4.noise);
+    for (const p of players()) {
+      if (Math.abs((p.y || 0) - c.y) > 1.8 || p.tun >= 0) continue;
+      const d = Math.hypot(p.x - c.x, p.z - c.z);
+      if (d < C4.pr && clearShot(c.x, c.z, p.x, p.z, c.y, p.y || 0)) { world.hitInv[p.idx] = 0; damagePlayer(p.idx, Math.round(C4.pdmg * (1 - d / C4.pr)) + 5, 'c4'); }
+    }
+    const fx = { t: 'bx', k: 'c4', x: r2(c.x), y: r2(c.y), z: r2(c.z) }; blastFx(fx); if (peerConnected) net.relay(fx);
+  }
+  if (peerConnected) sendState();
+}
+function hostHeal(idx) {
+  if (world.phase !== 'play' || world.hp[idx] <= 0) return;
+  world.hp[idx] = Math.min(HP_MAX, world.hp[idx] + RATION_HP);
   if (peerConnected) sendState();
 }
 
 // ---------------------------------------------------------------- local movement (both roles)
 function updateLocal(dt) {
-  me.cd = Math.max(0, me.cd - dt); me.gunT = Math.max(0, me.gunT - dt);
-  me.bloom = Math.max(0, me.bloom - dt * (me.gunT > GUN.drawTime - 1.2 ? GUN.bloomDecay : GUN.bloomRest)); me.wob = Math.max(0, me.wob - dt * 1.8);
+  me.cd = Math.max(0, me.cd - dt); me.gunT = Math.max(0, me.gunT - dt); me.stimT = Math.max(0, me.stimT - dt);
+  me.bloom = Math.max(0, me.bloom - dt * (me.gunT > GUN.drawTime - 1.2 ? GUN.bloomDecay : GUN.bloomRest) * (me.stimT > 0 ? 2 : 1)); me.wob = Math.max(0, me.wob - dt * 1.8);
+  stepBurst(dt);
+  if (world.phase === 'play') updatePickups(dt);
   if (me.td) { // locked into the takedown animation
     const before = me.td.t; me.td.t += dt; stopMe(); me.run = false;
     for (const hit of [0.4, 0.64]) if (before < hit * TD.time && me.td.t >= hit * TD.time) stabSound();
@@ -945,8 +1172,8 @@ function updateLocal(dt) {
     $('stance').textContent = 'TAKEDOWN';
     return;
   }
-  let jx = input.jx, jz = input.jz, kb = false;
-  const k = input.keys;
+  let jx = invOpen ? 0 : input.jx, jz = invOpen ? 0 : input.jz, kb = false;
+  const k = invOpen ? new Set() : input.keys; // gear menu up: hands off the stick
   if (k.has('KeyA') || k.has('ArrowLeft')) { jx -= 1; kb = true; }
   if (k.has('KeyD') || k.has('ArrowRight')) { jx += 1; kb = true; }
   if (k.has('KeyW') || k.has('ArrowUp')) { jz -= 1; kb = true; }
@@ -957,7 +1184,8 @@ function updateLocal(dt) {
   me.thud = Math.max(0, me.thud - dt);
   if (me.tr && !play) me.tr = null; // mission ended mid-climb: let go
   if (me.tr) { updateTrav(dt, jx, jz, mag); me.tun = -1; $('stance').textContent = me.tr ? travStance() : 'STILL'; return; }
-  const baseSp = () => (me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
+  if (me.box) me.run = false;
+  const baseSp = () => (me.box ? SPEED.crouch * 0.9 : me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
   // desired velocity (tvx, tvz) from input; actual velocity me.vx/me.vz chases it with limited accel = momentum
   let tvx = 0, tvz = 0, wantDir = null;
   if (me.tun >= 0 || fpsOn) {
@@ -967,7 +1195,7 @@ function updateLocal(dt) {
     if (fpsLatch && mag < 0.15) fpsLatch = false;
     const fwd = fpsLatch ? mag : -jz, turn = fpsLatch ? 0 : jx;
     if (play) me.a += turn * 2.6 * dt;
-    me.run = me.tun < 0 && fwd > 0.15 && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : fwd > 0.92); // can run outside tunnels
+    me.run = me.tun < 0 && fwd > 0.15 && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : fwd > 0.92); // can run outside tunnels
     if (play && Math.abs(fwd) > 0.15) {
       const sp = baseSp() * (fwd < 0 ? 0.6 : 1) * Math.sign(fwd);
       tvx = Math.cos(me.a) * sp; tvz = Math.sin(me.a) * sp;
@@ -977,7 +1205,7 @@ function updateLocal(dt) {
     }
   } else {
     const wants = mag > 0.15 && play;
-    me.run = wants && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
+    me.run = wants && !me.c && !me.box && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : mag > 0.92);
     if (wants) { const sp = baseSp(); tvx = (jx / mag) * sp; tvz = (jz / mag) * sp; wantDir = Math.atan2(jz, jx); }
   }
   // accelerate toward the target velocity. Speeding up uses accel, slowing down uses (slightly stronger) decel;
@@ -1012,7 +1240,7 @@ function updateLocal(dt) {
     if (me.y <= gnd) { me.y = gnd; me.vy = 0; landed(me.fallFrom - gnd); }
   } else { me.y = gnd; me.vy = 0; }
   // auto-grab: keep pushing into a ladder / drainpipe from its foot for a moment = climb on (ACT does it instantly)
-  if (play && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p) {
+  if (play && me.vy === 0 && wantDir !== null && me.tun < 0 && !me.p && !me.box) {
     const ci = CLIMBS.findIndex((c) => Math.abs(me.y - c.y0) < 0.05 && hz(me, c) < 0.75 && Math.abs(angDiff(c.a, wantDir)) < 0.6);
     me.grabT = ci >= 0 ? me.grabT + dt : 0;
     if (me.grabT > 0.25) { me.grabT = 0; startTrav({ m: 'climb', i: ci }); return; }
@@ -1021,16 +1249,16 @@ function updateLocal(dt) {
   const was = me.tun;
   me.tun = tunAt(me.x, me.z, me.y, was >= 0 ? 0 : 0.35);
   if (me.tun >= 0 && was < 0) {
-    fpsLatch = me.moving;
+    fpsLatch = me.moving; if (me.box) toggleBox(false);
     if (!me.c) { me.c = true; syncStanceButtons(); }
     toast(TUNNELS[me.tun].name, 1100, '#ffd27f');
   }
-  $('stance').textContent = (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
+  $('stance').textContent = me.box ? (me.moving ? 'C.BOX (moving - suspicious)' : 'C.BOX (still - hidden)') + (me.y > 0.5 ? ' · HIGH' : '') : (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
     + (me.tun >= 0 ? ' · TUNNEL' : fpsOn ? ' · 1ST PERSON' : '') + (me.y > 0.5 ? ' · HIGH' : '');
 }
 let fpsLatch = false;
 // a standing drop from high up thuds (guards hear it); crouched you hang-drop silently
-const noiseOf = (p) => (p.thud > 0 ? TRAV.landNoise : !p.moving ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
+const noiseOf = (p) => (p.thud > 0 ? TRAV.landNoise : !p.moving || p.box ? 0 : p.run && Math.hypot(p.vx || 0, p.vz || 0) > SPEED.walk + 0.4 ? NOISE.run : p.c ? 0 : NOISE.walk);
 
 // ---------------------------------------------------------------- vertical traversal (climb / mantle / grapple / co-op)
 // me.tr = { k, i, t, ... }. k is sent on the wire:
@@ -1415,8 +1643,8 @@ function poseFor(tk, ti, tp, y) {
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
   const low = (tk) => tk === 'kn' || tk === 'lf' || tk === 'pl';
-  const list = [{ x: me.x, z: me.z, y: me.y, c: me.c || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: mySlot, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
-  for (const o of peers()) list.push({ x: o.x, z: o.z, y: o.y, c: o.c || low(o.tk), p: o.p, tun: tunAt(o.x, o.z, o.y), noise: o.noise, idx: o.s, rope: ON_LINE(o.tk), v: Math.hypot(o.nvx, o.nvz) });
+  const list = [{ x: me.x, z: me.z, y: me.y, box: me.box, c: me.c || me.box || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: mySlot, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
+  for (const o of peers()) list.push({ x: o.x, z: o.z, y: o.y, box: !!o.box, c: o.c || !!o.box || low(o.tk), p: o.p, tun: tunAt(o.x, o.z, o.y), noise: o.noise, idx: o.s, rope: ON_LINE(o.tk), v: Math.hypot(o.nvx, o.nvz) });
   return list;
 }
 function armSwitch(pi) {
@@ -1430,7 +1658,7 @@ function armSwitch(pi) {
 function triggerAlert(p) {
   if (world.alert < 2) { world.alerts++; }
   world.alert = 2; world.alertT = ALERT_TIME;
-  for (const g of world.guards) if (alive(g)) { g.st = 'chase'; g.tx = p.x; g.tz = p.z; g.give = 8; }
+  for (const g of world.guards) if (alive(g) && !(g.stun > 0)) { g.st = 'chase'; g.tx = p.x; g.tz = p.z; g.give = 8; }
 }
 // DAMAGE (host-authoritative). Being spotted no longer ends anything: LIFE reaching 0 = KIA = GAME OVER for both
 // players (co-op). Host decides; hp + phase 'over' ride every state packet, and a hit pushes one immediately.
@@ -1452,6 +1680,7 @@ function guardGun(g, gi, ps, dt) {
   if (g.st === 'chase' && world.alert === 2) for (const p of ps) {
     if (world.inv[p.idx] > 0 || p.tun >= 0 || world.hp[p.idx] <= 0) continue;
     const d = Math.hypot(p.x - g.x, p.z - g.z);
+    if (p.box && p.v < 0.35 && d > 1.6) continue; // a still box is just a box
     if (d > F.range || d < F.minR || d >= td || !lineOfSight(g, p)) continue;
     tgt = p; td = d;
   }
@@ -1501,6 +1730,8 @@ function hostUpdate(dt) {
   world.hitInv = world.hitInv.map((v) => Math.max(0, v - dt));
   world.sw = world.sw.map((v) => Math.max(0, v - dt));
   if (world.co) { world.co.t += dt; if (world.co.t > world.co.dur + 0.4) world.co = null; } // co-op climb clock
+  for (const n of world.nades) { n.t -= dt; if (n.t <= 0) nadeBlast(n); }
+  world.nades = world.nades.filter((n) => n.t > 0);
   const ps = players();
   let anySeen = false;
   for (const g of world.guards) {
@@ -1510,12 +1741,18 @@ function hostUpdate(dt) {
       if (g.tdT >= TD.time) { g.st = 'dead'; world.kills++; }
       continue;
     }
+    if (g.stun > 0) { // knocked out (stun flash / tranq dart): blind, deaf, frozen. Wakes up confused -> investigates
+      g.stun -= dt; g.shooting = false; g.bl = 0; g.aimT = 0; g.meter = 0;
+      if (g.stun <= 0) { g.stun = 0; g.ko = 0; g.st = 'investigate'; g.wait = 4; g.give = 6; g.tx = g.tx || g.x; g.tz = g.tz || g.z; }
+      continue;
+    }
     // --- sight
     // (3D for anyone off the ground: roofs / gantry / ladders / ropes are in view if inside his vertical cone + not occluded)
     let seen = null, seenD = 1e9, seenRange = 1, seenUp = 0;
     for (const p of ps) {
       if (world.inv[p.idx] > 0 || p.tun >= 0) continue; // nobody sees into the crawlspaces
       const v = guardSees(g, p);
+      if (v && p.box && p.v < 0.35 && !(world.alert === 2 && v.d < 1.6)) continue; // a still cardboard box is just a box
       if (v && v.d < seenD) { seen = p; seenD = v.d; seenRange = v.range; seenUp = v.up; }
     }
     const offLvl = seen && Math.abs((seen.y || 0) - (g.y || 0)) > 0.3;
@@ -1524,7 +1761,7 @@ function hostUpdate(dt) {
       anySeen = true;
       // looking up = slower to be sure of what he saw (and calm guards aren't scanning rooftops)
       const upK = offLvl ? (1 - SIGHT_V.slowUp * seenUp) * (world.alert === 0 ? SIGHT_V.calmUp : 1) : 1;
-      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.p ? 0.35 : seen.c ? 0.6 : 1) * upK;
+      const rate = (world.alert === 2 ? 6 : world.alert === 1 ? 2.2 : 1.3) * (1 + 2 * (1 - seenD / seenRange)) * (seen.box ? 0.5 : seen.p ? 0.35 : seen.c ? 0.6 : 1) * upK;
       g.meter = Math.min(1, g.meter + rate * dt);
       if (g.meter >= 1) { triggerAlert(seen); }
       if (world.alert === 2) { g.st = 'chase'; g.tx = seen.x; g.tz = seen.z; g.give = 8; world.alertT = ALERT_TIME; }
@@ -1532,7 +1769,7 @@ function hostUpdate(dt) {
     } else g.meter = Math.max(0, g.meter - 0.3 * dt);
     // --- hearing
     if (g.st === 'patrol' || g.st === 'investigate' || g.st === 'search') {
-      for (const p of ps) if (p.noise > 0 && Math.hypot(p.x - g.x, p.z - g.z, (p.y || 0) - (g.y || 0)) < p.noise) {
+      for (const p of ps) if (p.noise > 0 && g.stun <= 0 && Math.hypot(p.x - g.x, p.z - g.z, (p.y || 0) - (g.y || 0)) < p.noise) {
         g.st = 'investigate'; g.tx = p.x; g.tz = p.z; g.wait = 3; g.give = 7; g.meter = Math.max(g.meter, 0.35);
       }
     }
@@ -1564,13 +1801,13 @@ function hostUpdate(dt) {
     // --- FAMAS (ALERT chase with line of sight)
     guardGun(g, world.guards.indexOf(g), ps, dt);
     // --- melee: a chasing guard that reaches you clubs you with the rifle (damage + i-frames; no more instant "caught")
-    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (world.inv[p.idx] <= 0 && p.tun < 0 && Math.abs((p.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < FAMAS.meleeR) {
+    if (world.alert === 2 && world.phase === 'play') for (const p of ps) if (!(p.box && p.v < 0.35) && world.inv[p.idx] <= 0 && p.tun < 0 && Math.abs((p.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < FAMAS.meleeR) {
       if (damagePlayer(p.idx, FAMAS.melee, 'melee')) { const gm = guardMeshes[world.guards.indexOf(g)]; if (gm) gm.shot = (gm.shot || 0) + 1; }
     }
     if (world.phase !== 'play') return;
   }
   // --- alert phases
-  if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { if (alive(g)) { g.st = 'patrol'; g.meter = 0; } }); } }
+  if (world.alert === 2 && !anySeen) { world.alertT -= dt; if (world.alertT <= 0) { world.alert = 1; world.cautionT = CAUTION_TIME; world.guards.forEach((g) => { if (alive(g) && !(g.stun > 0)) { g.st = 'patrol'; g.meter = 0; } }); } }
   else if (world.alert === 1) { world.cautionT -= dt; if (world.cautionT <= 0) world.alert = 0; }
   // --- extract
   const atExt = (p) => Math.abs((p.y || 0) - EXTRACT.y) < 0.4 && Math.hypot(p.x - EXTRACT.x, p.z - EXTRACT.z) < EXTRACT.r;
@@ -1579,7 +1816,7 @@ function hostUpdate(dt) {
   if (world.door && world.ext.filter(Boolean).length >= extNeed()) { world.phase = 'win'; world.finalT = world.t; }
 }
 function hostRestart() {
-  clearBlood();
+  clearBlood(); clearGearFx();
   world = freshWorld();
   me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); lastCoId = -1;
   for (const o of peers()) { const sp = SPAWNS[o.s]; o.x = o.rx = sp.x; o.z = o.rz = sp.z; o.nvx = o.nvz = 0; net.relay({ t: 'tp', x: sp.x, z: sp.z, silent: true }, o.s); }
@@ -1591,11 +1828,11 @@ const r2 = (v) => Math.round(v * 100) / 100;
 const extNeed = () => (solo ? 1 : Math.min(2, 1 + peers().length)); // players needed on the extract pad
 // per-slot player array (same layout the old 2-player `h` used): [x, z, a, crouch, prone, vx, vz, takedown, aiming, drawn, y, tk, ti, tp]
 const plMe = () => [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0,
-  r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y)];
-const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0];
+  r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y), me.box ? 1 : 0, wkey()];
+const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0, o.box ? 1 : 0, o.w || 'p9'];
 function sendState() {
   net.relay({ t: 's',
-    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0]), // st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
+    g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0, g.ko || 0]), // [7] = ko (1 stunned, 2 asleep); st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
     al: world.alert, at: r2(world.alertT), sw: world.sw.map(r2), door: world.door, ph: world.phase, tm: r2(world.t), ft: r2(world.finalT), dd: world.dead,
     c: world.caught, n: world.alerts, ext: world.ext, solo, k: world.kills, hp: world.hp, dm: world.dmg, kb: world.kb,
     // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = aiming (just fired), h[9] = pistol drawn
@@ -1603,15 +1840,21 @@ function sendState() {
     // h[10] = feet height, h[11..13] = traversal move code / index / progress. co = host co-op climb [id, kind, spot, climber, helper, t, dur]
     h: plMe(), // host (P1) - kept for old clients
     pl: others.map((o, s) => (s === mySlot ? 0 : o.on ? plOf(o) : 0)), // every guest slot (0 = empty); a guest skips its own
+    c4: world.c4.map((c) => [c.id, r2(c.x), r2(c.y), r2(c.z), c.by]),
     co: world.co ? [world.co.id, world.co.k[0], world.co.i, world.co.c, world.co.h, r2(world.co.t), world.co.dur] : 0 });
 }
 const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
 function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
-  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y) }); }
+  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y), bx: me.box ? 1 : 0, w: wkey() }); }
 function netTrav(o, y, tk, ti, tp) { o.y = y || 0; o.tk = tk || ''; o.ti = ti ?? -1; o.tp = tp || 0; }
 // a teammate fired: tracer + recoil on their model (host also applies the hit)
-function remoteShot(d, by) { const o = others[by]; if (!o || by === mySlot) return; o.shot++; o.gd = 1; gunFx(meshOf(by), d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null); gunSound(0.6); }
-function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); }
+function remoteShot(d, by) {
+  const o = others[by]; if (!o || by === mySlot) return; o.shot++; o.gd = 1; if (d.w) o.w = d.w;
+  const W = WPN[d.w] || WPN.p9;
+  gunFx(meshOf(by), d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null, !!W.rifle, W.tranq ? 0x9fe0ff : null);
+  const vol = clamp(1 - Math.hypot(d.x - me.x, d.z - me.z) / 26, 0.15, 0.6); W.rifle ? rifleSound(vol) : W.quiet ? suppSound(vol) : gunSound(vol);
+}
+function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); o.box = h[14] || 0; o.w = h[15] || 'p9'; }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -1626,7 +1869,7 @@ function netSample(o, x, z, vx, vz) {
 function onGameMsg(d) {
   const from = d.from ?? 1, fo = others[from]; // guest -> host packets are tagged with the sender's slot by server.js
   if (role === 'host' && d.t !== 's' && (!fo || from === 0)) return;
-  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); }
+  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || 'p9'; }
   else if (d.t === 'tr' && role === 'host') { // guest solo climb / rope: veto if someone's already on that ladder / rope, it's over, or a ground grapple (top-only)
     const on = (k, i) => i === d.i && ((k === d.k && d.k === 'ld') || ((ON_LINE(k) || k === 'hr' || k === 'hp') && ON_LINE(d.k)));
     const busy = (me.tr && on(me.tr.k, me.tr.i)) || peers().some((o) => o.s !== from && on(o.tk, o.ti));
@@ -1637,7 +1880,7 @@ function onGameMsg(d) {
   else if (d.t === 'cox' && role === 'guest') toast('Can\'t - get in position', 900, '#ffb36b');
   else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
     const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
-    const ok = g && alive(g) && Math.abs((fo.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
+    const ok = g && alive(g) && Math.abs((fo.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && (g.ko || Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind);
     if (!ok || !hostTakedown(d.g, from)) net.relay({ t: 'tdx' }, from);
     else { fo.x = d.x; fo.z = d.z; fo.td = 0; }
   }
@@ -1647,10 +1890,17 @@ function onGameMsg(d) {
     else remoteShot(d, d.by ?? 0);
   }
   else if (d.t === 'gs' && role === 'guest') guardShotFx(d);
+  else if (d.t === 'ng' && role === 'host') hostNade(d, from);         // guest threw a stun grenade
+  else if (d.t === 'ngx' && role === 'guest') { if (d.by !== mySlot) nadeFx(d); }
+  else if (d.t === 'bx' && role === 'guest') blastFx(d);               // grenade flash / C4 blast fx
+  else if (d.t === 'c4p' && role === 'host') hostC4(d, from);
+  else if (d.t === 'c4d' && role === 'host') hostDet(from);
+  else if (d.t === 'heal' && role === 'host') hostHeal(from);
   else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(from); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
-    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; g.shooting = !!a[6]; });
+    d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; g.shooting = !!a[6]; g.ko = a[7] || 0; });
+    world.c4 = (d.c4 || []).map(([id, x, y, z, by]) => ({ id, x, y, z, by }));
     const pad = (v, f) => { const r = Array(NP).fill(f); (v || []).forEach((x, i) => { if (i < NP) r[i] = x; }); return r; };
     Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: pad(d.ext, false), dead: d.dd ?? -1, kills: d.k || 0,
       hp: pad(d.hp, HP_MAX), dmg: pad(d.dm, 0), kb: d.kb || '' });
@@ -1720,7 +1970,7 @@ function joinLink() { return location.origin + location.pathname + '?room=' + ro
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false; mySlot = 0; fpsOn = false; syncViewButton();
   for (const o of others) { o.on = false; o.tk = ''; }
-  me.c = false; me.p = false; me.tun = -1; stopMe(); resetLoadout(); syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
+  me.c = false; me.p = false; me.tun = -1; stopMe(); resetLoadout(); syncStanceButtons(); clearGearFx(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
@@ -1771,7 +2021,7 @@ const myIdx = () => mySlot;
 function fmtTime(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; }
 function updateOverlay() {
   if (world.phase !== lastPhase && world.phase !== 'play') {
-    const btn = $('ovBtn');
+    const btn = $('ovBtn'); closeInv(true); me.box = false; me.burst = 0;
     if (world.phase === 'win') {
       beep(523, 0.15, 'triangle', 0.1); setTimeout(() => beep(784, 0.3, 'triangle', 0.1), 160);
       $('overlay').classList.remove('over');
@@ -1784,7 +2034,7 @@ function updateOverlay() {
       if (navigator.vibrate) navigator.vibrate([300, 100, 500]);
       input.jx = input.jz = 0; input.keys.clear();
       $('overlay').classList.add('over');
-      const how = world.kb === 'melee' ? 'beaten down by a guard' : 'cut down by FAMAS fire';
+      const how = world.kb === 'melee' ? 'beaten down by a guard' : world.kb === 'c4' ? 'caught in a C4 blast' : 'cut down by FAMAS fire';
       const who = solo || world.dead === myIdx() ? `You were killed in action &mdash; ${how}.` : `P${world.dead + 1} ${PLAYER_LOOK[world.dead] ? PLAYER_LOOK[world.dead].name : ''} is KIA &mdash; ${how}.`;
       $('ovTitle').textContent = 'GAME OVER';
       $('ovBody').innerHTML = `${who}<br>Mission failed at ${fmtTime(world.finalT)} &middot; Alerts ${world.alerts}`;
@@ -1839,8 +2089,205 @@ function drawRadar() {
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
     if (g.y > 0.3) { rc.strokeStyle = g.y > 5 ? '#ffffff' : '#ffb0b0'; rc.strokeRect(X(g.rx) - 3.5, Z(g.rz) - 3.5, 7, 7); } // up on a deck / roof
   }
+  for (const pk of pickups) if (pk.on) { rc.fillStyle = Math.abs(pk.y - me.y) < 1 ? '#7fd6ff' : 'rgba(127,214,255,0.5)'; rc.fillRect(X(pk.x) - 1.5, Z(pk.z) - 1.5, 3, 3); }
+  for (const c of world.c4 || []) if (c.by === mySlot) { rc.fillStyle = (performance.now() / 250 | 0) % 2 ? '#ff3030' : '#601010'; rc.fillRect(X(c.x) - 2, Z(c.z) - 2, 4, 4); }
   for (const o of peers()) { rc.fillStyle = hexCss(PLAYER_LOOK[o.s].accent); rc.fillRect(X(o.rx) - 3, Z(o.rz) - 3, 6, 6); }
   rc.fillStyle = '#ffffff'; rc.fillRect(X(me.x) - 3, Z(me.z) - 3, 6, 6);
+}
+
+// ---------------------------------------------------------------- GEAR: map pickups, box / grenade / C4 visuals, gear menu
+// PICKUPS (per player, local): a floating icon card over a small olive crate + ring. Walk over it to take it. Ammo-type
+// spots respawn (re seconds); unique gear (FR-5, MK-T, SCOPE, SUPP., C4...) is there once per mission per player.
+const crateMat = mat(0x5a6a3a), pickRingMat = new THREE.MeshBasicMaterial({ color: 0x7fd6ff, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+const pickups = PICKUPS.map((d) => {
+  const y = groundAt(d.x, d.z, d.lv + 0.05), g = new THREE.Group(); g.position.set(d.x, y, d.z);
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.3), crateMat); crate.position.y = 0.13; g.add(crate);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 16), pickRingMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; g.add(ring);
+  const t = new THREE.CanvasTexture(iconCanvas(d.id)); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.colorSpace = THREE.SRGBColorSpace;
+  const card = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true })); card.scale.set(0.95, 0.6, 1); card.position.y = 0.85; g.add(card);
+  scene.add(g); return { ...d, y, g, card, on: true, t: 0 };
+});
+function resetPickups() { for (const p of pickups) { p.on = true; p.t = 0; p.g.visible = true; } }
+// what a pickup adds right now (0 = you're full / already have it -> leave it there)
+function pickupGain(p) {
+  const it = ITEMS[p.id], have = me.inv[p.id];
+  if (it.tog || (!it.max)) return have >= 1 ? 0 : 1;
+  if (p.ammo && have < 0) return 0; // ammo for a gun you don't carry
+  return Math.max(0, Math.min(p.n, it.max - Math.max(0, have)));
+}
+function updatePickups(dt) {
+  const now = performance.now() / 1000;
+  for (const p of pickups) {
+    if (!p.on) { if (p.re && (p.t -= dt) <= 0) { p.on = true; p.g.visible = true; } continue; }
+    p.card.position.y = 0.85 + Math.sin(now * 3 + p.x) * 0.08;
+    if (me.tr || me.tun >= 0 || Math.abs(me.y - p.y) > 0.7 || Math.hypot(me.x - p.x, me.z - p.z) > 0.8) continue;
+    const n = pickupGain(p), it = ITEMS[p.id];
+    if (n <= 0) { if (!p.full || now - p.full > 3) { p.full = now; toast(it.name + ' FULL', 700, '#ccc'); } continue; }
+    const fresh = me.inv[p.id] < 0;
+    me.inv[p.id] = Math.max(0, me.inv[p.id]) + n;
+    p.on = false; p.g.visible = false; p.t = p.re || 0;
+    pickupSound();
+    toast(it.tog ? 'GOT ' + it.name : it.name + (p.ammo ? ' AMMO' : '') + '  +' + n, 1200, '#7fd6ff');
+    if (fresh && it.kind === 'item' && !it.tog) me.itm = p.id;
+    if (fresh && isTouch) setTimeout(() => toast('GEAR menu: equip ' + it.name, 1200, '#9fd9b0'), 1250);
+    syncGunButton();
+  }
+}
+// CARDBOARD BOX: one per slot, worn over the rig (sneaker hidden while it's on)
+const boxTex = pixTex(32, (x, S) => {
+  x.fillStyle = '#9c7a45'; x.fillRect(0, 0, S, S);
+  for (let i = 0; i < 90; i++) { x.fillStyle = rnd() < 0.5 ? '#8a6a3a' : '#ab8a52'; x.fillRect(rnd() * S | 0, rnd() * S | 0, 2, 1); }
+  x.fillStyle = '#c8b07a'; x.fillRect(13, 0, 6, S); // tape
+  x.fillStyle = '#6a2a18'; x.fillRect(3, 6, 7, 2); x.fillRect(3, 10, 5, 2); x.fillRect(22, 22, 7, 2); // stencil marks
+  x.fillStyle = '#5a4020'; x.fillRect(0, 0, S, 1); x.fillRect(0, S - 1, S, 1);
+});
+const boxMat = new THREE.MeshLambertMaterial({ map: boxTex, flatShading: true });
+const cboxes = Array.from({ length: NP }, () => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.68, 0.62), boxMat); m.visible = false; scene.add(m); return m; });
+function placeBox(m, on, x, y, z, a, moving, k) {
+  m.visible = on; if (!on) return;
+  const t = performance.now() / 1000, w = moving ? Math.sin(t * 14) : 0;
+  m.position.set(x, y + 0.34 + Math.abs(w) * 0.03, z); m.rotation.set(0, -a, w * 0.05);
+  m.scale.setScalar(0.6 + 0.4 * k);
+}
+// STUN GRENADES in flight (fx only; the host owns the fuse) + BLASTS (flash / fireball spheres) + planted C4 bricks
+const nadeMeshes = Array.from({ length: 6 }, () => {
+  const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), mat(0x2f4a2a)); m.visible = false; scene.add(m); return { m, t: 0, d: null };
+});
+function nadeFx(d) {
+  const n = nadeMeshes.find((q) => !q.d) || nadeMeshes[0]; n.d = d; n.t = 0; n.m.visible = true;
+  if (d.by !== mySlot) beep(300, 0.1, 'triangle', 0.03);
+}
+const blasts = Array.from({ length: 8 }, () => {
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+  m.visible = false; scene.add(m); return { m, t: 0, dur: 1, r: 1, add: true };
+});
+let blastI = 0, flashT = 0;
+function blastAt(x, y, z, r, dur, col, additive = true) {
+  const b = blasts[blastI++ % blasts.length]; b.t = dur; b.dur = dur; b.r = r; b.m.visible = true; b.m.position.set(x, y, z);
+  b.m.material.color.setHex(col); b.m.material.blending = additive ? THREE.AdditiveBlending : THREE.NormalBlending; b.m.material.needsUpdate = true;
+}
+function blastFx(d) {
+  const dist = Math.hypot(d.x - me.x, d.z - me.z, (d.y - me.y) * 0.8);
+  for (const n of nadeMeshes) if (n.d && Math.hypot(n.d.tx - d.x, n.d.tz - d.z) < 0.6) { n.d = null; n.m.visible = false; }
+  if (d.k === 'stun') {
+    blastAt(d.x, d.y + 0.5, d.z, STUN.r * 0.75, 0.45, 0xffffff); boomSound('stun', clamp(1.2 - dist / 25, 0.2, 1));
+    if (dist < STUN.r + 1.5 && me.tun < 0) flashT = Math.max(flashT, 1.2 * (1 - dist / (STUN.r + 1.5)) + 0.3); // you looked at it too
+    shake = Math.max(shake, clamp(0.25 - dist * 0.02, 0, 0.25));
+  } else {
+    blastAt(d.x, d.y + 0.6, d.z, 2.8, 0.7, 0xff8a20); blastAt(d.x, d.y + 0.9, d.z, 2.2, 1.5, 0x3a3430, false);
+    boomSound('c4', clamp(1.3 - dist / 30, 0.25, 1)); shake = Math.max(shake, clamp(0.6 - dist * 0.03, 0.08, 0.6));
+    if (navigator.vibrate && dist < 12) navigator.vibrate(160);
+  }
+}
+const c4Meshes = Array.from({ length: C4.max }, () => {
+  const g = new THREE.Group(); const brick = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.15), mat(0x8a7a52)); brick.position.y = 0.04; g.add(brick);
+  const led = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 0.04), new THREE.MeshBasicMaterial({ color: 0xff2020 })); led.position.set(0.06, 0.095, 0); g.add(led);
+  g.visible = false; scene.add(g); return { g, led };
+});
+let healT = 0;
+function healFx() { healT = 0.6; beep(523, 0.08, 'triangle', 0.08); setTimeout(() => beep(659, 0.08, 'triangle', 0.08), 90); setTimeout(() => beep(784, 0.16, 'triangle', 0.08), 180); }
+function clearGearFx() { for (const n of nadeMeshes) { n.d = null; n.m.visible = false; } for (const b of blasts) { b.t = 0; b.m.visible = false; } flashT = 0; }
+function updateGearFx(dt) {
+  for (const n of nadeMeshes) {
+    if (!n.d) continue; n.t += dt; const d = n.d, k = Math.min(1, n.t / STUN.flight);
+    n.m.position.set(mixv(d.x, d.tx, k), mixv(d.y, d.ty + 0.09, k) + Math.sin(k * Math.PI) * 1.6, mixv(d.z, d.tz, k));
+    n.m.rotation.x += dt * 14; n.m.rotation.z += dt * 9;
+    if (n.t > STUN.flight + STUN.fuse + 1.5) { n.d = null; n.m.visible = false; } // lost the 'bx' packet
+  }
+  for (const b of blasts) {
+    if (b.t <= 0) continue; b.t -= dt; const k = Math.max(0, b.t / b.dur);
+    b.m.scale.setScalar(b.r * (0.25 + 0.75 * ss01(1 - k * k))); b.m.material.opacity = k * (b.m.material.blending === THREE.AdditiveBlending ? 0.9 : 0.55);
+    if (b.t <= 0) b.m.visible = false;
+  }
+  const cs = world.c4 || [], blink = (performance.now() / 300 | 0) % 2 === 0;
+  c4Meshes.forEach((c, i) => { const d = cs[i]; c.g.visible = !!d; if (d) { c.g.position.set(d.x, d.y, d.z); c.led.visible = blink || d.by !== mySlot; } });
+  flashT = Math.max(0, flashT - dt); $('flashOv').style.opacity = Math.min(1, flashT).toFixed(2);
+  healT = Math.max(0, healT - dt); $('healOv').style.opacity = (healT / 0.6 * 0.5).toFixed(2);
+}
+// KO sprites over stunned (*) / sleeping (Z) guards
+for (const m of guardMeshes) { m.zz = textSprite('Z', '#9fd0ff'); m.stz = textSprite('*', '#ffffff'); m.zz.visible = m.stz.visible = false; m.g.add(m.zz, m.stz); }
+
+// ---- GEAR MENU (MGS1 equipment screen): GEAR button / I / Tab. Arrows / WASD move, E / Space / Enter = equip or use,
+// tap a slot = select, tap it again = equip / use. Solo pauses the world; in co-op the world keeps running (you just stop).
+let invOpen = false, invSel = 6, invT = 0, invHash = '';
+const invGrid = $('invGrid');
+const slotCv = GRID.map((id, i) => {
+  const c = document.createElement('canvas'); c.width = SLOT_W; c.height = SLOT_H; c.className = 'slot'; invGrid.appendChild(c);
+  c.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); unlockAudio(); if (invSel === i) invAct(); else { invSel = i; menuSound(); invHash = ''; } });
+  return c;
+});
+const invInfo = $('invInfo'), invHead = $('invHead');
+function slotState(id) {
+  const it = id && ITEMS[id]; if (!it) return {};
+  const have = me.inv[id] ?? -1, owned = have >= 0 && !(it.tog && have <= 0);
+  const o = { owned, hint: true };
+  if (it.max) { o.qty = Math.max(0, have) + '/' + it.max; o.empty = have <= 0; }
+  if (it.kind === 'wpn' && me.wpn === id) { o.tag = me.eq ? 'EQ' : 'SET'; o.tagCol = me.eq ? '#c41a1a' : '#5a6068'; }
+  if (id === 'p9' && me.sd) o.tag = (o.tag ? o.tag + ' ' : '') + 'SD';
+  if ((id === 'box' && me.box) || (id === 'supp' && me.sd) || (id === 'scope' && me.scope) || (id === 'stim' && me.stimT > 0)) { o.tag = 'ON'; o.tagCol = '#2f8f5a'; }
+  if (id === 'c4' && myCharges()) { o.tag = myCharges() + ' SET'; o.tagCol = '#b8661a'; }
+  if (it.kind === 'item' && me.itm === id && !o.tag) { o.tag = 'SET'; o.tagCol = '#5a6068'; }
+  if (it.tog) o.dim = false;
+  return o;
+}
+function wrapText(s, n) { const out = []; let line = ''; for (const w of s.split(' ')) { if ((line + ' ' + w).trim().length > n) { out.push(line); line = w; } else line = (line + ' ' + w).trim(); } if (line) out.push(line); return out; }
+function drawInv(force) {
+  const blink = (performance.now() / 250 | 0) % 2 === 0;
+  const h = JSON.stringify([invSel, blink, me.inv, me.wpn, me.eq, me.itm, me.sd, me.box, me.scope, me.stimT > 0, myCharges()]);
+  if (!force && h === invHash) return; invHash = h;
+  GRID.forEach((id, i) => drawSlot(slotCv[i].getContext('2d'), id, { ...slotState(id), sel: i === invSel, blink }));
+  const id = GRID[invSel], it = id && ITEMS[id], owned = it && slotState(id).owned;
+  const x = invInfo.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, invInfo.width, invInfo.height);
+  if (it && owned) {
+    pixText(x, it.name + (it.kind === 'wpn' ? '  - WEAPON' : '  - ITEM'), 6, 5, '#ffe24a');
+    wrapText(it.desc.toUpperCase(), 58).slice(0, 3).forEach((l, i) => pixText(x, l, 6, 17 + i * 10, '#e8ecef'));
+  } else pixText(x, it ? 'NOT FOUND YET - SEARCH THE MAP' : '- EMPTY -', 6, 5, '#6a7176');
+  const hx = invHead.getContext('2d'); hx.clearRect(0, 0, invHead.width, invHead.height);
+  pixText(hx, 'EQUIP', 2, 3, '#fff', 2, '#000');
+  const hint = isTouch ? 'TAP AGAIN = USE' : 'ARROWS  E = USE  I = CLOSE'; pixText(hx, hint, invHead.width - textW(hint) - 4, 9, '#9fb0b8');
+  const act = $('invAct'), lbl = !it || !owned ? '---' : it.kind === 'wpn' ? (me.wpn === id && me.eq ? 'HOLSTER' : 'EQUIP') : it.tog ? (slotState(id).tag === 'ON' ? 'TURN OFF' : 'USE') : 'USE';
+  if (act.textContent !== lbl) act.textContent = lbl; act.disabled = !owned;
+  $('invDet').classList.toggle('hidden', !myCharges());
+}
+function openInv(focus) {
+  if (!role || world.phase !== 'play' || invOpen) return;
+  invOpen = true; input.keys.clear(); input.jx = input.jz = 0; stickId = null; base.classList.add('hidden'); stopMe();
+  const want = focus === 'item' ? me.itm : focus === 'wpn' ? me.wpn : me.wpn; const i = GRID.indexOf(want); if (i >= 0) invSel = i;
+  $('inv').classList.remove('hidden'); document.body.classList.add('invOpen'); menuSound(1320); drawInv(true);
+  $('invPause').textContent = solo ? 'PAUSED' : 'CO-OP: WORLD STILL MOVING';
+}
+function closeInv(quiet) { if (!invOpen) return; invOpen = false; $('inv').classList.add('hidden'); document.body.classList.remove('invOpen'); if (!quiet) menuSound(660); }
+function invAct() {
+  const id = GRID[invSel], it = id && ITEMS[id]; if (!it || !slotState(id).owned) { beep(150, 0.04, 'square', 0.05); return; }
+  if (it.kind === 'wpn') { if (me.wpn === id && me.eq) toggleGun(); else equipWeapon(id); closeInv(true); }
+  else { const stay = it.tog && id !== 'box'; useItem(id); if (!stay) closeInv(true); }
+  invHash = '';
+}
+function invKey(code) {
+  if (code === 'Escape' || code === 'KeyI' || code === 'Tab') return closeInv();
+  const c = 4, r = GRID.length / c, x = invSel % c, y = (invSel / c) | 0;
+  if (code === 'ArrowLeft' || code === 'KeyA') invSel = y * c + (x + c - 1) % c;
+  else if (code === 'ArrowRight' || code === 'KeyD') invSel = y * c + (x + 1) % c;
+  else if (code === 'ArrowUp' || code === 'KeyW') invSel = ((y + r - 1) % r) * c + x;
+  else if (code === 'ArrowDown' || code === 'KeyS') invSel = ((y + 1) % r) * c + x;
+  else if (code === 'KeyE' || code === 'Space' || code === 'Enter' || code === 'KeyF') return invAct();
+  else if (code === 'KeyT') return detonate();
+  else return;
+  menuSound(); invHash = '';
+}
+$('invAct').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); invAct(); });
+$('invClose').addEventListener('pointerdown', (e) => { e.preventDefault(); closeInv(); });
+$('invDet').addEventListener('pointerdown', (e) => { e.preventDefault(); detonate(); invHash = ''; });
+$('inv').addEventListener('pointerdown', (e) => { if (e.target.id === 'inv') closeInv(); }); // tap outside the frame
+// HUD weapon / item boxes (MGS: weapon bottom-right, item bottom-left)
+const wpnCtx = $('wpnBox').getContext('2d'), itemCtx = $('itemBox').getContext('2d');
+let hudHash = '';
+function drawGearHud() {
+  const blink = (performance.now() / 400 | 0) % 2 === 0;
+  const h = JSON.stringify([me.inv, me.wpn, me.eq, me.itm, me.sd, me.box, me.scope, me.stimT > 0, myCharges(), me.box && blink]);
+  if (h === hudHash) return; hudHash = h;
+  const ws = slotState(me.wpn); drawSlot(wpnCtx, me.wpn, { ...ws, owned: true, dim: !me.eq, tag: me.eq ? (me.wpn === 'p9' && me.sd ? 'SD' : null) : 'OFF', tagCol: '#5a6068' });
+  const it = slotState(me.itm); if (it.tag === 'SET') it.tag = null; drawSlot(itemCtx, me.itm, { ...it, owned: (me.inv[me.itm] ?? -1) >= 0 && !(ITEMS[me.itm].tog && me.inv[me.itm] <= 0), dim: false, sel: me.box && me.itm === 'box', blink });
 }
 
 // ---------------------------------------------------------------- render
@@ -1861,7 +2308,7 @@ function updateCutaway(dt) {
 const CAM_H = 12, CAM_Z = 7.2; // top-down cam height / back-offset before zoom (was 15 / 9)
 const topCam = new THREE.Vector3(me.x, CAM_H, me.z + CAM_Z), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
 const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
-let fpsK = 0, tunK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
+let scopeK = 0, fpsK = 0, tunK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
 // DAMAGE REACTIONS (both roles, purely visual): watch the synced state instead of hooking each damage path, so gun /
 // melee / FAMAS hits and host- or guest-side damage all land the same way. A player's LIFE dropping -> blood + flinch
 // on that player's rig (attacker = nearest guard); a guard going down -> blood + hit-react (shot kill) or a knife-finish
@@ -1936,32 +2383,34 @@ function render(dt) {
   // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
   const play = world.phase === 'play';
   const myTr = me.tr ? poseFor(me.tr.k, me.tr.i, trProg(me.tr, me.y, 1), me.y) : null, myBusy = !!me.tr; // climbing: hands busy, gun slung
-  let myAim = aimPoint(me, meMesh, me.eq && !me.td && !myBusy && play && !deadMe);
+  const myGun = isGun(me.wpn) && !me.box;
+  let myAim = aimPoint(me, meMesh, me.eq && myGun && !me.td && !myBusy && play && !deadMe);
   // post-shot laser wobble: the aim point swims around (figure-8) and settles as me.wob decays
-  if (me.wob > 0.02 && me.eq && !myBusy && play && !deadMe) {
+  if (me.wob > 0.02 && me.eq && myGun && !myBusy && play && !deadMe) {
     if (!myAim) { meMesh.muzzleWorld(_am); myAim = { x: me.x + Math.cos(me.a) * 5, y: _am.y, z: me.z + Math.sin(me.a) * 5 }; }
     const w = me.wob * me.wob, tt = now / 1000 * 13 + me.wobA, d = Math.hypot(myAim.x - me.x, myAim.z - me.z);
     const side = Math.sin(tt) * 0.16 * w * d, upd = Math.sin(tt * 2 + 1) * 0.35 * w;
     myAim = { x: myAim.x - Math.sin(me.a) * side, y: myAim.y + upd, z: myAim.z + Math.cos(me.a) * side };
   }
   meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe, hurt: meMesh.hurtN || 0, hurtFrom: meMesh.hurtA, hurtAmt: meMesh.hurtD,
-    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && !myBusy, armed: me.eq && !myBusy, shot: me.shot, trav: myTr }); // drawn = always in the forward aim stance
+    takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && myGun && !myBusy, armed: me.eq && myGun && !myBusy, shot: me.shot, trav: myTr, weapon: wkey() }); // drawn = always in the forward aim stance
+  placeBox(cboxes[mySlot], me.box && play, me.x, me.y, me.z, me.a, me.moving, 1);
   // remote players (up to 4): walk/run animation from the net velocity (smooth), falling back to on-screen motion
   const viewers = [me];
   for (let s = 0; s < NP; s++) {
     if (s === mySlot) continue;
     const o = others[s], mesh = meshOf(s), R = remoteRopes[rk(s)], on = o.on;
-    mesh.g.visible = on;
+    mesh.g.visible = on && !o.box; placeBox(cboxes[s], on && !!o.box && play, o.rx, o.ry, o.rz, o.ra, o.spd > 0.4, 1);
     if (!on) { updateRope(R, mesh, '', -1, 0); updateLaser(remoteLasers[rk(s)], mesh, false, dt); continue; }
     if (dt > 0) { const vNet = Math.hypot(o.nvx, o.nvz), vScr = Math.hypot(o.rx - o.px, o.rz - o.pz) / dt;
       const v = o.pt && now - o.pt < 300 ? vNet : vScr; o.spd += (Math.min(v, 8) - o.spd) * Math.min(1, dt * 8); }
     o.px = o.rx; o.pz = o.rz;
     o.ry = Math.abs(o.y - o.ry) > 4 ? o.y : o.ry + (o.y - o.ry) * kr;
     mesh.g.position.set(o.rx, o.ry, o.rz); mesh.g.rotation.y = -o.ra;
-    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, armed = !!o.eq && o.td < 0 && !busy && play && !dead;
+    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, oGun = isGun(o.w === 'sd' ? 'p9' : o.w || 'p9'), armed = !!o.eq && oGun && !o.box && o.td < 0 && !busy && play && !dead;
     const aim = aimPoint({ x: o.rx, z: o.rz, y: o.ry, a: o.ra, tun: tunAt(o.rx, o.rz, o.ry) }, mesh, armed);
     mesh.update(dt, { aimAt: aim, moving: o.spd > 0.4 && play && o.td < 0 && !tr, run: o.spd > 4.2 && !o.c, speed: play && o.td < 0 && !tr ? o.spd : 0,
-      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && !busy, armed: !!o.eq && !busy, shot: o.shot, trav: tr });
+      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && oGun && !busy, armed: !!o.eq && oGun && !busy, shot: o.shot, trav: tr, weapon: o.w || 'p9' });
     updateRope(R, mesh, o.tk, o.ti, o.tp);
     updateLaser(remoteLasers[rk(s)], mesh, armed, dt);
     viewers.push({ x: o.rx, y: o.ry || 0, z: o.rz });
@@ -1971,7 +2420,7 @@ function render(dt) {
   updateCoopHint(dt);
   updateCutaway(dt);
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
-  updateLaser(myLaser, meMesh, me.eq && !me.td && !myBusy && play && !deadMe, dt);
+  updateLaser(myLaser, meMesh, me.eq && myGun && !me.td && !myBusy && play && !deadMe, dt);
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -1979,11 +2428,13 @@ function render(dt) {
     m.g.position.set(g.rx, GUARDS[i].y, g.rz); m.g.rotation.y = -g.ra; // guards never change floor: y is level data
     if (dt > 0) { const v = Math.hypot(g.rx - m.px, g.rz - m.pz) / dt; m.spd += (Math.min(v, 8) - m.spd) * Math.min(1, dt * 8); }
     m.px = g.rx; m.pz = g.rz;
-    const down = g.st === 'dead', held = g.st === 'held', live = !down && !held;
+    const ko = g.st === 'dead' || g.st === 'held' ? 0 : g.ko || 0, down = g.st === 'dead', held = g.st === 'held', live = !down && !held && !ko;
     m.update(dt, { moving: live && m.spd > 0.4 && world.phase === 'play', run: m.spd > 3.4, speed: live && world.phase === 'play' ? m.spd : 0,
-      dead: down, held: held ? Math.min(1, g.tdT / TD.time) : null, rifleAim: live && !!g.shooting && world.phase === 'play', shot: m.shot || 0,
+      dead: down || ko === 2, crouch: ko === 1, held: held ? Math.min(1, g.tdT / TD.time) : null, rifleAim: live && !!g.shooting && world.phase === 'play', shot: m.shot || 0,
       hurt: m.hurtN || 0, hurtFrom: m.hurtA, hurtAmt: m.hurtD });
     m.coneHolder.visible = live;
+    const bob = Math.sin(now / 300 + i) * 0.1;
+    m.zz.visible = ko === 2; m.zz.position.set(0.5, 1.0 + bob, 0); m.stz.visible = ko === 1; m.stz.position.y = 2.1 + bob; m.stz.material.rotation = now / 200;
     m.poolK = down ? Math.min(1, m.poolK + dt * 0.5) : 0; m.pool.visible = m.poolK > 0; m.pool.scale.setScalar(0.2 + m.poolK * 0.9);
     const range = SIGHT.stand + (world.alert > 0 ? 2 : 0);
     m.cone.scale.set(range, range, 1);
@@ -2004,7 +2455,8 @@ function render(dt) {
   // camera: angled top-down follow (zoomed out a bit more in portrait), blended into FIRST PERSON while MY player is in a tunnel.
   // Purely local: each client only looks at its own me.tun, so the partner's camera is never affected.
   // tighter than the original (15 up / 9 back, x1.25): same tilt, ~23% closer so the sneaker reads bigger; portrait still backs off
-  const zoom = (camera.aspect < 1 ? 1.15 + (1 - camera.aspect) * 0.5 : 1) * 1.2;
+  scopeK += ((me.scope && play ? 1 : 0) - scopeK) * Math.min(1, dt * 5);
+  const zoom = (camera.aspect < 1 ? 1.15 + (1 - camera.aspect) * 0.5 : 1) * 1.2 * (1 + 0.75 * scopeK); // SCOPE: see much further out
   const camDist = Math.hypot(CAM_H, CAM_Z) * zoom;
   topCam.x += (me.x - topCam.x) * Math.min(1, dt * 6);
   topCam.z += (me.z + CAM_Z * zoom - topCam.z) * Math.min(1, dt * 6);
@@ -2027,16 +2479,18 @@ function render(dt) {
   shake = Math.max(0, shake - dt * 0.9);
   if (shake > 0.002) { const s2 = shake * shake * 4 * (1 - f * 0.6); camera.position.x += (Math.random() - 0.5) * s2; camera.position.y += (Math.random() - 0.5) * s2 * 0.5; camera.position.z += (Math.random() - 0.5) * s2; camLook.x += (Math.random() - 0.5) * s2 * 0.6; }
   camera.lookAt(camLook);
-  const fov = 40 + 32 * f;
+  const fov = (40 + 32 * f) * (1 - 0.55 * scopeK * f); // first person + SCOPE = zoomed binoculars
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.near = 0.1 - 0.06 * f; camera.updateProjectionMatrix(); }
   const ft = f * tunK, L3 = THREE.MathUtils.lerp;
   scene.fog.near = L3(L3(camDist + 4, 10, f), 0.6, ft); scene.fog.far = L3(L3(camDist + 30, 46, f), 17, ft);
   scene.fog.color.lerpColors(SKY, TUNNEL_FOG, ft); scene.background.copy(scene.fog.color);
-  meMesh.g.visible = f < 0.6; // don't render my own head in first person
+  meMesh.g.visible = f < 0.6 && !(me.box && play); // don't render my own head in first person; box covers the rig
+  if (f >= 0.6) cboxes[mySlot].visible = false; // inside the box in first person: the slit overlay does the job
+  document.body.classList.toggle('scoped', scopeK > 0.5 && f > 0.5); document.body.classList.toggle('boxed', me.box && play && f > 0.5);
   meMesh.marker.visible = f < 0.5;
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
   $('fpsVignette').style.opacity = (f * (0.35 + 0.65 * tunK)).toFixed(2);
-  updateFx(dt); updateBlood(dt);
+  updateFx(dt); updateBlood(dt); updateGearFx(dt);
   renderer.render(scene, camera);
 }
 
@@ -2093,14 +2547,20 @@ function updateHud() {
   }
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
-  const ammoTxt = 'P-9 ' + (me.eq ? '|'.repeat(me.ammo) + (me.ammo ? '' : 'EMPTY') + ' ' + me.ammo + '/' + GUN.ammo
-    : 'HOLSTERED ' + me.ammo + '/' + GUN.ammo + (isTouch ? '' : '  [G] draw')) + (world.kills ? '  KILLS ' + world.kills : '');
+  // weapon status line (the MGS weapon / item boxes are canvases drawn by drawGearHud)
+  const W = me.wpn, qty = Math.max(0, me.inv[W] ?? 0), nm = ITEMS[W].name + (W === 'p9' && me.sd ? ' SD' : '');
+  const ammoTxt = (me.box ? 'IN C.BOX' + (isTouch ? '' : '  [E] out') : me.eq ? nm + ' ' + (isGun(W) ? (qty ? '|'.repeat(Math.min(qty, 12)) : 'EMPTY') : qty ? 'READY' : 'EMPTY')
+    : 'HOLSTERED ' + nm + (isTouch ? '' : '  [G] draw')) + (myCharges() ? '  C4 x' + myCharges() + (isTouch ? '' : ' [T] DET') : '') + (me.stimT > 0 ? '  STIM ' + Math.ceil(me.stimT) : '')
+    + (world.kills ? '  KILLS ' + world.kills : '') + (isTouch ? '' : '  [I] GEAR');
   const ammoEl = $('ammo'); if (ammoEl.textContent !== ammoTxt) ammoEl.textContent = ammoTxt;
   ammoEl.classList.toggle('holstered', !me.eq);
+  drawGearHud(); syncGunButton();
+  $('btnDet').classList.toggle('hidden', !myCharges() || world.phase !== 'play');
+  if (invOpen) drawInv();
   const mode = world.phase === 'play' && !me.td ? actMode() : 'none';
-  if (mode === 'none' || mode === 'td' || mode === 'use' || mode === 'fire') curTm = null;
+  if (mode === 'none' || mode === 'td' || mode === 'use' || mode === 'fire' || mode === 'unbox') curTm = null;
   const tl = TRAV_LABEL[mode];
-  const act = $('btnAct'), label = mode === 'td' ? 'TAKE DOWN' : mode === 'use' ? 'USE' : mode === 'fire' ? 'FIRE' : tl ? tl[0] : 'ACT';
+  const act = $('btnAct'), label = mode === 'td' ? 'TAKE DOWN' : mode === 'use' ? 'USE' : mode === 'unbox' ? 'UNBOX' : mode === 'fire' ? (me.wpn === 'stun' ? 'THROW' : me.wpn === 'c4' ? 'PLANT' : 'FIRE') : tl ? tl[0] : 'ACT';
   if (act.textContent !== label) act.textContent = label;
   act.classList.toggle('kill', mode === 'td');
   act.classList.toggle('climb', !!tl);
@@ -2116,15 +2576,15 @@ camera.position.copy(topCam);
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (role) {
-    updateLocal(dt);
-    if (role === 'host') hostUpdate(dt);
+    const paused = invOpen && solo; // solo: the gear menu pauses the mission (co-op can't pause other people)
+    if (!paused) { updateLocal(dt); if (role === 'host') hostUpdate(dt); }
     sendAcc += dt; stateAcc += dt; pingAcc += dt;
     if (sendAcc > 0.05) { sendAcc = 0; if (role === 'guest') sendPlayer(); }
     if (stateAcc > 1 / 15) { stateAcc = 0; if (role === 'host' && peerConnected) sendState(); }
     if (pingAcc > 2) { pingAcc = 0; if (net.ws && net.ws.readyState === 1) net.ws.send(JSON.stringify({ t: 'ping', ts: performance.now() })); }
     updateHud(); updateOverlay(); drawRadar();
   }
-  render(dt);
+  render(invOpen && solo ? 0 : dt);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -2134,4 +2594,4 @@ window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, ge
   get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };
+  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };

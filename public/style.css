@@ -10,7 +10,7 @@ button:active { background: #2a6b4a; }
 button.big { font-size: 20px; padding: 14px 20px; }
 button.small { font-size: 12px; padding: 3px 8px; }
 
-.panel { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+.panel { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center;
   gap: 14px; padding: 20px; background: radial-gradient(circle at 50% 30%, #12302a 0%, #050a0c 80%); text-align: center; z-index: 20;
   overflow: auto; touch-action: auto; }
 #overlay { background: rgba(3, 10, 8, 0.86); }
@@ -104,3 +104,45 @@ button.act.gun.on { background: rgba(140, 100, 20, .85); border-color: #ffd27f; 
 #hurtFlash { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
   background: radial-gradient(ellipse at 50% 50%, rgba(255,0,0,0) 35%, rgba(200,0,0,.85) 100%); }
 @media (max-width: 500px) { #hpBox { top: calc(36px + env(safe-area-inset-top)); } .hpBar { width: 112px; } .hpRow.mini .hpBar { width: 44px; } #btnView { min-width: 40px; min-height: 32px; font-size: 11px; padding: 2px 4px; } }
+
+/* GEAR (MGS1 equipment screen + HUD boxes). Slots are 104x52 canvases scaled up with crisp pixels. */
+canvas.slot, .gearBox, #invInfo, #invHead { image-rendering: pixelated; image-rendering: crisp-edges; }
+#inv { position: fixed; inset: 0; z-index: 15; display: flex; align-items: center; justify-content: safe center; pointer-events: auto;
+  background: rgba(2, 8, 14, .72); touch-action: none; --cols: 4; --rows: 3;
+  --sw: min(208px, calc((100vw - 56px) / var(--cols)), calc((100vh - 214px) / var(--rows) * 2)); }
+#inv.hidden { display: none; }
+#invFrame { background: rgba(10, 16, 20, .92); border: 2px solid #8a949a; box-shadow: 0 0 0 2px #000, 0 6px 30px #000; padding: 8px; display: flex; flex-direction: column; gap: 6px; max-width: calc(100vw - 16px); }
+#invHead { width: calc(var(--sw) * var(--cols) + 6px * (var(--cols) - 1)); height: auto; aspect-ratio: 416 / 18; }
+#invPause { font: bold 11px monospace; letter-spacing: 2px; color: #ffd27f; margin-top: -4px; }
+#invGrid { display: grid; grid-template-columns: repeat(var(--cols), var(--sw)); gap: 6px; }
+canvas.slot { width: var(--sw); height: calc(var(--sw) / 2); cursor: pointer; }
+#invInfo { width: calc(var(--sw) * var(--cols) + 6px * (var(--cols) - 1)); height: auto; aspect-ratio: 416 / 48; border: 1px solid #3a4248; }
+#invBtns { display: flex; gap: 8px; justify-content: flex-end; }
+#invBtns button { font: bold 13px monospace; letter-spacing: 2px; padding: 8px 14px; background: #000; color: #fff; border: 2px solid #e8ecef; border-radius: 0; min-height: 38px; }
+#invBtns button:disabled { color: #555; border-color: #3a4248; }
+#invDet { border-color: #ff6a5a !important; color: #ffb3a8 !important; }
+#invBtns .hidden { display: none; }
+@media (orientation: portrait) { #inv { --cols: 3; --rows: 4; } }
+.gearBox { position: absolute; width: 156px; height: 78px; pointer-events: auto; cursor: pointer; filter: drop-shadow(1px 2px 0 #000); }
+#itemBox { left: calc(10px + env(safe-area-inset-left)); bottom: calc(58px + env(safe-area-inset-bottom)); }
+#wpnBox { right: calc(12px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); }
+body:not(.desktop) #wpnBox { right: calc(104px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 120px; height: 60px; }
+body:not(.desktop) #itemBox { width: 120px; height: 60px; bottom: calc(56px + env(safe-area-inset-bottom)); }
+#ammo { left: auto; right: calc(12px + env(safe-area-inset-right)); bottom: calc(94px + env(safe-area-inset-bottom)); }
+body:not(.desktop) #ammo { right: calc(104px + env(safe-area-inset-right)); bottom: calc(82px + env(safe-area-inset-bottom)); font-size: 10px; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+#btnInv { pointer-events: auto; min-width: 48px; min-height: 34px; font-weight: bold; letter-spacing: 1px; background: rgba(0,0,0,.65); color: #fff; border: 1px solid #e8ecef; border-radius: 0; margin-right: 2px; }
+body.invOpen #btnInv { background: #e8ecef; color: #000; }
+button.act.det { position: absolute; right: calc(104px + env(safe-area-inset-right)); bottom: calc(100px + env(safe-area-inset-bottom)); width: 58px; height: 58px; pointer-events: auto;
+  background: rgba(150, 50, 10, .85); border-color: #ffb36b; color: #fff; font-size: 13px; animation: blink .8s steps(2) infinite; }
+body.desktop button.act.det { display: none; }
+#flashOv { position: fixed; inset: 0; pointer-events: none; z-index: 7; opacity: 0; background: #fff; }
+#healOv { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0; background: radial-gradient(ellipse at 50% 50%, rgba(60,255,120,0) 40%, rgba(60,255,120,.6) 100%); }
+#scopeOv { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none;
+  background: radial-gradient(circle at 50% 50%, transparent 0 34vmin, #000 34.5vmin); }
+#scopeOv .cross { position: absolute; left: 50%; top: 50%; width: 40vmin; height: 40vmin; transform: translate(-50%, -50%);
+  background: linear-gradient(#7fff9f, #7fff9f) center / 100% 1px no-repeat, linear-gradient(#7fff9f, #7fff9f) center / 1px 100% no-repeat; opacity: .55; }
+body.scoped #scopeOv { display: block; }
+#boxOv { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none;
+  background: linear-gradient(#2a1c0e 0 38%, transparent 38% 54%, #2a1c0e 54%); }
+body.boxed #boxOv { display: block; }
+@media (max-height: 420px) { .gearBox { width: 104px !important; height: 52px !important; } #itemBox { bottom: calc(40px + env(safe-area-inset-bottom)) !important; } body:not(.desktop) #wpnBox { right: calc(84px + env(safe-area-inset-right)); } body:not(.desktop) #ammo { right: calc(84px + env(safe-area-inset-right)); bottom: calc(74px + env(safe-area-inset-bottom)); max-width: 104px; } button.act.det { right: calc(84px + env(safe-area-inset-right)); bottom: calc(132px + env(safe-area-inset-bottom)); } }

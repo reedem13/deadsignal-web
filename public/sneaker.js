@@ -667,7 +667,7 @@ export function makeSneaker(scene, opts = {}) {
     arms.push({ sh, el, wr, side });
   }
   // right hand props (player kit). Wrist-local: -y = along the forearm (barrel / blade direction), -x = "down" when aiming.
-  let drawn = null, knife = null, flash = null;
+  let drawn = null, knife = null, flash = null, wx = null;
   if (!enemy) {
     const wr = arms[1].wr;
     drawn = pivot(wr, 0, 0, 0);
@@ -679,6 +679,15 @@ export function makeSneaker(scene, opts = {}) {
     add(drawn, boxG(0.07, 0.03, 0.03), M.gear, -0.075, -0.07, 0); // magazine base
     flash = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), new THREE.MeshBasicMaterial({ color: 0xffe080, transparent: true, opacity: 0.95, depthWrite: false }));
     flash.position.set(0.035, -0.3, 0); flash.scale.set(0.8, 1.6, 0.8); drawn.add(flash); flash.visible = false;
+    // weapon variants on the same wrist pivot (own sub-pivots so the batcher keeps them separately toggleable):
+    // FR-5 = long barrel / handguard / mag / stock + rail; can = suppressor screwed onto the P-9 (also the MK-T's built-in can)
+    wx = { rifle: pivot(drawn, 0, 0, 0), supp: pivot(drawn, 0, 0, 0) };
+    add(wx.rifle, boxG(0.045, 0.34, 0.045), M.gun, 0.035, -0.38, 0); // barrel
+    add(wx.rifle, boxG(0.07, 0.16, 0.06), M.gear, 0.03, -0.3, 0); // handguard
+    add(wx.rifle, boxG(0.09, 0.05, 0.035), M.gun, -0.04, -0.2, 0, { r: [0, 0, 0.15] }); // curved mag
+    add(wx.rifle, boxG(0.06, 0.16, 0.04), M.gun, 0.01, 0.09, 0); // stock back along the forearm
+    add(wx.rifle, boxG(0.02, 0.2, 0.03), M.metal, 0.075, -0.18, 0); // top rail
+    add(wx.supp, boxG(0.045, 0.16, 0.045), M.metal, 0.035, -0.32, 0);
     knife = pivot(wr, 0, 0, 0);
     add(knife, shaped(0.04, 0.06, 0.035, [1, 2, 1], (v, nx, ny) => { if (Math.abs(ny) < 0.1) v.x *= 0.85; }), M.gear, 0.0, -0.1, 0); // handle in the fist
     add(knife, boxG(0.025, 0.04, 0.05), M.metal, 0.0, -0.14, 0); // guard
@@ -1002,6 +1011,9 @@ export function makeSneaker(scene, opts = {}) {
       holstered.visible = !out; drawn.visible = out;
       knife.visible = tdK > 0.3 && tdP > 0.12 && tdP < 0.95 && !out;
       flash.visible = flashT > 0 && out; flash.rotation.y = t * 40;
+      const wid = s.weapon || 'p9', rif = wid === 'fr5', can = wid === 'sd' || wid === 'mkt';
+      wx.rifle.visible = rif; wx.supp.visible = can && !rif;
+      flash.position.y = rif ? -0.6 : can ? -0.42 : -0.3; flash.scale.set(can ? 0.35 : 0.8, can ? 0.6 : 1.6, can ? 0.35 : 0.8);
     }
     // lay flat (prone) / topple forward (death, game-over screen). Rig pivots at the feet, so shift it back to stay centred.
     const flat = Math.max(deadK, pk);
