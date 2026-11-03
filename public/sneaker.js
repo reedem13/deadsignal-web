@@ -10,8 +10,8 @@
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
 // respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
 // Combat overlays (layered on top of the base pose): armed (s.armed: pistol out of the holster, carried low-ready in the
-// right hand; false = holstered on the thigh), aim (handgun up in a soft two-hand hold: elbows stay bent, shoulders
-// sit low, recoil on s.shot change),
+// right hand; false = holstered on the thigh), aim (handgun up in a soft two-hand hold: elbows stay bent and flare
+// out away from the ribs, shoulders sit low, recoil on s.shot change),
 // takedown (attacker: choke hold from behind + knife jabs, s.takedown = 0..1 progress) and held (victim: head back,
 // clawing at the arm, knees buckle, s.held = 0..1 progress -> then dead).
 import * as THREE from 'three';
@@ -542,6 +542,8 @@ export function makeSneaker(scene, opts = {}) {
 
   // --- torso (pivot at waist so it can lean)
   const torso = pivot(hips, 0, 0.08, 0);
+  // Both shoulders hang off this so aim yaw/pitch turns the two-hand grip as one piece.
+  const aimPivot = pivot(torso, 0, 0, 0);
   add(torso, G.torso, suitFrontMat);
   add(torso, G.collar, M.suit); // high collar
   // harness: two shoulder straps that follow the chest curve and run over the shoulders to the back, chest strap, buckles
@@ -647,7 +649,7 @@ export function makeSneaker(scene, opts = {}) {
   // --- arms
   const arms = [];
   for (const side of [-1, 1]) {
-    const sh = pivot(torso, 0, 0.42, side * 0.28);
+    const sh = pivot(aimPivot, 0, 0.42, side * 0.28);
     add(sh, G.deltoid, M.suit);
     add(sh, G.upperArm, M.suit);
     add(sh, boxG(0.075, 0.08, 0.014), M.patch, 0, -0.1, side * 0.073); // sleeve patch (P1/P2 accent)
@@ -863,7 +865,7 @@ export function makeSneaker(scene, opts = {}) {
       a.sh.rotation.z = swing + crouchK * (a.side === -1 ? 0.9 : 0.35) + runK * moveK * 0.28 + breathe * 0.03;
       a.sh.rotation.x = -a.side * (0.12 + crouchK * 0.15 + breathe * 0.02) + roll * 0.5;
       a.el.rotation.z = 0.22 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.05 + moveK * 0.28 + Math.max(0, swing) * 0.42;
-      a.wr.rotation.z = crouchK * -0.2;
+      a.wr.rotation.x = 0; a.wr.rotation.y = 0; a.wr.rotation.z = crouchK * -0.2;
     }
     // PRONE: blend every joint toward a belly-down pose, then lay the whole rig flat (head forward along +x).
     // Commando crawl while moving: one knee drawn up and out to the side while the opposite arm reaches forward.
@@ -902,39 +904,56 @@ export function makeSneaker(scene, opts = {}) {
       for (const a of arms) a.el.rotation.x = 0;
     }
     for (const a of arms) a.sh.rotation.y = 0;
-    // ---- LOW READY (pistol drawn, not aiming): right arm brought in, elbow soft and off the ribs, muzzle at the floor ahead.
-    // Fades out when prone (crawl arms win) and under the full aim pose.
+    aimPivot.rotation.set(0, 0, 0);
+    // ---- LOW READY (pistol drawn, not aiming): firing elbow flared off the ribs, muzzle at the floor ahead.
+    // Right shoulder.x is negative so the upper arm abducts outward (the previous -0.34 only cleared the shoulder
+    // by a few centimetres and still read tucked). Fades out when prone (crawl arms win) and under the full aim pose.
     const readyK = armK * (1 - pk) * (1 - aimK);
     if (readyK > 0.001) {
       const Rr = arms[1], k = readyK, bob = Math.sin(t * 0.85) * 0.045;
-      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, 0.62 + bob, k); Rr.sh.rotation.y = mix(Rr.sh.rotation.y, 0.14, k);
-      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, -0.34, k); // elbow rolled out, not pinned to the ribs
-      Rr.el.rotation.z = mix(Rr.el.rotation.z, 1.15 + bob * 0.6, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, -0.4, k);
-      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -0.5, k); // muzzle broken down toward the floor ahead
+      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, -1.131, k); // elbow out, away from the ribcage
+      Rr.sh.rotation.y = mix(Rr.sh.rotation.y, 0.456, k);
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, 0.56 + bob, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.94 + bob * 0.45, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
+      Rr.wr.rotation.x = mix(Rr.wr.rotation.x, 0, k);
+      Rr.wr.rotation.y = mix(Rr.wr.rotation.y, -1.117, k); // keep the pistol upright while the forearm points down-range
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, 0, k);
     }
-    // ---- HANDGUN AIM: two-hand hold with the gun in at the chest. The firing elbow stays bent (~50°) and the support
-    // elbow (~30°) comes across to the grip, shoulders below a locked T. Base angles already put the barrel level, so
-    // shoulder aim only trims onto a target instead of hauling a straight arm around. `up` cancels torso lean + muzzle flip.
-    // Prone: reach past the head with a soft elbow.
+    // ---- HANDGUN AIM: two-hand chest hold, elbows bent and bowed OUT. The previous pass set the firing shoulder.x
+    // positive, which swings that elbow into the ribs (and the support elbow with it). Negative x on the right arm
+    // and positive x on the left abduct both elbows outside the chest; the wrists cant so the short forearms still
+    // meet on the grip. Shoulders stay below a locked T. Base angles already put the barrel level, so shoulder aim
+    // only trims onto a target. Prone: the flare fades and the arms reach past the head.
     if (aimK > 0.001) {
-      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.5;
-      const settle = Math.sin(t * 0.85) * 0.04, settleL = Math.sin(t * 0.85 + 0.8) * 0.03;
-      const aimZR = mix(0.73 + up, Math.PI - 0.55, pk), aimZL = mix(1.25 + up * 0.65, Math.PI - 0.7, pk);
-      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZR, k); Rr.sh.rotation.y = mix(0, 0.30 * (1 - pk), k);
-      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, 0.35 * (1 - pk), k);
-      Rr.el.rotation.z = mix(Rr.el.rotation.z, mix(0.86 + settle + recoil * 0.28, 0.50, pk), k);
-      Rr.el.rotation.x = mix(Rr.el.rotation.x, -0.40 * (1 - pk), k);
-      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.35, k);
-      L.sh.rotation.z = mix(L.sh.rotation.z, aimZL, k); L.sh.rotation.y = mix(0, -0.70 * (1 - pk), k);
-      L.sh.rotation.x = mix(L.sh.rotation.x, mix(0.35, 0.40, pk), k);
-      L.el.rotation.z = mix(L.el.rotation.z, mix(0.55 + settleL + recoil * 0.16, 0.50, pk), k);
-      L.el.rotation.x = mix(L.el.rotation.x, 0.05 * (1 - pk), k);
-      L.wr.rotation.z = mix(L.wr.rotation.z, 0.08, k);
+      const [L, Rr] = arms, k = aimK, open = 1 - pk;
+      // Muzzle flip only. Torso lean (crouch) is left to the shoulder-aim solver: baking the full lean into
+      // these already-raised arms made the solver wind a big yaw and the two elbows stopped matching.
+      const kick = recoil * 0.45;
+      const settle = Math.sin(t * 0.85) * 0.03, settleL = Math.sin(t * 0.85 + 0.8) * 0.025;
+      const aimZR = mix(1.349 + kick, Math.PI - 0.55, pk), aimZL = mix(1.346 + kick, Math.PI - 0.7, pk);
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZR, k); Rr.sh.rotation.y = mix(0, 0.286 * open, k);
+      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, -1.520 * open, k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, mix(1.731 + settle + recoil * 0.22, 0.50, pk), k);
+      Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
+      Rr.wr.rotation.x = mix(Rr.wr.rotation.x, -1.522 * open, k);
+      Rr.wr.rotation.y = mix(Rr.wr.rotation.y, -0.047 * open, k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, mix(-1.282, -recoil * 0.35, pk), k);
+      L.sh.rotation.z = mix(L.sh.rotation.z, aimZL, k); L.sh.rotation.y = mix(0, -0.297 * open, k);
+      L.sh.rotation.x = mix(L.sh.rotation.x, 1.506 * open, k);
+      L.el.rotation.z = mix(L.el.rotation.z, mix(1.730 + settleL + recoil * 0.12, 0.50, pk), k);
+      L.el.rotation.x = mix(L.el.rotation.x, 0, k);
+      L.wr.rotation.x = mix(L.wr.rotation.x, 1.509 * open, k);
+      L.wr.rotation.y = mix(L.wr.rotation.y, 0.047 * open, k);
+      L.wr.rotation.z = mix(L.wr.rotation.z, -1.271 * open, k);
       torso.rotation.y = mix(torso.rotation.y, -0.12 * (1 - pk), k); // blade the body a touch
+      // Crouch leans the torso forward. Pitch the shared aim pivot by that lean so both elbows rise together
+      // and the barrel stays level. Recoil rock is applied after, so the kick still shows.
+      const lean = torso.rotation.z;
+      if (pk < 0.25) aimPivot.rotation.z += -lean;
       // recoil body language: rock back from the waist, head snaps back, guns thrown sideways (settles with the kick)
       torso.rotation.z += recoil * 0.16 * k * (1 - pk); headPivot.rotation.z += recoil * 0.2 * k;
       for (const a of arms) a.sh.rotation.y += kickYaw * recoil * 0.45 * k * (1 - pk);
-      // shoulder aim offsets (yaw, pitch) on top of the pose, same delta on both shoulders
+      // shoulder aim offsets (yaw, pitch) on the shared aim pivot, so the two-hand grip turns as one piece
       shoulderAim(damp(W.aYaw, aimGoal[0], dt) * k, damp(W.aPitch, aimGoal[1], dt) * k, pk);
     } else { damp(W.aYaw, 0, dt); damp(W.aPitch, 0, dt); }
     // ---- TAKEDOWN (attacker, from behind): reach in, hook the left forearm across the guard's throat, two knife jabs
@@ -1152,10 +1171,17 @@ export function makeSneaker(scene, opts = {}) {
     writePose(trCur);
     hips.position.z *= 1 - k; hips.rotation.y *= 1 - k; torso.rotation.y *= 1 - k;
   }
-  // add a yaw / pitch offset to both shoulders. Standing: yaw = shoulder rotation.y (torso up), pitch = rotation.z
-  // (arm raise). Prone the torso lies on its front, so world-yaw is carried by rotation.x instead (torso x ~ world down).
+  // add a yaw / pitch offset to the aim. Standing: both shoulders share aimPivot, so yaw (around torso up)
+  // and pitch (around torso right) turn the two-hand grip together. Adding the same Euler to each shoulder
+  // instead splits the elbows once they are abducted — shoulder.y is no longer "turn". Prone keeps the old
+  // per-shoulder mapping: the torso is lying on its front, so world-yaw is carried by rotation.x.
   function shoulderAim(yo, po, pk) {
-    for (const a of arms) { a.sh.rotation.y += yo * (1 - pk); a.sh.rotation.x -= yo * pk; a.sh.rotation.z += po; }
+    if (pk > 0.45) {
+      for (const a of arms) { a.sh.rotation.y += yo * (1 - pk); a.sh.rotation.x -= yo * pk; a.sh.rotation.z += po; }
+      return;
+    }
+    aimPivot.rotation.y += yo;
+    aimPivot.rotation.z += po;
   }
   const _m = new THREE.Vector3(), _d = new THREE.Vector3(), _q = new THREE.Quaternion(), _tgt = new THREE.Vector3();
   const barrel = () => { g.updateMatrixWorld(true); flash.getWorldPosition(_m); drawn.getWorldQuaternion(_q); return _d.set(0, -1, 0).applyQuaternion(_q); };
