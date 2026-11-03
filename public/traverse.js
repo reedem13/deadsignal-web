@@ -27,7 +27,10 @@ export const TRAV = {
 //   the barracks roof, spur + grapple up to the mast roof, SKYBRIDGE (L2) east to the TANK HOUSE roof.
 // East: GANTRY (L1) over the switch lane -> RELAY PLATFORM (L1, upper switch pad); TANK BRIDGE (L1) + BALCONY (L1).
 // Compound (behind the red door): EXFIL TOWER (L2) - extraction is on its roof.
-export const L1 = 3.2, L2 = 6.4;
+// Expanded wings (outside the original fence, reached through gates + culverts):
+//   SOUTH motor pool — L1 shed + catwalk. EAST cooling plant — L1 ring, L2 tower, L3 penthouse.
+//   WEST service yard — L1 step, L2 lookout. NORTH dock — L1 rack, L2 crane cab.
+export const L1 = 3.2, L2 = 6.4, L3 = 9.6;
 const RAIL_H = 0.9;
 const W = (x1, x2, z1, z2, h, name, extra = {}) => ({ x1, x2, z1, z2, h, name, ...extra });
 export const WALKS = [
@@ -46,6 +49,19 @@ export const WALKS = [
   W(14.5, 19.6, -7.6, -3.3, L1, 'RELAY PLATFORM'),                 // upper switch pad
   W(10.6, 11.8, -2.3, 0.5, L1, 'TANK BRIDGE'),
   W(9, 13.5, 6, 7.2, L1, 'TANK BALCONY'),
+  // ---- south motor pool
+  W(-2.2, 14, 22.8, 24.2, L1, 'ANNEX CATWALK'),
+  // ---- east cooling plant (L1 ring around the tower)
+  W(20.4, 28.2, 5.15, 6.55, L1, 'EAST SPINE'),
+  W(27.6, 30.4, 5.15, 6.55, L1, 'EAST BRIDGE'),
+  W(24.4, 25.8, 2.4, 6.6, L1, 'EAST LINK'),
+  W(24.2, 36, 2.15, 3.45, L1, 'EAST NORTH'),
+  W(28.3, 29.7, 3.2, 13.2, L1, 'EAST SKIRT'),
+  W(28.3, 37.2, 11.7, 13.3, L1, 'COOLING BALCONY'),
+  // ---- west service
+  W(-34.6, -32.4, 1.15, 2.8, L1, 'LOOKOUT STEP'),
+  // ---- north dock
+  W(-5.2, 7, -22.8, -17.4, L1, 'DOCK RACK'),
 ];
 // rails: thin boxes that only exist up high (y0..h). rx = along x at edge z (side -1 = rail sits on the -z side of the
 // line, +1 = +z side); rz = along z at edge x.
@@ -71,6 +87,14 @@ export const RAILS = [
   // tank bridge + balcony (gap: crate steps)
   rz(-2.3, 0.5, 10.6, -1, L1), rz(-2.3, 0.5, 11.8, 1, L1),
   rx(9, 11.5, 7.2, 1, L1), rx(12.6, 13.5, 7.2, 1, L1), rz(6, 7.2, 9, -1, L1), rz(6, 7.2, 13.5, 1, L1),
+  // annex catwalk (gaps: rappel ~x6, east ladder ~x12)
+  rx(-1.5, 5.2, 24.2, 1, L1), rx(6.8, 11.2, 24.2, 1, L1), rx(12.8, 13.8, 24.2, 1, L1), rx(0, 13.8, 22.8, -1, L1),
+  // east spine (gap on the south edge at the ground ladder)
+  rx(20.6, 21.6, 6.55, 1, L1), rx(23.4, 30.2, 6.55, 1, L1), rx(20.6, 30.2, 5.15, -1, L1),
+  rx(28.6, 36.8, 13.3, 1, L1), // cooling balcony, outside edge
+  // dock rack (gaps at the ground ladder and the crane ladder)
+  rx(-4.6, -1.1, -17.4, 1, L1), rx(1.2, 6.6, -17.4, 1, L1),
+  rx(-4.8, -1.2, -22.8, -1, L1), rx(1.2, 6.6, -22.8, -1, L1),
 ];
 // support legs (main.js adds them to WALLS as kind 'post'): [x, z, height]
 export const DECK_POSTS = [
@@ -80,6 +104,15 @@ export const DECK_POSTS = [
   [6.5, 3.1, L2],
   ...[6, 10, 14].flatMap((x) => [[x, -3.22, L1], [x, -2.38, L1]]),
   [14.6, -7.5, L1], [19.5, -7.5, L1], [19.5, -3.4, L1],
+  // annex catwalk
+  [2, 22.95, L1], [2, 24.05, L1], [8, 22.95, L1], [8, 24.05, L1], [12.4, 23.5, L1],
+  // east wing
+  [22, 5.25, L1], [22, 6.45, L1], [26, 5.25, L1], [26, 6.45, L1], [29.2, 5.25, L1], [29.2, 6.45, L1],
+  [24.55, 4.2, L1], [25.65, 4.2, L1], [30, 2.3, L1], [30, 3.3, L1], [34, 2.3, L1],
+  [28.45, 8, L1], [29.55, 8, L1], [32, 11.85, L1], [32, 13.15, L1], [36, 12.5, L1],
+  // west step + dock rack
+  [-34.2, 1.35, L1], [-33.1, 2.5, L1],
+  [-2, -18.2, L1], [-2, -21.4, L1], [4, -18.2, L1], [4, -21.6, L1],
 ];
 export const GANTRY_POSTS = DECK_POSTS; // old name
 
@@ -92,6 +125,17 @@ export const CLIMBS = [
   { name: 'RELAY LADDER', kind: 'ladder', x: 18.6, z: -2.95, a: -Math.PI / 2, y0: 0, top: L1, lx: 18.6, lz: -4.0 },
   { name: 'TANK HOUSE PIPE', kind: 'pipe', x: 13.88, z: 3, a: Math.PI, y0: 0, top: L2, lx: 12.8, lz: 3 },
   { name: 'EXFIL LADDER', kind: 'ladder', x: 13.62, z: -11.2, a: 0, y0: 0, top: L2, lx: 14.7, lz: -11.2 },
+  // expanded wings (appended so existing climb indices stay put)
+  { name: 'ANNEX SHED LADDER', kind: 'ladder', x: -6, z: 27.45, a: -Math.PI / 2, y0: 0, top: L1, lx: -6, lz: 26.1 },
+  { name: 'ANNEX CAT LADDER', kind: 'ladder', x: 12, z: 24.7, a: -Math.PI / 2, y0: 0, top: L1, lx: 12, lz: 23.5 },
+  { name: 'EAST SPINE LADDER', kind: 'ladder', x: 22.5, z: 7.05, a: -Math.PI / 2, y0: 0, top: L1, lx: 22.5, lz: 5.9 },
+  { name: 'COOLING LADDER', kind: 'ladder', x: 29.5, z: 5.9, a: 0, y0: L1, top: L2, lx: 31.1, lz: 5.9 },
+  { name: 'PENTHOUSE LADDER', kind: 'ladder', x: 33, z: 10.15, a: -Math.PI / 2, y0: L2, top: L3, lx: 33, lz: 8.5 },
+  { name: 'SERVICE SHED LADDER', kind: 'ladder', x: -29.2, z: 7.3, a: -Math.PI / 2, y0: 0, top: L1, lx: -29.2, lz: 5.6 },
+  { name: 'LOOKOUT STEP LADDER', kind: 'ladder', x: -33.5, z: 3.25, a: -Math.PI / 2, y0: 0, top: L1, lx: -33.5, lz: 2.05 },
+  { name: 'LOOKOUT LADDER', kind: 'ladder', x: -33.5, z: 1.7, a: -Math.PI / 2, y0: L1, top: L2, lx: -33.5, lz: 0.2 },
+  { name: 'DOCK RACK LADDER', kind: 'ladder', x: 0, z: -16.85, a: -Math.PI / 2, y0: 0, top: L1, lx: 0, lz: -18.3 },
+  { name: 'CRANE LADDER', kind: 'ladder', x: 0, z: -22.45, a: -Math.PI / 2, y0: L1, top: L2, lx: 0, lz: -24.3 },
 ];
 for (const c of CLIMBS) c.y0 = c.y0 || 0;
 
@@ -128,6 +172,13 @@ export const LINKS = [
   { name: 'TANK HOUSE SOUTH', x: 11.25, z: 6.38, a: -Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
   { name: 'SKYBRIDGE LINE', x: 7.5, z: 4.06, a: -Math.PI / 2, y0: 0, top: L2, lip: RL2, wall: 0.38, land: 0.62, rail: 1 },
   { name: 'EXFIL TOWER SOUTH', x: 16.2, z: -9.82, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
+  // expanded wings — still top-only (appended so existing line indices stay put)
+  { name: 'ANNEX CATWALK LINE', x: 6, z: 24.65, a: -Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
+  { name: 'COOLING TOWER EAST', x: 37.45, z: 8, a: Math.PI, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
+  { name: 'COOLING TOWER SOUTH', x: 35.8, z: 12.05, a: -Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
+  { name: 'PENTHOUSE EAST', x: 34.98, z: 8, a: Math.PI, y0: L2, top: L3, lip: L3 + 0.06, wall: 0.38, land: 0.6 },
+  { name: 'LOOKOUT WEST', x: -35.25, z: -0.4, a: 0, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
+  { name: 'CRANE NORTH', x: 0, z: -26.85, a: Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
 ];
 // Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
 //   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom   [disabled: top-only grapple]
@@ -266,8 +317,8 @@ export function buildTraversal(scene, { walls, hazardMat }) {
   const decks = [];
   for (const w of WALKS) {
     if (w.noDeck) continue;
-    const lx = w.x2 - w.x1, lz = w.z2 - w.z1, cx = (w.x1 + w.x2) / 2, cz = (w.z1 + w.z2) / 2, hi = w.h > 5;
-    const m = lam(hi ? 0x7d8a92 : 0x5c666c, { transparent: true, opacity: DECK_A, depthWrite: false });
+    const lx = w.x2 - w.x1, lz = w.z2 - w.z1, cx = (w.x1 + w.x2) / 2, cz = (w.z1 + w.z2) / 2, hi = w.h > 5, sky = w.h > 8;
+    const m = lam(sky ? 0x9aa8b0 : hi ? 0x7d8a92 : 0x5c666c, { transparent: true, opacity: DECK_A, depthWrite: false });
     const slab = boxAt(scene, lx, 0.14, lz, m, cx, w.h - 0.07, cz); slab.renderOrder = 2;
     const along = lx >= lz, gm = hi ? rust : metal;
     if (along) for (let x = w.x1 + 0.3; x < w.x2; x += 0.6) I.box(gm, 0.04, 0.02, lz, x, w.h + 0.005, cz);

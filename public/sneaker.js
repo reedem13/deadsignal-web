@@ -1038,13 +1038,17 @@ export function makeSneaker(scene, opts = {}) {
     // ---- TRAVERSAL (ladder / drainpipe climb, rope hang, mantle, co-op boost kneel + lift, pull-up, grapple throw / tug / rope / hookset)
     applyTrav(dt, s);
     if (holstered) {
-      const out = aimK > 0.35 || (armK > 0.5 && tdK < 0.3);
-      holstered.visible = !out; drawn.visible = out;
+      // empty weapon string = bare hands (on-site procurement: nothing is holstered until you find a gun)
+      const bare = !s.weapon;
+      const out = !bare && (aimK > 0.35 || (armK > 0.5 && tdK < 0.3));
+      holstered.visible = !bare && !out; drawn.visible = !bare && out;
       knife.visible = tdK > 0.3 && tdP > 0.12 && tdP < 0.95 && !out;
-      flash.visible = flashT > 0 && out; flash.rotation.y = t * 40;
-      const wid = s.weapon || 'p9', rif = wid === 'fr5', can = wid === 'sd' || wid === 'mkt';
-      wx.rifle.visible = rif; wx.supp.visible = can && !rif;
-      flash.position.y = rif ? -0.6 : can ? -0.42 : -0.3; flash.scale.set(can ? 0.35 : 0.8, can ? 0.6 : 1.6, can ? 0.35 : 0.8);
+      flash.visible = !bare && flashT > 0 && out; flash.rotation.y = t * 40;
+      if (!bare) {
+        const wid = s.weapon, rif = wid === 'fr5', can = wid === 'sd' || wid === 'mkt';
+        wx.rifle.visible = rif; wx.supp.visible = can && !rif;
+        flash.position.y = rif ? -0.6 : can ? -0.42 : -0.3; flash.scale.set(can ? 0.35 : 0.8, can ? 0.6 : 1.6, can ? 0.35 : 0.8);
+      }
     }
     // lay flat (prone) / topple forward (death, game-over screen). Rig pivots at the feet, so shift it back to stay centred.
     const flat = Math.max(deadK, pk);
