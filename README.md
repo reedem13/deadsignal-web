@@ -13,6 +13,8 @@ Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way aro
 - **Prone** (Z/X or PRONE button): belly-down commando crawl. Slowest, silent, guards only spot you from ~3.5 m and much more slowly; hides behind low crates.
 - **Tunnels** (yellow-striped mouths, gold on the radar): West Culvert (spawn yard → north-west yard), Barracks Crawlspace (through the barracks), Compound Drain (west yard → inside the extraction compound; you still need the two-switch door to win). Inside a tunnel your camera goes **first person** (only yours, not your partner's). Up/W crawls forward, left/right turns, down/S backs up. You can't stand up in there. Guards can't enter, see in, or catch you in a tunnel.
 - Guards: patrol → `?` investigate noises/glimpses → `!` ALERT (chase, ~15 s), then CAUTION, then calm. A guard touching you in ALERT sends you back to the start.
+- **Vertical grapple lines** (orange rings at a wall's foot / behind its lip): ACT runs a short throw + tug (or hook-set + over the edge), then **you drive the rope** — W / stick up = climb hand-over-hand, S / stick down = bounding descent, let go of the stick = hang still. Up at the top = mantle onto the roof, down at the bottom = boots down, ACT on the rope = let go (a high standing drop thuds).
+- **Guards see up**: roofs, gantry, ladders and ropes are checked in 3D from the guard's eye (vertical cone ~49° up, ~60° on ALERT; straight overhead is blind). Roof edges and decks hide you if you're back from the lip, crouched or prone; looking up makes them slower to be sure.
 - **Takedown** (ACT / E / Space, only from *behind* a guard, within ~1.4 m, rear ~±64° arc): sneaker snaps in, choke hold + two knife jabs (~2.2 s), guard drops and stays down (no sight, hearing or catching). Front/side never works; the ACT button turns red and reads TAKE DOWN when it's possible.
 - **Handgun** (P-9, holstered on the right thigh): missions start **holstered**. G (or the GUN button) draws it - carried low-ready in the right hand, partner sees it - and G / HOLSTER puts it away. Holstered: ACT is only TAKE DOWN / USE and F does nothing (no accidental shots). Drawn: ACT fires when there's no takedown/switch, F always fires. A takedown swaps the pistol for the knife and goes back to it after. 12 rounds per mission, 0.5 s between shots, auto-aims at the nearest guard in front of you (narrow cone straight ahead in tunnels), one hit drops him. Crates don't stop bullets, walls do. Every shot is loud: live guards within 12 m come investigate (or chase if already on ALERT).
 - **Two-person door:** two switch pads by the red door, 10 m apart. Each player stands on one and presses ACT; the presses must land within 2 s of each other. One person can't do it alone.
@@ -61,6 +63,28 @@ Advanced: the client can talk to a relay on a different host with `?server=wss:/
 | Takedown (from behind) / use switch / fire | ACT button (label changes: TAKE DOWN / USE / FIRE) | E / Space |
 | Draw / holster pistol | GUN / HOLSTER button | G |
 | Fire pistol (only when drawn) | ACT (when nothing else to do) | F |
+| Gear menu (MGS-style grid) | GEAR button (top right) or tap the weapon box | I or Tab (arrows/WASD move, E/Enter = equip/use, Esc closes) |
+| Quick-swap weapon | open GEAR | 1 P-9 · 2 FR-5 · 3 MK-T · 4 STUN.G · 5 C4 |
+| Use current item | tap the item box (bottom left) | Q |
+| Detonate C4 | DET button | T |
+
+## Gear (weapons + items)
+Open the grid with GEAR / I / Tab. Tap a slot to select it and tap again (or EQUIP / USE) to act. Solo pauses while the menu is open; co-op doesn't. Unowned slots show `- - -`; pick gear up from the crates with icon signs on the map (radar shows them). You start with the P-9 (12 rds), 2 STUN.G, 1 RATION and the C.BOX.
+
+| Gear | What it does |
+|---|---|
+| P-9 | Sidearm, one hit drops a guard, loud (12 m). Ammo crates respawn. |
+| SUPP. | Toggle on the P-9: noise radius 3 m. |
+| FR-5 | Assault rifle, 3-round bursts, longer range, very loud (16 m). |
+| MK-T | Tranquilizer: built-in quiet, a dart puts a guard to sleep 30 s (Z). Sleeping/stunned guards can be taken down from any side. |
+| STUN.G | Thrown ~7 m, 1.2 s fuse, white flash: guards within 5 m stunned 7 s (\*). Non-lethal. |
+| C4 | FIRE plants at your feet, T / DET sets off all yours: kills guards within 3.2 m, hurts players within 3 m (you too), very loud. |
+| RATION | +40 LIFE. |
+| STIM | 30 s of steady aim (no recoil bloom / sway). |
+| C.BOX | Hide in a cardboard box: standing still you're invisible unless a guard on ALERT bumps into you; moving is slow and half as visible. |
+| SCOPE | Toggle: zooms the top-down camera out ×1.75 / narrows first-person FOV. |
+
+Gear art + the table live in `public/gear.js`. Damage, sleep, stun, C4 and healing are all host-authoritative. Pickups are per player (each teammate can grab every crate once; ammo/ration/grenade crates respawn).
 
 ## Phone tips / known limits
 - **iPhone/iOS Safari**
@@ -81,10 +105,11 @@ server.js                 static file server + WebSocket room relay (/ws), heart
 public/index.html         lobby, HUD, touch controls markup
 public/style.css          mobile-first UI (safe-area aware, no zoom/scroll)
 public/main.js            game: three.js scene, input, host simulation, netcode, radar, UI
+public/gear.js            weapons/items table, pixel font + red/grey pixel icons, MGS-style slot renderer
 public/vendor/three.module.js   three.js r160 (vendored, no CDN needed)
 public/manifest.webmanifest     Add-to-Home-Screen fullscreen
 ```
-Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `ALERT_TIME`, `SWITCH_WINDOW`, the guard patrol routes and the level boxes.
+Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `SIGHT_V` (vertical vision), `ALERT_TIME`, `SWITCH_WINDOW`, the guard patrol routes and the level boxes.
 
 ## Next steps
 - Swap the box characters for Blockbench glTF exports (`GLTFLoader`, nearest-filtered textures, separate parts parented to bones/groups for animation).
