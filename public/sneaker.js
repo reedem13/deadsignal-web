@@ -10,7 +10,8 @@
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
 // respirator -> NO face visible). Poses: stand / walk / run / crouch / PRONE (belly-down, commando crawl) / dead.
 // Combat overlays (layered on top of the base pose): armed (s.armed: pistol out of the holster, carried low-ready in the
-// right hand; false = holstered on the thigh), aim (handgun up, two-hand grip, recoil on s.shot change),
+// right hand; false = holstered on the thigh), aim (handgun up in a soft two-hand hold: elbows stay bent, shoulders
+// sit low, recoil on s.shot change),
 // takedown (attacker: choke hold from behind + knife jabs, s.takedown = 0..1 progress) and held (victim: head back,
 // clawing at the arm, knees buckle, s.held = 0..1 progress -> then dead).
 import * as THREE from 'three';
@@ -737,11 +738,13 @@ export function makeSneaker(scene, opts = {}) {
     return -Math.acos(c) - t;
   };
   // Blend weights use critically-damped springs (SmoothDamp) instead of plain exponential lerps: transitions ease in AND
-  // out, so stance changes / starts / stops roll through instead of popping. Gait phase is distance-driven
+  // out, so stance changes / starts / stops roll through instead of popping. `smooth` is the approximate seconds to
+  // arrive (higher = heavier). Locomotion and the pistol draw / aim are slow enough to read as weight; shoulder
+  // tracking (aYaw / aPitch) stays quicker so the barrel still settles on a target. Gait phase is distance-driven
   // (radians per metre), so feet don't skate while the body speeds up or coasts to a stop.
   const K = (smooth) => ({ x: 0, v: 0, smooth });
-  const W = { crouch: K(0.13), prone: K(0.24), move: K(0.11), run: K(0.2), dead: K(0.22), spd: K(0.12), lean: K(0.16), roll: K(0.14), idle: K(0.4),
-    aim: K(0.07), td: K(0.08), held: K(0.06), armed: K(0.1), aYaw: K(0.09), aPitch: K(0.09), trav: K(0.07), raim: K(0.09), tail: K(0.25) };
+  const W = { crouch: K(0.24), prone: K(0.40), move: K(0.22), run: K(0.36), dead: K(0.34), spd: K(0.20), lean: K(0.30), roll: K(0.26), idle: K(0.55),
+    aim: K(0.22), td: K(0.08), held: K(0.06), armed: K(0.24), aYaw: K(0.16), aPitch: K(0.16), trav: K(0.07), raim: K(0.09), tail: K(0.25) };
   // SHOULDER AIM: the aim pose is turned at the shoulder joints (both arms together, so the two-hand grip holds) until
   // the pistol barrel points at s.aimAt (world point: auto-aim lock target, or a point straight ahead when nothing is
   // locked). aimGoal = shoulder offsets [yaw, pitch] solved each frame from the finished pose; the springs above ease
@@ -794,7 +797,7 @@ export function makeSneaker(scene, opts = {}) {
       recoil = Math.min(enemy ? 1.7 : 1.6, recoil + (enemy ? 0.75 : 1));
       kickYaw = (Math.random() - 0.5) * (enemy ? 0.55 : 0.8); flashT = enemy ? 0.05 : 0.08; lastShot = s.shot;
     }
-    recoil = Math.max(0, recoil - dt * (enemy ? 4.6 : 3.4)); flashT = Math.max(0, flashT - dt);
+    recoil = Math.max(0, recoil - dt * (enemy ? 4.6 : 2.4)); flashT = Math.max(0, flashT - dt);
     if (s.hurt && s.hurt !== lastHurt) {
       const rel = (s.hurtFrom ?? -g.rotation.y) + g.rotation.y; // attacker angle relative to the facing (a = -rotation.y)
       hitF = Math.cos(rel); hitS = Math.sin(rel); hitJ = (Math.random() - 0.5) * 2;
@@ -810,8 +813,9 @@ export function makeSneaker(scene, opts = {}) {
     const moveK = clamp(damp(W.move, s.dead ? 0 : sstep(spd / ref), dt), 0, 1);
     const runTarget = s.crouch || s.prone ? 0 : s.speed != null ? sstep((spd - 3.5) / 1.4) : (s.run ? 1 : 0);
     const runK = clamp(damp(W.run, runTarget, dt), 0, 1);
-    // stride length: radians of gait phase per metre travelled (walk 2.65, run 2.1, crouch 3.6, prone crawl 3.8)
-    const radPerM = mix(mix(mix(2.65, 2.1, runK), 3.6, crouchK), 3.8, proneK);
+    // stride length: radians of gait phase per metre. Heavier than a brisk game-walk (longer steps, fewer of them):
+    // walk 1.95, run 1.55, crouch 2.65, prone crawl 2.75. Swing / lift below are opened up so the slower cycle still covers the stride.
+    const radPerM = mix(mix(mix(1.95, 1.55, runK), 2.65, crouchK), 2.75, proneK);
     phase += dt * Math.max(spd, moveK * 0.4) * radPerM;
     const sw = Math.sin(phase), t = performance.now() / 1000;
     // body reacts to momentum: lean into acceleration, rock back when braking, bank into turns
@@ -824,16 +828,16 @@ export function makeSneaker(scene, opts = {}) {
     if (s.aimAt && aimHad && Math.abs(yawRate * dt) > 0.15) { W.aYaw.x -= yawRate * dt; aimGoal[0] -= yawRate * dt; }
     const roll = damp(W.roll, clamp(-yawRate * spd * 0.012, -0.12, 0.12) * (1 - proneK), dt);
     const idle = damp(W.idle, 1 - moveK, dt) * (1 - deadK);
-    const breathe = Math.sin(t * 1.7) * idle, sway = Math.sin(t * 0.55) * idle;
+    const breathe = Math.sin(t * 1.05) * idle, sway = Math.sin(t * 0.36) * idle;
 
     // hip height: stand 0.92 -> crouch 0.56. Bob is lowest at full stride (sin^2), smooth instead of the old |cos| cusp.
-    const bob = moveK * (0.022 + runK * 0.03) * sw * sw;
-    hips.position.y = HIP_Y - crouchK * 0.26 - bob + breathe * 0.005;
-    hips.position.z = moveK * Math.sin(phase - 0.4) * 0.022 * (1 - runK * 0.5) + sway * 0.012; // weight shift over the stance leg
-    hips.rotation.y = moveK * Math.sin(phase - 0.15) * 0.12;
+    const bob = moveK * (0.034 + runK * 0.045) * sw * sw;
+    hips.position.y = HIP_Y - crouchK * 0.26 - bob + breathe * 0.008;
+    hips.position.z = moveK * Math.sin(phase - 0.4) * 0.034 * (1 - runK * 0.5) + sway * 0.016; // weight shift over the stance leg
+    hips.rotation.y = moveK * Math.sin(phase - 0.15) * 0.17;
     const h = hips.position.y - 0.04; // hip joints sit 4cm below the hips pivot
     // torso: upright -> lean forward in crouch / run (negative z = forward), plus the momentum lean
-    torso.rotation.z = -(crouchK * 0.6 + runK * moveK * 0.25 + moveK * 0.05 + lean) - breathe * 0.012;
+    torso.rotation.z = -(crouchK * 0.6 + runK * moveK * 0.36 + moveK * 0.07 + lean) - breathe * 0.018;
     torso.rotation.y = -hips.rotation.y * 1.3;
     torso.rotation.x = -roll * 0.3 + sway * 0.015;
     // head: keep eyes on the horizon, slightly lagged so it settles rather than snaps
@@ -842,12 +846,12 @@ export function makeSneaker(scene, opts = {}) {
     // legs: crouch base pose (front/back stagger like the crouch ref) + walk swing, IK keeps feet planted-ish
     for (const lg of legs) {
       const ph = lg.side === 1 ? 0 : Math.PI;
-      const swing = Math.sin(phase + ph) * moveK * (0.35 + runK * 0.25 - crouchK * 0.15);
+      const swing = Math.sin(phase + ph) * moveK * (0.48 + runK * 0.32 - crouchK * 0.18);
       const base = crouchK * (lg.side === -1 ? 0.95 : -0.5); // left leg forward, right leg back (lunge)
       const th = base + swing;
       let kn = legIK(th, h);
       const up = Math.max(0, Math.cos(phase + ph)), liftS = up * up * (3 - 2 * up); // eased swing-through (no kink at contact)
-      const lift = liftS * moveK * (0.5 + runK * 0.6);
+      const lift = liftS * moveK * (0.64 + runK * 0.72);
       kn -= lift;
       lg.hip.rotation.z = th; lg.knee.rotation.z = kn; lg.ankle.rotation.z = -(th + kn) - lift * 0.4;
       lg.hip.rotation.x = -lg.side * crouchK * 0.08;
@@ -855,10 +859,10 @@ export function makeSneaker(scene, opts = {}) {
     // arms: relaxed at sides, swing opposite to legs with a little follow-through lag; crouch = forearms up in a ready guard
     for (const a of arms) {
       const ph = a.side === 1 ? Math.PI : 0;
-      const swing = Math.sin(phase + ph - 0.3) * moveK * (0.4 + runK * 0.4) * (1 - crouchK * 0.6);
-      a.sh.rotation.z = swing + crouchK * (a.side === -1 ? 0.9 : 0.35) + runK * moveK * 0.2 + breathe * 0.02;
-      a.sh.rotation.x = -a.side * (0.1 + crouchK * 0.15 + breathe * 0.015) + roll * 0.5;
-      a.el.rotation.z = 0.15 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.0 + moveK * 0.2 + Math.max(0, swing) * 0.35;
+      const swing = Math.sin(phase + ph - 0.48) * moveK * (0.55 + runK * 0.5) * (1 - crouchK * 0.6);
+      a.sh.rotation.z = swing + crouchK * (a.side === -1 ? 0.9 : 0.35) + runK * moveK * 0.28 + breathe * 0.03;
+      a.sh.rotation.x = -a.side * (0.12 + crouchK * 0.15 + breathe * 0.02) + roll * 0.5;
+      a.el.rotation.z = 0.22 + crouchK * (a.side === -1 ? 1.3 : 1.0) + runK * moveK * 1.05 + moveK * 0.28 + Math.max(0, swing) * 0.42;
       a.wr.rotation.z = crouchK * -0.2;
     }
     // PRONE: blend every joint toward a belly-down pose, then lay the whole rig flat (head forward along +x).
@@ -898,26 +902,34 @@ export function makeSneaker(scene, opts = {}) {
       for (const a of arms) a.el.rotation.x = 0;
     }
     for (const a of arms) a.sh.rotation.y = 0;
-    // ---- LOW READY (pistol drawn, not aiming): right forearm brought forward, muzzle angled at the floor ahead.
+    // ---- LOW READY (pistol drawn, not aiming): right arm brought in, elbow soft and off the ribs, muzzle at the floor ahead.
     // Fades out when prone (crawl arms win) and under the full aim pose.
     const readyK = armK * (1 - pk) * (1 - aimK);
     if (readyK > 0.001) {
-      const Rr = arms[1], k = readyK;
-      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, 0.38 + Rr.sh.rotation.z * 0.25, k); Rr.sh.rotation.x = mix(Rr.sh.rotation.x, 0.1, k);
-      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.75, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k);
-      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, 0.15, k);
+      const Rr = arms[1], k = readyK, bob = Math.sin(t * 0.85) * 0.045;
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, 0.62 + bob, k); Rr.sh.rotation.y = mix(Rr.sh.rotation.y, 0.14, k);
+      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, -0.34, k); // elbow rolled out, not pinned to the ribs
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, 1.15 + bob * 0.6, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, -0.4, k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -0.5, k); // muzzle broken down toward the floor ahead
     }
-    // ---- HANDGUN AIM: right arm straight out along the facing, left hand cups the grip (Weaver-ish). Compensates the
-    // torso lean so the barrel stays level in crouch. Prone: arm reaches forward past the head (rig is laid on its front).
+    // ---- HANDGUN AIM: two-hand hold with the gun in at the chest. The firing elbow stays bent (~50°) and the support
+    // elbow (~30°) comes across to the grip, shoulders below a locked T. Base angles already put the barrel level, so
+    // shoulder aim only trims onto a target instead of hauling a straight arm around. `up` cancels torso lean + muzzle flip.
+    // Prone: reach past the head with a soft elbow.
     if (aimK > 0.001) {
-      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.78; // muzzle flip
-      const aimZ = mix(Math.PI / 2 + up, Math.PI - 0.15 - 0.14, pk), aimX = 0;
-      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZ, k); Rr.sh.rotation.y = mix(0, 0.32 * (1 - pk), k); Rr.sh.rotation.x = mix(Rr.sh.rotation.x, aimX, k);
-      Rr.el.rotation.z = mix(Rr.el.rotation.z, 0.04 + recoil * 0.8, k); Rr.el.rotation.x = mix(Rr.el.rotation.x, 0, k); // elbow buckles
-      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.65, k); // wrist snaps up
-      L.sh.rotation.z = mix(L.sh.rotation.z, mix(Math.PI / 2 - 0.12 + up, Math.PI - 0.35, pk), k); L.sh.rotation.y = mix(0, -0.62 * (1 - pk), k);
-      L.sh.rotation.x = mix(L.sh.rotation.x, pk * 0.5, k);
-      L.el.rotation.z = mix(L.el.rotation.z, 0.35 + recoil * 0.55, k); L.el.rotation.x = mix(L.el.rotation.x, 0, k);
+      const [L, Rr] = arms, k = aimK, up = -torso.rotation.z + recoil * 0.5;
+      const settle = Math.sin(t * 0.85) * 0.04, settleL = Math.sin(t * 0.85 + 0.8) * 0.03;
+      const aimZR = mix(0.73 + up, Math.PI - 0.55, pk), aimZL = mix(1.25 + up * 0.65, Math.PI - 0.7, pk);
+      Rr.sh.rotation.z = mix(Rr.sh.rotation.z, aimZR, k); Rr.sh.rotation.y = mix(0, 0.30 * (1 - pk), k);
+      Rr.sh.rotation.x = mix(Rr.sh.rotation.x, 0.35 * (1 - pk), k);
+      Rr.el.rotation.z = mix(Rr.el.rotation.z, mix(0.86 + settle + recoil * 0.28, 0.50, pk), k);
+      Rr.el.rotation.x = mix(Rr.el.rotation.x, -0.40 * (1 - pk), k);
+      Rr.wr.rotation.z = mix(Rr.wr.rotation.z, -recoil * 0.35, k);
+      L.sh.rotation.z = mix(L.sh.rotation.z, aimZL, k); L.sh.rotation.y = mix(0, -0.70 * (1 - pk), k);
+      L.sh.rotation.x = mix(L.sh.rotation.x, mix(0.35, 0.40, pk), k);
+      L.el.rotation.z = mix(L.el.rotation.z, mix(0.55 + settleL + recoil * 0.16, 0.50, pk), k);
+      L.el.rotation.x = mix(L.el.rotation.x, 0.05 * (1 - pk), k);
+      L.wr.rotation.z = mix(L.wr.rotation.z, 0.08, k);
       torso.rotation.y = mix(torso.rotation.y, -0.12 * (1 - pk), k); // blade the body a touch
       // recoil body language: rock back from the waist, head snaps back, guns thrown sideways (settles with the kick)
       torso.rotation.z += recoil * 0.16 * k * (1 - pk); headPivot.rotation.z += recoil * 0.2 * k;
