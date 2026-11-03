@@ -4,9 +4,9 @@
 //            Crates + buildings in main.js WALLS are walkable too (their tops).
 //   RAILS  : collision boxes that only exist up high (y0..h) - catwalk railings. Ignored by guards / sight / bullets.
 //   CLIMBS : solo ladders / drainpipes. Stand at (x,z) on floor y0 facing a (toward the wall), climb to `top`, vault onto (lx,lz).
-//   COOPS  : co-op boost walls (too high to climb solo). Face point (x,z) on the wall, a = facing into the wall.
-//   LINKS  : vertical grapple lines up a wall face (hook bites the lip, rope hangs straight down). Two-way:
-//            foot ring = GRAPPLE up, top ring = RAPPEL down.
+//   COOPS  : hand-placed co-op boost walls (2P decal). main.js adds generated co-op spots on most other faces (COOP_ALL).
+//   LINKS  : vertical grapple lines down a wall face (hook bites the lip, rope hangs straight down). TOP-ONLY:
+//            top ring = RAPPEL down, or haul a teammate who waits at the foot ring up the rope. No ground -> up grapple.
 import * as THREE from 'three';
 
 export const TRAV = {
@@ -106,8 +106,9 @@ export function coopGeom(c) {
 }
 
 // Vertical grapple lines: the hook bites the top lip of a wall (or the gantry rail) and the rope hangs straight down the
-// face. Every line is two-way: stand at the FOOT ring (ground, facing the wall) -> GRAPPLE up; stand at the TOP ring
-// (just back from the lip) -> RAPPEL down. No swings, no lateral arcs - you only ever move up / down the face.
+// face. Lines are set from the TOP only: stand at the TOP ring (just back from the lip) -> RAPPEL down, or PULL UP a
+// teammate standing at the FOOT ring (co-op rope haul, main.js). Once you're on your own line you can still climb it
+// back up. No swings, no lateral arcs - you only ever move up / down the face.
 //   x,z  = foot spot (where you stand / hang, `wall` m off the face)   a = facing INTO the wall
 //   y0   = foot floor height   top = floor up top   lip = height the claw bites (roof edge or rail top)
 //   land = how far past the face you end up on top
@@ -129,7 +130,7 @@ export const LINKS = [
   { name: 'EXFIL TOWER SOUTH', x: 16.2, z: -9.82, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
 ];
 // Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
-//   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom
+//   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom   [disabled: top-only grapple]
 //   DOWN entry (top ring): face the drop -> kneel + clamp the claw, feed the line -> turn, step back over the edge -> ON THE LINE at the top
 // ON THE LINE: hold up = hand-over-hand climb (pull, settle, pull...), hold down = controlled bounding descent (kick off, swing
 // back in), let go of the stick = hang still on the rope. Up at the top -> mantle over the lip; down at the bottom -> land.
@@ -305,7 +306,7 @@ export function buildTraversal(scene, { walls, hazardMat }) {
     const bot = ring({ x: L.foot.x - L.dx * 0.12, y: L.y0, z: L.foot.z - L.dz * 0.12 }, 0.62), top = ring(L.landP, 0.52);
     const ch = chevron(L.foot.x + L.dx * 0.2, L.y0, L.foot.z + L.dz * 0.2, L.a, bot.material);
     const chT = chevron(L.landP.x - L.dx * 0.28, L.top, L.landP.z - L.dz * 0.28, L.a + Math.PI, top.material);
-    hot.push({ mesh: bot, kind: 'link', i, extra: ch }, { mesh: top, kind: 'linkTop', i, extra: chT });
+    hot.push({ mesh: bot, kind: 'link', i, extra: ch }, { mesh: top, kind: 'linkTop', i, extra: chT }); // foot ring = rope pickup (haul) point
   });
   I.flush();
   let t = 0;

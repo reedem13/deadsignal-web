@@ -21,14 +21,19 @@
 <div id="hurtFlash"></div>
 <div id="hud" class="hidden">
   <div id="hudTop">
-    <div id="roomInfo"><span id="roomCode">----</span> <span id="peerStatus" class="bad">waiting</span> <span id="ping"></span>
+    <div id="roomInfo"><span id="slotTag"></span> <span id="roomCode">----</span> <span id="peerStatus" class="bad">waiting</span> <span id="ping"></span>
       <button id="btnShare" class="small">Share link</button></div>
     <div id="alertBanner" class="hidden"></div>
-    <canvas id="radar" width="160" height="120"></canvas>
+    <div id="hudRight"><button id="btnView" class="small" title="First-person view (V)">1ST</button><canvas id="radar" width="160" height="120"></canvas></div>
   </div>
   <div id="hpBox">
     <div id="hpMe" class="hpRow ok"><span class="hpLbl">LIFE</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
-    <div id="hpOther" class="hpRow ok hidden"><span class="hpLbl">P2 LIFE</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+    <div id="hpMinis">
+      <div id="hpO1" class="hpRow mini ok hidden" data-mini="1"><span class="hpLbl">P2</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+      <div id="hpO2" class="hpRow mini ok hidden" data-mini="1"><span class="hpLbl">P3</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+      <div id="hpO3" class="hpRow mini ok hidden" data-mini="1"><span class="hpLbl">P4</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+      <div id="hpO4" class="hpRow mini ok hidden" data-mini="1"><span class="hpLbl">P5</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
+    </div>
   </div>
   <div id="objective">Reach the door switches</div>
   <div id="toast" class="hidden"></div>
@@ -47,7 +52,7 @@
 <!-- Lobby -->
 <div id="lobby" class="panel">
   <h1>PROJECT<br><span>DEADSIGNAL</span></h1>
-  <p class="sub">2-player co-op infiltration &middot; prototype</p>
+  <p class="sub">Co-op infiltration for up to 5 players &middot; prototype</p>
   <div id="lobbyMain">
     <button id="btnHost" class="big">HOST MISSION</button>
     <div class="or">or join with a code</div>
@@ -59,8 +64,10 @@
     <b>Phone:</b> left thumb = move (push to edge = run, loud) &middot; CROUCH = slow &amp; quiet, hides behind crates &middot; PRONE = crawl, very hard to spot &middot; ACT = take down a guard from <i>behind</i> / press a door switch / fire your pistol if drawn (12 rounds, loud) &middot; GUN = draw / holster the pistol (starts holstered)<br>
     <b>Keyboard:</b> WASD/arrows move &middot; Shift run &middot; C crouch &middot; Z/X prone &middot; E/Space act (takedown from behind, switch, else fire if drawn) &middot; G draw/holster pistol &middot; F fire (only when drawn)<br>
     <b>Tunnels</b> (yellow-striped mouths): crawl in to switch to first person &mdash; up/W forward, left/right turn. Guards can't follow.<br>
-    <b>Climbing</b> (ACT button changes to CLIMB / MANTLE / GRAPPLE...): ladders + drainpipes (yellow) &mdash; ACT or keep pushing into them, push in = up, away = down, ACT = let go &middot; crate lips (light trim) = MANTLE &middot; orange rings = GRAPPLE up / RAPPEL down to the hook &middot; drop from high standing = loud thud (crouch first = quiet) &middot; up high guards spot you less.<br>
-    <b>Co-op wall</b> (hazard stripe + 2P, signal shed): one player ACT = kneel (BOOST), the other ACT = climb on and get thrown up. Or whoever is on top stands at the lip and ACT = PULL UP the partner below.
+    <b>Climbing</b> (ACT button changes to CLIMB / MANTLE / GRAPPLE...): ladders + drainpipes (yellow) &mdash; ACT or keep pushing into them, push in = up, away = down, ACT = let go &middot; crate lips (light trim) = MANTLE &middot; orange rings = GRAPPLE, <i>top-only</i>: from the roof ring RAPPEL down, or PULL UP a teammate waiting at the foot ring (GRAB ROPE) &middot; drop from high standing = loud thud (crouch first = quiet) &middot; up high guards spot you less.<br>
+    <b>Co-op climb</b> works on almost any building wall, tall crate or catwalk lip (gold ring shows the spot; the hazard-stripe 2P wall by the signal shed is the marked one): one player faces the wall, gun holstered, ACT = kneel (BOOST), a teammate ACT = climb on and get thrown up. Or whoever is on top stands at the lip and ACT = PULL UP the teammate below.<br>
+    <b>View:</b> 1ST button (top right) / V = first-person on/off; tunnels switch to first person by themselves.<br>
+    <b>Team:</b> host + up to 4 joiners share the same code. Door switches and extract still need just 2 agents; the rest are free agents.
   </div>
 </div>
 

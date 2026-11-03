@@ -61,7 +61,7 @@ button.act.flash { background: #d8c040; color: #111; }
 #stance { position: absolute; left: calc(10px + env(safe-area-inset-left)); bottom: calc(8px + env(safe-area-inset-bottom));
   font-size: 13px; background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 4px; }
 body.desktop #stickZone, body.desktop #buttons { display: none; }
-@media (max-width: 500px) { #alertBanner { font-size: 15px; letter-spacing: 1px; } #roomInfo { font-size: 12px; } #radar { width: 112px; height: 84px; } #objective { top: calc(96px + env(safe-area-inset-top)); font-size: 12px; padding: 0 8px; } }
+@media (max-width: 500px) { #alertBanner { font-size: 15px; letter-spacing: 1px; } #roomInfo { font-size: 12px; white-space: nowrap; } #ping { display: none; } #btnShare { padding: 2px 6px; font-size: 11px; } #radar { width: 112px; height: 84px; } #objective { top: calc(96px + env(safe-area-inset-top)); font-size: 12px; padding: 0 8px; } }
 /* first-person tunnel view: dark vignette + hide the follow-cam marker clutter */
 #fpsVignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0;
   background: radial-gradient(ellipse at 50% 55%, rgba(0,0,0,0) 45%, rgba(0,0,0,.75) 100%); }
@@ -92,8 +92,15 @@ button.act.gun.on { background: rgba(140, 100, 20, .85); border-color: #ffd27f; 
 .hpRow.crit .hpFill { background: linear-gradient(#ff8a7a 0 35%, #d82020 35% 100%); }
 .hpRow.crit .hpLbl { color: #ff6a5a; animation: blink .4s steps(2) infinite; }
 .hpRow.crit .hpBar { border-color: #ff6a5a; }
-#hpOther .hpBar { width: 120px; height: 9px; }
-#hpOther .hpLbl { font-size: 10px; }
+#hpMinis { display: grid; grid-template-columns: auto auto; gap: 3px 10px; }
+.hpRow.mini { flex-direction: row; align-items: center; gap: 4px; }
+.hpRow.mini.hidden { display: none; }
+.hpRow.mini .hpBar { width: 64px; height: 8px; }
+.hpRow.mini .hpLbl { font-size: 10px; letter-spacing: 1px; color: var(--pc, #cfe8d4); min-width: 16px; }
+#slotTag { font-weight: bold; letter-spacing: 1px; }
+#hudRight { display: flex; align-items: flex-start; gap: 4px; }
+#btnView { pointer-events: auto; min-width: 44px; min-height: 34px; font-weight: bold; letter-spacing: 1px; background: rgba(0,0,0,.55); color: #9fd9b0; border: 1px solid #4fbf7a; border-radius: 4px; }
+#btnView.on { background: #2b6a44; color: #fff; }
 #hurtFlash { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0;
   background: radial-gradient(ellipse at 50% 50%, rgba(255,0,0,0) 35%, rgba(200,0,0,.85) 100%); }
-@media (max-width: 500px) { #hpBox { top: calc(36px + env(safe-area-inset-top)); } .hpBar { width: 112px; } #hpOther .hpBar { width: 84px; } }
+@media (max-width: 500px) { #hpBox { top: calc(36px + env(safe-area-inset-top)); } .hpBar { width: 112px; } .hpRow.mini .hpBar { width: 44px; } #btnView { min-width: 40px; min-height: 32px; font-size: 11px; padding: 2px 4px; } }

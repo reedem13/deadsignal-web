@@ -10,8 +10,12 @@
 // The host is authoritative for guard deaths: guests send 'td' / 'sh' requests, the host applies them and broadcasts.
 // Climbing (Splinter Cell style, see traverse.js for the map data): players have a feet height me.y. Crates + roofs are
 // walkable; ACT near a lip / ladder / drainpipe / grapple ring / co-op wall climbs, mantles, grapples or boosts.
-// Grapples are vertical only: the claw bites a wall lip, then YOU drive the rope: hold up = climb, hold down = descend,
-// release = hang still (traverse.js LINKS / GRAPPLE). ACT on the rope = let go.
+// Grapples are TOP-ONLY: from a roof / catwalk top ring you set the claw on the lip and RAPPEL down (then drive the rope:
+// hold up = climb back, hold down = descend, release = hang still - traverse.js LINKS / GRAPPLE; ACT on the rope = let go),
+// or HAUL a partner standing at the foot ring up the rope. Nothing fires a hook upward from the ground any more.
+// Co-op boost / pull-up works on almost every building face, tall crate and catwalk lip (generated COOP_ALL spots).
+// Up to 5 players (slot 0 = host, 1..4 = guests). Puzzles (door switches, extract) still only need 2 agents.
+// V / the 1ST button toggles a first-person view for the local player (tunnels still force it).
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
@@ -73,7 +77,9 @@ const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0)
 // SWITCHES: y = floor height of the pad. One is on the ground by the red door, the other up on the RELAY PLATFORM (L1).
 const SWITCHES = [{ x: 6.5, z: -6.6, y: 0 }, { x: 17, z: -5.5, y: L1 }]; // ~10.5 apart -> one person can't hit both in time
 const EXTRACT = { x: 16.2, z: -12.4, y: L2, r: 1.8 };  // helipad ring on the EXFIL TOWER roof
-const SPAWNS = [{ x: -17, z: 13 }, { x: -15.5, z: 13.2 }];
+// 5 spawn slots in the south-west yard (P1 host .. P5), spread a little so nobody overlaps and all start equally far
+const SPAWNS = [{ x: -17, z: 13 }, { x: -15.5, z: 13.2 }, { x: -14, z: 12.6 }, { x: -16.4, z: 11.6 }, { x: -12.6, z: 13.4 }];
+const NP = SPAWNS.length; // max players per room (server.js MAX_GUESTS + 1)
 // GUARDS: y = the floor a guard lives on. Elevated guards (y > 0) stay on their decks: `area` = the walkable rects they
 // may stand in (overlapping where decks join, so they can walk across the seams); they chase / investigate to the
 // nearest edge, then hold there and use their FAMAS / vertical vision. 5 guards (was 3): 3 of them on decks / roofs; the
@@ -136,6 +142,8 @@ if (!isTouch) document.body.classList.add('desktop');
 const $ = (id) => document.getElementById(id);
 
 let role = null;          // 'host' | 'guest'
+let mySlot = 0;           // 0 = host, 1..4 = guests (server assigns)
+let fpsOn = false;        // first-person toggle (button / V) - tunnels force first person regardless
 let solo = false;
 let roomCode = '';
 let peerConnected = false;
@@ -146,10 +154,14 @@ let peerConnected = false;
 const me = { x: SPAWNS[0].x, z: SPAWNS[0].z, a: -Math.PI / 2, c: false, p: false, run: false, moving: false, tun: -1, vx: 0, vz: 0,
   td: null, eq: false, ammo: GUN.ammo, cd: 0, gunT: 0, shot: 0, y: 0, vy: 0, tr: null, thud: 0, fallFrom: 0, grabT: 0, bloom: 0, wob: 0, wobA: 0 };
 // remote traversal: y, tk = move code ('' none), ti = spot / link index, tp = progress 0..1; ry = smoothed on-screen y
-const other = { x: SPAWNS[1].x, z: SPAWNS[1].z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: SPAWNS[1].x, rz: SPAWNS[1].z, ra: 0, nvx: 0, nvz: 0, pt: 0,
-  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, tk: '', ti: -1, tp: 0 };
-function resetLoadout() { me.td = null; me.eq = false; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0; other.td = -1; other.gd = 0; other.eq = 0;
-  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; other.tk = ''; other.y = other.ry = 0; syncGunButton(); }
+// one remote record per slot (others[mySlot] is unused - that's `me`). on = connected (server roster).
+const others = SPAWNS.map((sp, s) => ({ s, on: false, x: sp.x, z: sp.z, a: -Math.PI / 2, c: false, p: false, tun: -1, noise: 0, inv: 0, rx: sp.x, rz: sp.z, ra: 0, nvx: 0, nvz: 0, pt: 0,
+  td: -1, gd: 0, eq: 0, shot: 0, y: 0, ry: 0, tk: '', ti: -1, tp: 0, spd: 0, px: sp.x, pz: sp.z }));
+const peers = () => others.filter((o) => o.on && o.s !== mySlot);
+const pOf = (s) => (s === mySlot ? me : others[s]);
+function resetLoadout() { me.td = null; me.eq = false; me.ammo = GUN.ammo; me.cd = 0; me.gunT = 0; me.bloom = 0; me.wob = 0;
+  for (const o of others) { o.td = -1; o.gd = 0; o.eq = 0; o.tk = ''; o.y = o.ry = 0; }
+  me.tr = null; me.y = 0; me.vy = 0; me.thud = 0; syncGunButton(); }
 const stopMe = () => { me.vx = me.vz = 0; me.moving = false; };
 let world = freshWorld();
 let lastAlert = 0, lastPhase = 'play', lastHp = HP_MAX, shake = 0, hurtT = 0;
@@ -160,9 +172,9 @@ function freshWorld() {
     guards: GUARDS.map(({ path: p, y, area }) => ({ x: p[0][0], z: p[0][1], y, area, a: 0, path: p, wp: 1, st: 'patrol', meter: 0, tx: 0, tz: 0, wait: 0, give: 0, pause: 0, look0: 0, pauseT: 0,
       rx: p[0][0], rz: p[0][1], ra: 0, tdT: 0, by: -1, fcd: 0, aimT: 0, bl: 0, bk: 0, ftT: 0, shooting: false })),
     alert: 0, alertT: 0, cautionT: 0, sw: [0, 0], swBy: [-1, -1], door: false, phase: 'play', t: 0, caught: 0, alerts: 0,
-    ext: [false, false], inv: [0, 0], finalT: 0, dead: -1, kills: 0, // dead: index of the player who died (-1 = nobody)
-    hp: [HP_MAX, HP_MAX], hitInv: [0, 0], dmg: [0, 0], kb: '', // LIFE per player (host-authoritative), post-hit i-frames, damage taken, killed by
-    co: null, coId: (Math.random() * 1e6) | 0, // co-op climb in progress (host-created): { id, k: boost|pull, i, c: climber, h: helper, t, dur }
+    ext: Array(NP).fill(false), inv: Array(NP).fill(0), finalT: 0, dead: -1, kills: 0, // dead: slot of the player who died (-1 = nobody)
+    hp: Array(NP).fill(HP_MAX), hitInv: Array(NP).fill(0), dmg: Array(NP).fill(0), kb: '', // per slot: LIFE (host-authoritative), post-hit i-frames, damage taken
+    co: null, coId: (Math.random() * 1e6) | 0, // co-op climb in progress (host-created): { id, k: boost|pull|rope, i, c: climber slot, h: helper slot, t, dur }
   };
 }
 
@@ -401,24 +413,60 @@ function marker(color) { // little floating triangle so you can find each other
   m.rotation.x = Math.PI; return m;
 }
 // Players (see sneaker.js kits): P1 = host = NIGHT OPS (charcoal suit, olive webbing + gaiter, dark spiky hair, olive accents),
-// P2 = guest = ASH FOX (slate blue-grey suit, vivid blue straps, ash-blonde swept undercut, blue accents).
+// P2 = ASH FOX (slate blue-grey suit, vivid blue straps, ash-blonde swept undercut, blue accents).
+// P3-P5 reuse the three rig kits with their own accent / suit tint + a cheap hat (2-4 boxes / cylinders on the head pivot)
+// so five sneakers read apart from the top-down camera: P3 DUST VIPER (olive kit, wide boonie hat, orange),
+// P4 RED HERON (Night Ops kit tinted red-brown, crimson beret over the NVG, red), P5 SAND OWL (Ash Fox kit in sand,
+// black ball cap + whip antenna, yellow).
 // Guards use the enemy kit of the same rig (sneaker.js makeEnemy): slate fatigues, helmet, balaclava, goggles, respirator.
-const PLAYER_LOOK = [{ kit: 'night', accent: 0x9fd060, tint: 0xffffff }, { kit: 'ash', accent: 0x2f8cff, tint: 0xffffff }];
+const PLAYER_LOOK = [
+  { kit: 'night', accent: 0x9fd060, tint: 0xffffff, name: 'NIGHT OPS', hat: null },
+  { kit: 'ash', accent: 0x2f8cff, tint: 0xffffff, name: 'ASH FOX', hat: null },
+  { kit: 'player', accent: 0xff8a20, tint: 0xffffff, name: 'DUST VIPER', hat: 'boonie' },
+  { kit: 'night', accent: 0xff3a4a, tint: 0xc89a92, name: 'RED HERON', hat: 'beret' },
+  { kit: 'ash', accent: 0xffe040, tint: 0xe0cfa0, name: 'SAND OWL', hat: 'cap' },
+];
+const hexCss = (c) => '#' + c.toString(16).padStart(6, '0');
+// my rig + 4 remote rigs. Slot s -> rig: mine, or remoteMeshes[s < mySlot ? s : s - 1] (rk).
 const meMesh = makeSneaker(scene, PLAYER_LOOK[0]);
-const otherMesh = makeSneaker(scene, PLAYER_LOOK[1]);
-const markers = [meMesh, otherMesh].map((ch, i) => { const m = marker(PLAYER_LOOK[i].accent); m.position.y = 2.1; ch.g.add(m); return m; });
-let otherLook = 1;
-function applyPlayerLooks() { // my character always uses my slot's suit (host = P1 Night Ops, guest = P2 Ash Fox)
-  const mine = role === 'guest' ? 1 : 0; otherLook = 1 - mine;
-  [[meMesh, mine], [otherMesh, 1 - mine]].forEach(([ch, i], k) => {
-    ch.setKit(PLAYER_LOOK[i].kit);
-    ch.materials.accent.color.setHex(PLAYER_LOOK[i].accent);
-    ch.materials.patch.color.setHex(PLAYER_LOOK[i].accent).multiplyScalar(0.55);
-    ch.materials.suit.color.setHex(PLAYER_LOOK[i].tint);
-    markers[k].material.color.setHex(PLAYER_LOOK[i].accent);
-  });
+const remoteMeshes = [1, 2, 3, 4].map((i) => makeSneaker(scene, PLAYER_LOOK[i]));
+const rk = (s) => (s < mySlot ? s : s - 1);
+const meshOf = (s) => (s === mySlot ? meMesh : remoteMeshes[rk(s)]);
+const otherMesh = remoteMeshes[0]; // (debug hook name)
+const markers = [meMesh, ...remoteMeshes].map((ch) => { const m = marker(0xffffff); m.position.y = 2.1; ch.g.add(m); ch.marker = m; return m; });
+// head-pivot local: +x = forward (face), +y = up, crown of the head ~0.34
+function makeHat(kind, accent) {
+  const g = new THREE.Group(), L = (c) => mat(c), add = (geo, m, x, y, z, rx = 0, rz = 0) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.rotation.set(rx, 0, rz); g.add(o); return o; };
+  if (kind === 'boonie') { // wide floppy brim = big disc from above
+    const cloth = L(0x7a6a40);
+    add(new THREE.CylinderGeometry(0.14, 0.16, 0.1, 8), cloth, 0, 0.375, 0);
+    add(new THREE.CylinderGeometry(0.29, 0.27, 0.02, 10), cloth, 0, 0.335, 0, 0, -0.06);
+    add(new THREE.CylinderGeometry(0.163, 0.163, 0.03, 8), L(accent), 0, 0.345, 0);
+  } else if (kind === 'beret') { // crimson beret slouched to the left, badge over the right eye
+    add(new THREE.CylinderGeometry(0.19, 0.15, 0.06, 10), L(0x8a1420), -0.01, 0.385, -0.03, -0.22, 0.12);
+    add(new THREE.BoxGeometry(0.03, 0.04, 0.03), L(accent), 0.13, 0.37, 0.05);
+  } else if (kind === 'cap') { // black ball cap (long forward bill) + whip antenna off the back
+    add(new THREE.CylinderGeometry(0.14, 0.155, 0.08, 8), L(0x1e1f22), 0, 0.37, 0);
+    add(new THREE.BoxGeometry(0.17, 0.016, 0.2), L(accent), 0.16, 0.34, 0);
+    add(new THREE.BoxGeometry(0.012, 0.42, 0.012), L(0x2a2a2a), -0.11, 0.58, -0.06);
+    add(new THREE.BoxGeometry(0.03, 0.03, 0.03), L(accent), -0.11, 0.8, -0.06);
+  }
+  g.traverse((o) => { o.frustumCulled = false; });
+  return g;
 }
-let otherSpeed = 0, otherPX = other.rx, otherPZ = other.rz;
+const hats = PLAYER_LOOK.map((L) => (L.hat ? makeHat(L.hat, L.accent) : null));
+function applyPlayerLooks() { // every rig wears its slot's look (host = P1 Night Ops, P2 Ash Fox, P3-P5 variants)
+  for (let s = 0; s < NP; s++) {
+    const ch = meshOf(s), L = PLAYER_LOOK[s];
+    ch.setKit(L.kit);
+    ch.materials.accent.color.setHex(L.accent);
+    ch.materials.patch.color.setHex(L.accent).multiplyScalar(0.55);
+    ch.materials.suit.color.setHex(L.tint);
+    ch.marker.material.color.setHex(L.accent);
+    if (ch.hat && ch.hat !== hats[s]) ch.head.remove(ch.hat);
+    ch.hat = hats[s]; if (ch.hat) ch.head.add(ch.hat);
+  }
+}
 
 function textSprite(txt, color) {
   const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
@@ -598,7 +646,7 @@ function aimPoint(p, mesh, on) {
   const py = p.y || 0, gy = g.y || 0; // same floor: keep the arms near level; other floor: aim at his chest
   return { x: g.rx ?? g.x, y: Math.abs(py - gy) < 0.3 ? py + Math.max(0.45, Math.min(1.15, _am.y - py)) : gy + 1.1, z: g.rz ?? g.z };
 }
-const myLaser = makeLaser(), otherLaser = makeLaser();
+const myLaser = makeLaser(), remoteLasers = [0, 1, 2, 3].map(makeLaser);
 // grapple rope: dark cord hanging straight down the wall face from the claw, plus a short grip segment to the hands.
 // Before it bites, the claw spins under the right hand (wind-up), then flies up in a lob and drops onto the lip.
 function makeRope() {
@@ -621,6 +669,14 @@ function cordBetween(m, a, b) {
   m.scale.set(len, 1, 1); m.position.copy(a).addScaledVector(_rd, 0.5); m.quaternion.setFromUnitVectors(_X, _rd.multiplyScalar(1 / len));
 }
 function updateRope(R, mesh, tk, ti, tp) {
+  if ((tk === 'hp' || tk === 'hr') && LINKS[ti]) { // rope haul: claw on the lip, line straight down the face to the foot
+    const L = LINKS[ti], A = L.anchor; mesh.handWorld(_rh, 1);
+    R.claw.visible = true; R.claw.position.set(A.x, A.y, A.z); R.claw.rotation.set(0, -L.a, 0);
+    _ra.set(L.rope.x, A.y - 0.06, L.rope.z); _rb.set(L.rope.x, L.y0 + 0.02, L.rope.z); cordBetween(R.main, _ra, _rb);
+    if (tk === 'hp') cordBetween(R.grip, _rh, _ra); // puller: hands on the line just over the lip
+    else { _re.set(L.rope.x, clamp(_rh.y, L.y0, A.y - 0.06), L.rope.z); if (_re.distanceTo(_rh) < 0.7) cordBetween(R.grip, _rh, _re); else R.grip.visible = false; }
+    return;
+  }
   const on = (tk === 'gp' || tk === 'rp') && LINKS[ti];
   if (!on) { R.main.visible = R.grip.visible = R.claw.visible = false; return; }
   const L = LINKS[ti], up = tk === 'gp', P = lineDecode(tp), A = L.anchor, now = performance.now() / 1000;
@@ -650,7 +706,7 @@ function updateRope(R, mesh, tk, ti, tp) {
     }
   } else R.claw.position.copy(_re);
 }
-const myRope = makeRope(), otherRope = makeRope();
+const myRope = makeRope(), remoteRopes = [0, 1, 2, 3].map(makeRope);
 
 function resize() {
   const w = innerWidth, h = innerHeight;
@@ -698,6 +754,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) doInteract(); }
   if (e.code === 'KeyF' && !e.repeat) { unlockAudio(); if (role && world.phase === 'play' && !me.td && !me.tr) { if (me.eq) fireGun(); else holsterHint(); } }
   if (e.code === 'KeyG' && !e.repeat) { unlockAudio(); toggleGun(); }
+  if (e.code === 'KeyV' && !e.repeat) toggleView();
 });
 addEventListener('keyup', (e) => input.keys.delete(e.code));
 addEventListener('blur', () => input.keys.clear());
@@ -724,6 +781,14 @@ $('btnCrouch').addEventListener('pointerdown', (e) => { e.preventDefault(); unlo
 $('btnProne').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleProne(); });
 $('btnAct').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); doInteract(); });
 $('btnGun').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleGun(); });
+$('btnView').addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); toggleView(); });
+// first-person toggle (local only): top-down <-> eye view. Tunnels still switch to first person on their own.
+function toggleView() {
+  if (!role) return;
+  fpsOn = !fpsOn; fpsLatch = fpsOn && me.moving; syncViewButton();
+  toast(fpsOn ? 'FIRST PERSON' : 'TOP-DOWN VIEW', 700, '#9fd9b0');
+}
+function syncViewButton() { const b = $('btnView'); b.classList.toggle('on', fpsOn); b.textContent = fpsOn ? 'TOP' : '1ST'; b.title = fpsOn ? 'Back to top-down (V)' : 'First-person view (V)'; }
 document.addEventListener('touchmove', (e) => { if (!e.target.closest('.panel')) e.preventDefault(); }, { passive: false });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
@@ -801,7 +866,7 @@ function startTakedown(gi) {
   // snap in tight behind him, facing the same way
   me.a = g.a; me.x = g.x - Math.cos(g.a) * TD.gap; me.z = g.z - Math.sin(g.a) * TD.gap;
   beep(200, 0.05, 'triangle', 0.1);
-  if (role === 'host') hostTakedown(gi, 0); else net.relay({ t: 'td', g: gi, x: r2(me.x), z: r2(me.z) });
+  if (role === 'host') hostTakedown(gi, mySlot); else net.relay({ t: 'td', g: gi, x: r2(me.x), z: r2(me.z) });
 }
 // host: start the hold on a guard (returns false if he's already down / grabbed)
 function hostTakedown(gi, pidx) {
@@ -813,7 +878,7 @@ function hostTakedown(gi, pidx) {
 }
 // auto-aim: best live guard inside the cone in front of you with a clear line of fire (FPS = narrow cone, straight ahead)
 function autoTarget(p = me) {
-  const cone = p.tun >= 0 ? GUN.fpsCone : GUN.cone;
+  const cone = p.tun >= 0 || (p === me && fpsOn) ? GUN.fpsCone : GUN.cone;
   const px = p.x, pz = p.z, pa = p.a;
   let tgt = -1, best = 1e9;
   world.guards.forEach((g, i) => {
@@ -838,7 +903,7 @@ function fireGun() {
   let end, shotA = me.a;
   if (tgt >= 0) {
     const g = world.guards[tgt], gx = g.rx ?? g.x, gz = g.rz ?? g.z, d = Math.hypot(gx - me.x, gz - me.z);
-    if (me.tun < 0) me.a = Math.atan2(gz - me.z, gx - me.x);
+    if (me.tun < 0 && !fpsOn) me.a = Math.atan2(gz - me.z, gx - me.x);
     shotA = Math.atan2(gz - me.z, gx - me.x) + err;
     if (Math.abs(err) < Math.atan2(GUN.bodyW, Math.max(0.3, d))) end = { x: g.x, z: g.z };
     else tgt = -1; // recoil threw it wide
@@ -849,9 +914,9 @@ function fireGun() {
   meMesh.g.rotation.y = -me.a;
   gunFx(meMesh, end.x, end.z, tgt >= 0, tgt >= 0 ? GUARDS[tgt].y + 1.15 : null); gunSound(1);
   if (navigator.vibrate) navigator.vibrate(30);
-  const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), y: r2(me.y), ex: r2(end.x), ez: r2(end.z) };
+  const msg = { t: 'sh', g: tgt, x: r2(me.x), z: r2(me.z), y: r2(me.y), ex: r2(end.x), ez: r2(end.z), by: mySlot };
   if (role === 'host') hostShot(msg, 0);
-  net.relay(msg); // host: fx for the guest. guest: hit request + fx for the host
+  net.relay(msg); // host: fx for every guest. guest: hit request + fx for the host (host re-broadcasts it to the others)
 }
 // host: apply a shot (from either player). A hit drops the guard; the bang pulls every live guard in earshot.
 function hostShot(m, pidx) {
@@ -895,19 +960,20 @@ function updateLocal(dt) {
   const baseSp = () => (me.p ? SPEED.prone : me.c ? SPEED.crouch : me.run ? SPEED.run : SPEED.walk * (kb ? 1 : clamp(mag / 0.9, 0.4, 1)));
   // desired velocity (tvx, tvz) from input; actual velocity me.vx/me.vz chases it with limited accel = momentum
   let tvx = 0, tvz = 0, wantDir = null;
-  if (me.tun >= 0) {
-    // FIRST PERSON (inside a tunnel): view-relative tank controls. up/W = crawl forward, down/S = back up, left/right = turn.
+  if (me.tun >= 0 || fpsOn) {
+    // FIRST PERSON (inside a tunnel, or the 1ST toggle): view-relative tank controls. up/W = crawl forward, down/S = back up, left/right = turn.
     // fpsLatch: whatever direction you were holding when you entered keeps meaning "forward" until you let go,
     // so walking in with D doesn't suddenly start spinning you.
     if (fpsLatch && mag < 0.15) fpsLatch = false;
     const fwd = fpsLatch ? mag : -jz, turn = fpsLatch ? 0 : jx;
     if (play) me.a += turn * 2.6 * dt;
-    me.run = false;
+    me.run = me.tun < 0 && fwd > 0.15 && !me.c && (kb ? (k.has('ShiftLeft') || k.has('ShiftRight')) : fwd > 0.92); // can run outside tunnels
     if (play && Math.abs(fwd) > 0.15) {
       const sp = baseSp() * (fwd < 0 ? 0.6 : 1) * Math.sign(fwd);
       tvx = Math.cos(me.a) * sp; tvz = Math.sin(me.a) * sp;
-      const t = TUNNELS[me.tun], ax = t.axis === 'x' ? (Math.cos(me.a) >= 0 ? 0 : Math.PI) : (Math.sin(me.a) >= 0 ? Math.PI / 2 : -Math.PI / 2);
-      if (Math.abs(turn) < 0.15 && Math.abs(angDiff(ax, me.a)) < 0.6) turnToward(me, ax, dt * 2.5); // gently line up with the tunnel
+      const t = TUNNELS[me.tun];
+      if (t) { const ax = t.axis === 'x' ? (Math.cos(me.a) >= 0 ? 0 : Math.PI) : (Math.sin(me.a) >= 0 ? Math.PI / 2 : -Math.PI / 2);
+      if (Math.abs(turn) < 0.15 && Math.abs(angDiff(ax, me.a)) < 0.6) turnToward(me, ax, dt * 2.5); } // gently line up with the tunnel
     }
   } else {
     const wants = mag > 0.15 && play;
@@ -960,7 +1026,7 @@ function updateLocal(dt) {
     toast(TUNNELS[me.tun].name, 1100, '#ffd27f');
   }
   $('stance').textContent = (me.p ? (me.moving ? 'CRAWL (silent, low)' : 'PRONE (hard to see)') : me.c ? 'CROUCH (silent)' : me.run ? 'RUN (loud!)' : me.moving ? 'WALK' : 'STILL')
-    + (me.tun >= 0 ? ' · TUNNEL' : '') + (me.y > 0.5 ? ' · HIGH' : '');
+    + (me.tun >= 0 ? ' · TUNNEL' : fpsOn ? ' · 1ST PERSON' : '') + (me.y > 0.5 ? ' · HIGH' : '');
 }
 let fpsLatch = false;
 // a standing drop from high up thuds (guards hear it); crouched you hang-drop silently
@@ -977,11 +1043,59 @@ const GRAV = 20;
 const hz = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const ss01 = (v) => { v = clamp(v, 0, 1); return v * v * (3 - 2 * v); };
 const mixv = (a, b, k) => a + (b - a) * k;
-const COOP_G = COOPS.map(coopGeom);
+// CO-OP CLIMB SPOTS. COOPS (traverse.js) = the hand-placed 2P walls (decal, solo hint). COOP_ALL adds generated spots
+// along almost every face you could sensibly boost / pull a partner up: building walls, tall crates, catwalk / bridge /
+// roof-deck lips, from the ground or from a lower deck. A spot = { x, z (point on the face), a (facing into the wall),
+// top, y0 (floor the climber starts on), gen }. Built from static level data, so every client gets the same indices
+// (spot index i rides the wire exactly like before). Skipped: fences / compound walls / the red door (not walkable -
+// would also skip the 2-agent door puzzle), anything under a deck or ceiling, tunnel mouths + interiors, map edge,
+// drops under mantle height (MANTLE does those) or over 3.45 m (one L1 storey - ground -> L2 towers need a ladder),
+// and spots right next to a ladder / grapple ring / hand-placed 2P wall.
+function genCoops() {
+  const out = [], STEP = 1.1, IN = 0.45;
+  const railsAt = (y) => RAILS.filter((r) => Math.abs(r.y0 - y) < 0.3);
+  const blocked = (x, z, y, r = 0.3) => WALLS.some((b) => b.h > y + 0.05 && x > b.x1 - r && x < b.x2 + r && z > b.z1 - r && z < b.z2 + r)
+    || railsAt(y).some((b) => x > b.x1 - r && x < b.x2 + r && z > b.z1 - r && z < b.z2 + r);
+  const ceiling = (x, z, y, top) => WALK_TOPS.some((b) => b.h > y + 0.3 && b.h < top + 0.5 && x >= b.x1 - 0.05 && x <= b.x2 + 0.05 && z >= b.z1 - 0.05 && z <= b.z2 + 0.05);
+  const inMap = (p) => Math.abs(p.x) < 19.5 && Math.abs(p.z) < 14.5;
+  const crowded = (x, z) => COOPS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.8) || CLIMBS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.2)
+    || LINKS.some((L) => Math.hypot(L.face.x - x, L.face.z - z) < 1.1);
+  const tops = WALLS.filter((b) => (b.kind === 'building' || b.kind === 'crate') && b.h > TRAV.mantleMax).concat(WALKS);
+  for (const b of tops) {
+    const top = b.h;
+    for (const [nx, nz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const alongX = nz !== 0, lo = alongX ? b.x1 : b.z1, hi = alongX ? b.x2 : b.z2, len = hi - lo - 2 * IN;
+      if (len < -0.2) continue;
+      const n = Math.max(1, Math.floor(Math.max(0, len) / STEP) + 1), pad = (hi - lo - (n - 1) * STEP) / 2;
+      const tryAt = (t) => { // one candidate spot on this face at tangent position t, or null
+        if (t < lo + 0.2 || t > hi - 0.2) return null;
+        const F = alongX ? { x: t, z: nz < 0 ? b.z1 : b.z2 } : { x: nx < 0 ? b.x1 : b.x2, z: t };
+        const P = (d) => ({ x: F.x + nx * d, z: F.z + nz * d }), base = P(0.45), step = P(1.15), hang = P(0.4), land = P(-0.65), edge = P(-0.35);
+        if (!inMap(base) || !inMap(step)) return null;
+        const y0 = groundAt(base.x, base.z, top - TRAV.mantleMax - STEP_UP - 0.05); // floor you boost from (ground, or a lower deck)
+        if (Math.abs(groundAt(step.x, step.z, y0) - y0) > 0.05 || Math.abs(groundAt(hang.x, hang.z, y0) - y0) > 0.05) return null;
+        const dh = top - y0; if (dh <= TRAV.mantleMax + 0.05 || dh > 3.45) return null;
+        if (blocked(base.x, base.z, y0, 0.25) || blocked(step.x, step.z, y0, 0.12) || ceiling(base.x, base.z, y0, top) || ceiling(hang.x, hang.z, y0, top) || ceiling(step.x, step.z, y0, top)) return null;
+        if (y0 < 0.4 && (tunnelAt(base.x, base.z) >= 0 || tunnelAt(step.x, step.z) >= 0 || tunnelAt(F.x - nx * 0.2, F.z - nz * 0.2) >= 0)) return null;
+        if (Math.abs(groundAt(land.x, land.z, top) - top) > 0.02 || Math.abs(groundAt(edge.x, edge.z, top) - top) > 0.02 || blocked(land.x, land.z, top, 0.22)) return null;
+        if (crowded(F.x, F.z) || out.some((c) => Math.hypot(c.x - F.x, c.z - F.z) < 0.8 && Math.abs(c.top - top) < 0.1)) return null;
+        return { name: 'WALL', x: F.x, z: F.z, a: Math.atan2(-nz, -nx), top, y0, gen: 1 };
+      };
+      for (let k = 0; k < n; k++) { // regular samples; a blocked one slides along the face a little (narrow railed decks)
+        const t = lo + pad + k * STEP;
+        for (const o of [0, 0.3, -0.3, 0.55, -0.55]) { const c = tryAt(t + o); if (c) { out.push(c); break; } }
+      }
+    }
+  }
+  return out;
+}
+for (const c of COOPS) c.y0 = c.y0 || 0;
+const COOP_ALL = COOPS.concat(genCoops());
+const COOP_G = COOP_ALL.map(coopGeom);
 const TR_SOLO = { ld: 1, mt: 1, md: 1, gp: 1, rp: 1 };
 const ON_LINE = (k) => k === 'gp' || k === 'rp';
-const meNet = () => ({ x: me.x, z: me.z, y: me.y, tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1 });
-const otherNet = () => ({ x: other.x, z: other.z, y: other.y, tk: other.tk, ti: other.ti });
+const meNet = () => ({ s: mySlot, x: me.x, z: me.z, y: me.y, tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1 });
+const netOf = (s) => (s === mySlot ? meNet() : others[s] && others[s].on ? others[s] : null);
 const partnerHere = () => peerConnected && !solo;
 let lastCoId = -1;
 
@@ -1002,39 +1116,69 @@ function mantleSpot(p) {
   }
   return best;
 }
-// what ACT would start right now (null = nothing climbable here). m: climb down mantle grapple rappel kneel boost hoist pull solo2p
+// co-op options at spots i0..i1-1 (nearest wins). strict = hand-placed 2P wall (bigger zones, solo hint, kneel any time).
+// Generated spots stay out of the way: no solo hint, kneel only while facing the wall with the pistol holstered and a
+// partner within 12 m, never while the gun is drawn (ACT = fire) - except climbing onto a partner who's already kneeling.
+function coopMode(i0, i1, ps) {
+  let best = null, bd = 1e9;
+  const pick = (m, i, d, o) => { if (d < bd) { bd = d; best = { m, i, o: o ? o.s : -1 }; } };
+  for (let i = i0; i < i1; i++) {
+    const c = COOP_ALL[i], g = COOP_G[i], strict = !c.gen;
+    if (Math.abs(me.y - c.y0) < 0.3) {
+      const dB = hz(me, g.base); if (dB > (strict ? 1.5 : 1.15)) continue;
+      if (!ps.length) { if (strict) pick('solo2p', i, dB); continue; }
+      const kn = ps.find((o) => o.tk === 'kn' && o.ti === i);
+      if (kn) { pick('boost', i, dB - 1, kn); continue; }                                                     // partner kneels: climb on
+      if (strict || !me.eq) {
+        const up = ps.find((o) => Math.abs(o.y - c.top) < 0.25 && hz(o, g.edge) < (strict ? 1.6 : 1.2) && !o.tk);
+        if (up) { pick('hoist', i, dB - 0.5, up); continue; }                                                 // partner up top: get pulled
+      }
+      const facing = Math.abs(angDiff(c.a, me.a)) < 0.9, nearby = ps.some((o) => hz(o, me) < 12);
+      if (strict ? dB < 1.1 : !me.eq && facing && nearby && dB < 0.95) pick('kneel', i, dB);
+    } else if (Math.abs(me.y - c.top) < 0.2 && (strict || !me.eq)) {
+      const dE = hz(me, g.edge); if (dE > (strict ? 1.3 : 1.0)) continue;
+      const lo = ps.find((o) => Math.abs(o.y - c.y0) < 0.3 && hz(o, g.base) < (strict ? 2.4 : 1.6) && !o.tk);
+      if (lo) pick('pull', i, dE, lo);
+    }
+  }
+  return best;
+}
+// what ACT would start right now (null = nothing climbable here).
+// m: climb down mantle rappel haul ropeup ropewait kneel boost hoist pull solo2p   (o = partner slot for co-op moves)
 function travMode() {
   if (!role || world.phase !== 'play' || me.td || me.tr || me.tun >= 0 || me.vy !== 0) return null;
-  const o = otherNet(), pr = partnerHere();
-  for (let i = 0; i < COOPS.length; i++) {
-    const c = COOPS[i], g = COOP_G[i];
-    if (me.y < 0.3 && hz(me, g.base) < 1.5) {
-      if (!pr) return { m: 'solo2p', i };
-      if (o.tk === 'kn' && o.ti === i) return { m: 'boost', i };                                   // partner kneels: climb on
-      if (Math.abs(o.y - c.top) < 0.25 && hz(o, g.edge) < 1.6 && !o.tk) return { m: 'hoist', i }; // partner up top: get pulled
-      if (hz(me, g.base) < 1.1) return { m: 'kneel', i };
-    }
-    if (pr && Math.abs(me.y - c.top) < 0.2 && hz(me, g.edge) < 1.3 && o.y < 0.3 && hz(o, g.base) < 2.4 && !o.tk) return { m: 'pull', i };
-  }
+  const ps = partnerHere() ? peers() : [];
   let down = null, downD = 1e9; // ladder top vs a grapple ring close by: the nearer one wins
   for (let i = 0; i < CLIMBS.length; i++) {
     const c = CLIMBS[i], dd = Math.hypot(me.x - c.lx, me.z - c.lz);
     if (Math.abs(me.y - c.y0) < 0.3 && hz(me, c) < 0.85) return { m: 'climb', i };
     if (Math.abs(me.y - c.top) < 0.2 && dd < 0.8 && dd < downD) { down = { m: 'down', i }; downD = dd; }
   }
-  for (let i = 0; i < LINKS.length; i++) { // vertical lines: foot ring (ground, facing the wall) = grapple up, top ring = rappel down
+  // grapple lines are TOP-ONLY: top ring = rappel down, or haul a partner who waits at the foot ring up the rope.
+  // Foot ring = only a pickup point: a partner on the top ring can haul you (ROPE UP); alone it just explains the rule.
+  for (let i = 0; i < LINKS.length; i++) {
     const L = LINKS[i], fb = { x: L.foot.x - L.dx * 0.12, z: L.foot.z - L.dz * 0.12 }, db = hz(me, fb), dt = hz(me, L.landP);
-    if (Math.abs(me.y - L.y0) < 0.25 && db < 0.62 && db < downD) return { m: 'grapple', i };
-    if (Math.abs(me.y - L.top) < 0.25 && dt < 0.55 && dt < downD) return { m: 'rappel', i };
+    const busy = ps.some((o) => (ON_LINE(o.tk) || o.tk === 'hr' || o.tk === 'hp') && o.ti === i);
+    if (Math.abs(me.y - L.top) < 0.25 && dt < 0.7 && dt < downD) {
+      const lo = !busy && ps.find((o) => Math.abs(o.y - L.y0) < 0.3 && hz(o, L.foot) < 1.6 && !o.tk);
+      if (lo) return { m: 'haul', i, o: lo.s };
+      if (dt < 0.55) return { m: 'rappel', i };
+    }
+    if (Math.abs(me.y - L.y0) < 0.25 && db < 0.75 && db < downD) {
+      const up = !busy && ps.find((o) => Math.abs(o.y - L.top) < 0.3 && hz(o, L.landP) < 1.3 && !o.tk);
+      if (up) return { m: 'ropeup', i, o: up.s };
+      if (!me.eq) return { m: 'ropewait', i };
+    }
   }
   if (down) return down;
+  const hand = coopMode(0, COOPS.length, ps); if (hand) return hand; // marked 2P wall (after ladders / rope rings: those zones are tight)
   const ms = mantleSpot(me); if (ms) return { m: 'mantle', i: -1, s: ms };
-  return null;
+  return coopMode(COOPS.length, COOP_ALL.length, ps);
 }
 function startTrav(tm) {
-  const o = otherNet(), keep = { ox: me.x, oy: me.y, oz: me.z };
+  const keep = { ox: me.x, oy: me.y, oz: me.z };
   const solo1 = (k, i, extra) => {
-    if (o.ti === i && ((o.tk === k && k === 'ld') || (ON_LINE(o.tk) && ON_LINE(k)))) { toast('Partner is on it - wait', 1000, '#ffb36b'); return; } // host-side rule (guest also re-checked by host)
+    if (peers().some((o) => o.ti === i && ((o.tk === k && k === 'ld') || (ON_LINE(o.tk) && ON_LINE(k))))) { toast('Partner is on it - wait', 1000, '#ffb36b'); return; } // host-side rule (guest also re-checked by host)
     me.tr = Object.assign({ k, i, t: 0 }, keep, extra); stopMe(); me.c = me.p = false; syncStanceButtons();
     if (role === 'guest') net.relay({ t: 'tr', k, i });
   };
@@ -1043,14 +1187,17 @@ function startTrav(tm) {
     case 'climb': me.x = c.x; me.z = c.z; me.a = c.a; solo1('ld', tm.i, {}); beep(300, 0.04, 'square', 0.04); break;
     case 'down': solo1('md', tm.i, { dur: TRAV.downT * 1.6, sx: me.x, sy: me.y, sz: me.z, tx: c.x, ty: c.top - TRAV.hangBelow, tz: c.z }); me.a = c.a; break;
     case 'mantle': { const m = tm.s; me.a = m.a; solo1('mt', -1, { dur: TRAV.mantleT, sx: me.x, sy: me.y, sz: me.z, tx: m.x, ty: m.y, tz: m.z }); break; }
-    case 'grapple': case 'rappel': { const up = tm.m === 'grapple', L = LINKS[tm.i];
-      solo1(up ? 'gp' : 'rp', tm.i, { s: { x: me.x, y: me.y, z: me.z }, a0: me.a, ph: 'sq', pt: 0, u: 0, ly: up ? L.y0 : L.hang, dir: 0, last: up ? 1 : -1, sf: 0, my: 0 });
-      if (me.tr) beep(up ? 260 : 200, 0.06, 'triangle', 0.05); break; }
-    case 'kneel': { const g = COOP_G[tm.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[tm.i].a + Math.PI; stopMe(); me.c = me.p = false; syncStanceButtons();
+    case 'rappel': { const L = LINKS[tm.i];
+      solo1('rp', tm.i, { s: { x: me.x, y: me.y, z: me.z }, a0: me.a, ph: 'sq', pt: 0, u: 0, ly: L.hang, dir: 0, last: -1, sf: 0, my: 0 });
+      if (me.tr) beep(200, 0.06, 'triangle', 0.05); break; }
+    case 'haul': requestCoop('rope', tm.i, tm.o, mySlot); break;
+    case 'ropeup': requestCoop('rope', tm.i, mySlot, tm.o); break;
+    case 'ropewait': toast('Grapple is top-only - a partner on the roof ring can haul you up', 1700, '#ffb36b'); break;
+    case 'kneel': { const g = COOP_G[tm.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOP_ALL[tm.i].a + Math.PI; stopMe(); me.c = me.p = false; syncStanceButtons();
       me.tr = { k: 'kn', i: tm.i, t: 0 }; toast('Kneeling - partner: ACT here to climb on', 1400, '#ffd27f'); break; }
-    case 'boost': requestCoop('boost', tm.i, myIdx()); break;
-    case 'hoist': requestCoop('pull', tm.i, myIdx()); break;
-    case 'pull': requestCoop('pull', tm.i, 1 - myIdx()); break;
+    case 'boost': requestCoop('boost', tm.i, mySlot, tm.o); break;
+    case 'hoist': requestCoop('pull', tm.i, mySlot, tm.o); break;
+    case 'pull': requestCoop('pull', tm.i, tm.o, mySlot); break;
     case 'solo2p': toast('Too high to climb alone - needs a partner boost (2P)', 1600, '#ffb36b'); break;
   }
 }
@@ -1064,26 +1211,42 @@ function trAct() {
     else { me.tr = null; me.x = L.foot.x - L.dx * 0.28; me.z = L.foot.z - L.dz * 0.28; me.a = L.a + Math.PI; me.fallFrom = me.y; me.vy = -0.01; beep(220, 0.05, 'triangle', 0.05); }
   }
 }
-function requestCoop(k, i, climber) {
-  if (role === 'host') { if (!hostCoop(k, i, climber)) toast('Can\'t - get in position', 900, '#ffb36b'); }
-  else net.relay({ t: 'co', k, i, c: climber });
+function requestCoop(k, i, climber, helper) {
+  if (role === 'host') { if (!hostCoop(k, i, climber, helper)) toast('Can\'t - get in position', 900, '#ffb36b'); }
+  else net.relay({ t: 'co', k, i, c: climber, h: helper });
 }
-// host: validate + start a co-op climb. Both players' positions are the host's view (own me + last guest packet).
-function hostCoop(kind, i, climber) {
-  if (world.phase !== 'play' || world.co || !peerConnected || !COOPS[i]) return false;
-  const c = COOPS[i], g = COOP_G[i], P = [meNet(), otherNet()], cl = P[climber], hp = P[1 - climber];
-  if (!cl || !hp || cl.y > 0.3 || hz(cl, g.base) > 2.6 || (cl.tk && cl.tk !== 'kn')) return false;
-  if (kind === 'boost' && !(hp.tk === 'kn' && hp.ti === i)) return false;
-  if (kind === 'pull' && !(Math.abs(hp.y - c.top) < 0.3 && hz(hp, g.edge) < 1.8 && !hp.tk)) return false;
-  world.co = { id: ++world.coId, k: kind, i, c: climber, h: 1 - climber, t: 0, dur: kind === 'boost' ? TRAV.boostT : TRAV.pullT };
+const ROPE_DUR = (L) => 1.4 + (L.lip - L.y0) * 0.5; // haul time grows with the height
+// host: validate + start a co-op climb between two slots (host's view: own me + last guest packets).
+function hostCoop(kind, i, climber, helper) {
+  if (world.phase !== 'play' || world.co || !peerConnected || climber === helper) return false;
+  const cl = netOf(climber), hp = netOf(helper); if (!cl || !hp) return false;
+  if (kind === 'rope') { // haul up a grapple line: helper on the top ring, climber at the foot, nobody else on that rope
+    const L = LINKS[i]; if (!L) return false;
+    if (Math.abs(cl.y - L.y0) > 0.35 || hz(cl, L.foot) > 2.0 || cl.tk || Math.abs(hp.y - L.top) > 0.35 || hz(hp, L.landP) > 1.6 || hp.tk) return false;
+    if ([0, 1, 2, 3, 4].some((s) => { const o = netOf(s); return o && (ON_LINE(o.tk) || o.tk === 'hr' || o.tk === 'hp') && o.ti === i; })) return false;
+    world.co = { id: ++world.coId, k: 'rope', i, c: climber, h: helper, t: 0, dur: ROPE_DUR(L) };
+  } else {
+    const c = COOP_ALL[i], g = COOP_G[i]; if (!c) return false;
+    if (Math.abs(cl.y - c.y0) > 0.3 || hz(cl, g.base) > 2.6 || (cl.tk && cl.tk !== 'kn')) return false;
+    if (kind === 'boost' && !(hp.tk === 'kn' && hp.ti === i)) return false;
+    if (kind === 'pull' && !(Math.abs(hp.y - c.top) < 0.3 && hz(hp, g.edge) < 1.8 && !hp.tk)) return false;
+    world.co = { id: ++world.coId, k: kind, i, c: climber, h: helper, t: 0, dur: kind === 'boost' ? TRAV.boostT : TRAV.pullT };
+  }
   applyCo(world.co); sendState(); return true;
 }
-// both clients: take your half of a host co-op move (climber or helper), on the host's clock
+// both sides: take your half of a host co-op move (climber or helper), on the host's clock
+const CO_K = { boost: ['bs', 'lf'], pull: ['hs', 'pl'], rope: ['hr', 'hp'] };
 function applyCo(co) {
   lastCoId = co.id;
-  const mine = myIdx(), climb = co.c === mine;
+  const mine = mySlot, climb = co.c === mine;
   if (co.c !== mine && co.h !== mine) return;
-  me.tr = { k: co.k === 'boost' ? (climb ? 'bs' : 'lf') : (climb ? 'hs' : 'pl'), i: co.i, t: co.t || 0, dur: co.dur, id: co.id, sx: me.x, sz: me.z };
+  const K = CO_K[co.k] || CO_K.pull;
+  me.tr = { k: climb ? K[0] : K[1], i: co.i, t: co.t || 0, dur: co.dur, id: co.id, sx: me.x, sz: me.z };
+  if (co.k === 'rope' && climb) { // hauled climber lands beside the puller (along the lip), not on top of him
+    const L = LINKS[co.i], tx = -L.dz, tz = L.dx; let lp = null;
+    for (const sd of [0.6, -0.6]) { const x = L.landP.x + tx * sd, z = L.landP.z + tz * sd; if (!lp && Math.abs(groundAt(x, z, L.top) - L.top) < 0.02) lp = { x, z }; }
+    me.tr.lx = lp ? lp.x : L.landP.x - L.dx * 0.35; me.tr.lz = lp ? lp.z : L.landP.z - L.dz * 0.35;
+  }
   stopMe(); me.c = me.p = false; me.eq && (me.gunT = 0); syncStanceButtons(); beep(climb ? 420 : 300, 0.08, 'triangle', 0.08);
 }
 const _gp = { x: 0, y: 0, z: 0 };
@@ -1110,7 +1273,8 @@ function updateTrav(dt, jx, jz, mag) {
       break;
     }
     case 'gp': case 'rp': lineStep(T, dt, jx, jz, mag); break;
-    case 'kn': { const g = COOP_G[T.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOPS[T.i].a + Math.PI; if (mag > 0.6) me.tr = null; break; }
+    case 'kn': { const g = COOP_G[T.i]; me.x = g.base.x; me.z = g.base.z; me.a = COOP_ALL[T.i].a + Math.PI; if (mag > 0.6) me.tr = null; break; }
+    case 'hr': case 'hp': ropeStep(T); break;
     default: coopStep(T);
   }
 }
@@ -1170,25 +1334,40 @@ function lineStep(T, dt, jx, jz, mag) {
 }
 // co-op choreography (both sides read the same host clock T.t, so the two bodies line up)
 function coopStep(T) {
-  const c = COOPS[T.i], g = COOP_G[T.i], u = Math.min(1, T.t / T.dur), hang = c.top - 1.9; // feet height with hands on the lip
+  const c = COOP_ALL[T.i], g = COOP_G[T.i], u = Math.min(1, T.t / T.dur), y0 = c.y0 || 0;
+  const hang = Math.max(y0 + 0.4, c.top - 1.9), lift = y0 + Math.min(1.0, (hang - y0) * 0.6); // feet height with hands on the lip / in the boost
   const mantle = (k, y0) => { me.y = mixv(y0, c.top, ss01(k / 0.6)); const h = ss01((k - 0.35) / 0.65); me.x = mixv(g.hang.x, g.land.x, h); me.z = mixv(g.hang.z, g.land.z, h); };
   if (T.k === 'bs') { // climber: step into the hands, get thrown up, catch the lip, mantle
     me.a = c.a;
-    if (u < 0.22) { const k = ss01(u / 0.22); me.x = mixv(T.sx, g.step.x, k); me.z = mixv(T.sz, g.step.z, k); me.y = 0; me.moving = true; }
-    else if (u < 0.5) { const k = ss01((u - 0.22) / 0.28); me.x = mixv(g.step.x, g.hang.x, k); me.z = mixv(g.step.z, g.hang.z, k); me.y = 1.0 * k; }
-    else if (u < 0.75) { const k = ss01((u - 0.5) / 0.25); me.x = g.hang.x; me.z = g.hang.z; me.y = mixv(1.0, hang, k); }
+    if (u < 0.22) { const k = ss01(u / 0.22); me.x = mixv(T.sx, g.step.x, k); me.z = mixv(T.sz, g.step.z, k); me.y = y0; me.moving = true; }
+    else if (u < 0.5) { const k = ss01((u - 0.22) / 0.28); me.x = mixv(g.step.x, g.hang.x, k); me.z = mixv(g.step.z, g.hang.z, k); me.y = mixv(y0, lift, k); }
+    else if (u < 0.75) { const k = ss01((u - 0.5) / 0.25); me.x = g.hang.x; me.z = g.hang.z; me.y = mixv(lift, hang, k); }
     else mantle((u - 0.75) / 0.25, hang);
   } else if (T.k === 'hs') { // climber: grab the partner's hands, get hauled up, mantle
     me.a = c.a;
-    if (u < 0.15) { const k = ss01(u / 0.15); me.x = mixv(T.sx, g.hang.x, k); me.z = mixv(T.sz, g.hang.z, k); me.y = 0; me.moving = true; }
-    else if (u < 0.7) { me.x = g.hang.x; me.z = g.hang.z; me.y = mixv(0, hang, ss01((u - 0.15) / 0.55)); }
+    if (u < 0.15) { const k = ss01(u / 0.15); me.x = mixv(T.sx, g.hang.x, k); me.z = mixv(T.sz, g.hang.z, k); me.y = y0; me.moving = true; }
+    else if (u < 0.7) { me.x = g.hang.x; me.z = g.hang.z; me.y = mixv(y0, hang, ss01((u - 0.15) / 0.55)); }
     else mantle((u - 0.7) / 0.3, hang);
-  } else if (T.k === 'lf') { me.x = g.base.x; me.z = g.base.z; me.y = 0; me.a = c.a + Math.PI; }
+  } else if (T.k === 'lf') { me.x = g.base.x; me.z = g.base.z; me.y = y0; me.a = c.a + Math.PI; }
   else if (T.k === 'pl') { const k = ss01(u / 0.12); me.x = mixv(T.sx, g.edge.x, k); me.z = mixv(T.sz, g.edge.z, k); me.y = c.top; me.a = c.a + Math.PI; }
   if (u >= 1) { if (T.k === 'bs' || T.k === 'hs') { me.x = g.land.x; me.z = g.land.z; me.y = c.top; } me.tr = null; }
 }
+// ROPE HAUL (top-only grapple, co-op): hp = puller - squares up on the top ring facing the drop, claw on the lip, hauls
+// hand over hand. hr = partner at the foot: steps to the rope, rises with it (y0 -> hang), then mantles over beside the puller.
+function ropeStep(T) {
+  const L = LINKS[T.i], u = Math.min(1, T.t / T.dur);
+  if (T.k === 'hp') { const k = ss01(u / 0.12); me.x = mixv(T.sx, L.landP.x, k); me.z = mixv(T.sz, L.landP.z, k); me.y = L.top; me.a = L.a + Math.PI; }
+  else {
+    me.a = L.a;
+    if (u < 0.12) { const k = ss01(u / 0.12); me.x = mixv(T.sx, L.foot.x, k); me.z = mixv(T.sz, L.foot.z, k); me.y = L.y0; me.moving = true; }
+    else if (u < 0.82) { me.x = L.foot.x; me.z = L.foot.z; me.y = mixv(L.y0, L.hang, ss01((u - 0.12) / 0.7)); }
+    else { const k = (u - 0.82) / 0.18; me.y = mixv(L.hang, L.top, ss01(k / 0.6)); const h = ss01((k - 0.35) / 0.65); me.x = mixv(L.foot.x, T.lx, h); me.z = mixv(L.foot.z, T.lz, h); }
+  }
+  if (u >= 1) { if (T.k === 'hr') { me.x = T.lx; me.z = T.lz; me.y = L.top; beep(150, 0.05, 'sine', 0.06); } me.tr = null; }
+}
 const TR_STANCE = { ld: 'CLIMBING (push into it = up, away = down · ACT let go)', mt: 'MANTLE', md: 'CLIMBING DOWN', gp: 'GRAPPLE', rp: 'RAPPEL',
-  kn: 'KNEELING - BOOST READY (move = stand)', bs: 'BOOSTED UP', lf: 'BOOSTING PARTNER', hs: 'BEING PULLED UP', pl: 'PULLING PARTNER UP' };
+  kn: 'KNEELING - BOOST READY (move = stand)', bs: 'BOOSTED UP', lf: 'BOOSTING PARTNER', hs: 'BEING PULLED UP', pl: 'PULLING PARTNER UP',
+  hr: 'BEING HAULED UP THE ROPE', hp: 'HAULING PARTNER UP THE ROPE' };
 const GP_STANCE = { gp: { sq: 'GRAPPLE - SQUARING UP', throw: 'GRAPPLE - THROWING HOOK', set: 'GRAPPLE - HOOK SET, TESTING' },
   rp: { sq: 'RAPPEL - SQUARING UP', set: 'RAPPEL - SETTING HOOK', over: 'RAPPEL - OVER THE EDGE' },
   any: { mantle: 'ROPE - OVER THE LIP', land: 'ROPE - BOOTS DOWN' } };
@@ -1214,7 +1393,8 @@ function poseFor(tk, ti, tp, y) {
     case 'md': return { k: 'mantle', p: 1 - tp };
     case 'kn': return { k: 'kneel' };
     case 'lf': return { k: 'lift', p: tp };
-    case 'pl': return { k: 'pull', p: tp };
+    case 'pl': case 'hp': return { k: 'pull', p: tp };
+    case 'hr': return tp < 0.12 ? null : tp < 0.82 ? { k: 'rope', ph: tp * 40, up: 1 } : { k: 'mantle', p: (tp - 0.82) / 0.18 };
     case 'gp': case 'rp': { if (!LINKS[ti]) return null; const up = tk === 'gp', P = lineDecode(tp);
       switch (P.ph) {
         case 'sq': return up ? { k: 'throw', p: 0 } : null;
@@ -1235,12 +1415,12 @@ function poseFor(tk, ti, tp, y) {
 // ---------------------------------------------------------------- host simulation (authoritative)
 function players() {
   const low = (tk) => tk === 'kn' || tk === 'lf' || tk === 'pl';
-  const list = [{ x: me.x, z: me.z, y: me.y, c: me.c || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: 0, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
-  if (peerConnected) list.push({ x: other.x, z: other.z, y: other.y, c: other.c || low(other.tk), p: other.p, tun: tunAt(other.x, other.z, other.y), noise: other.noise, idx: 1, rope: ON_LINE(other.tk), v: Math.hypot(other.nvx, other.nvz) });
+  const list = [{ x: me.x, z: me.z, y: me.y, c: me.c || low(me.tr && me.tr.k), p: me.p, tun: me.tun, noise: noiseOf(me), idx: mySlot, rope: ON_LINE(me.tr && me.tr.k), v: Math.hypot(me.vx, me.vz) }];
+  for (const o of peers()) list.push({ x: o.x, z: o.z, y: o.y, c: o.c || low(o.tk), p: o.p, tun: tunAt(o.x, o.z, o.y), noise: o.noise, idx: o.s, rope: ON_LINE(o.tk), v: Math.hypot(o.nvx, o.nvz) });
   return list;
 }
 function armSwitch(pi) {
-  const p = pi === 0 ? me : other;
+  const p = pOf(pi); if (!p) return;
   SWITCHES.forEach((s, i) => {
     if (Math.abs((p.y || 0) - s.y) < 0.3 && Math.hypot(p.x - s.x, p.z - s.z) < 1.8) { world.sw[i] = SWITCH_WINDOW; world.swBy[i] = pi; }
   });
@@ -1394,19 +1574,25 @@ function hostUpdate(dt) {
   else if (world.alert === 1) { world.cautionT -= dt; if (world.cautionT <= 0) world.alert = 0; }
   // --- extract
   const atExt = (p) => Math.abs((p.y || 0) - EXTRACT.y) < 0.4 && Math.hypot(p.x - EXTRACT.x, p.z - EXTRACT.z) < EXTRACT.r;
-  world.ext = [atExt(me), peerConnected && atExt(other)];
-  if (world.door && world.ext[0] && (solo || world.ext[1])) { world.phase = 'win'; world.finalT = world.t; }
+  // puzzles stay 2-agent: the door + any TWO players on the pad wins (solo: 1). Extra players are free agents.
+  world.ext = others.map((o, s) => (s === mySlot ? atExt(me) : o.on && atExt(o)));
+  if (world.door && world.ext.filter(Boolean).length >= extNeed()) { world.phase = 'win'; world.finalT = world.t; }
 }
 function hostRestart() {
   clearBlood();
   world = freshWorld();
-  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); lastCoId = -1; other.x = other.rx = SPAWNS[1].x; other.z = other.rz = SPAWNS[1].z; other.nvx = other.nvz = 0;
-  net.relay({ t: 'tp', x: SPAWNS[1].x, z: SPAWNS[1].z, silent: true });
+  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); lastCoId = -1;
+  for (const o of peers()) { const sp = SPAWNS[o.s]; o.x = o.rx = sp.x; o.z = o.rz = sp.z; o.nvx = o.nvz = 0; net.relay({ t: 'tp', x: sp.x, z: sp.z, silent: true }, o.s); }
   sendState();
 }
 
 // ---------------------------------------------------------------- network
 const r2 = (v) => Math.round(v * 100) / 100;
+const extNeed = () => (solo ? 1 : Math.min(2, 1 + peers().length)); // players needed on the extract pad
+// per-slot player array (same layout the old 2-player `h` used): [x, z, a, crouch, prone, vx, vz, takedown, aiming, drawn, y, tk, ti, tp]
+const plMe = () => [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0,
+  r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y)];
+const plOf = (o) => [r2(o.x), r2(o.z), r2(o.a), o.c ? 1 : 0, o.p ? 1 : 0, r2(o.nvx), r2(o.nvz), o.td ?? -1, o.gd ? 1 : 0, o.eq ? 1 : 0, r2(o.y || 0), o.tk || '', o.ti ?? -1, o.tp || 0];
 function sendState() {
   net.relay({ t: 's',
     g: world.guards.map((g) => [r2(g.x), r2(g.z), r2(g.a), g.st[0], r2(g.meter), r2(g.tdT || 0), g.shooting ? 1 : 0]), // st[0]: p i c s h(eld) d(ead); [6] = FAMAS shouldered
@@ -1415,16 +1601,17 @@ function sendState() {
     // h[4] = prone, h[5..6] = velocity, h[7] = takedown progress (-1 none), h[8] = aiming (just fired), h[9] = pistol drawn
     // (older clients ignore the extras)
     // h[10] = feet height, h[11..13] = traversal move code / index / progress. co = host co-op climb [id, kind, spot, climber, helper, t, dur]
-    h: [r2(me.x), r2(me.z), r2(me.a), me.c ? 1 : 0, me.p ? 1 : 0, r2(me.vx), r2(me.vz), tdProg(), me.gunT > 0 ? 1 : 0, me.eq ? 1 : 0,
-      r2(me.y), me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y)],
+    h: plMe(), // host (P1) - kept for old clients
+    pl: others.map((o, s) => (s === mySlot ? 0 : o.on ? plOf(o) : 0)), // every guest slot (0 = empty); a guest skips its own
     co: world.co ? [world.co.id, world.co.k[0], world.co.i, world.co.c, world.co.h, r2(world.co.t), world.co.dur] : 0 });
 }
 const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
 function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
   td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y) }); }
 function netTrav(o, y, tk, ti, tp) { o.y = y || 0; o.tk = tk || ''; o.ti = ti ?? -1; o.tp = tp || 0; }
-// partner fired: tracer + recoil on their model (host also applies the hit)
-function remoteShot(d) { other.shot++; other.gd = 1; gunFx(otherMesh, d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null); gunSound(0.6); }
+// a teammate fired: tracer + recoil on their model (host also applies the hit)
+function remoteShot(d, by) { const o = others[by]; if (!o || by === mySlot) return; o.shot++; o.gd = 1; gunFx(meshOf(by), d.ex, d.ez, d.g >= 0, d.g >= 0 && GUARDS[d.g] ? GUARDS[d.g].y + 1.15 : null); gunSound(0.6); }
+function readPl(o, h) { netSample(o, h[0], h[1], h[5], h[6]); o.a = h[2]; o.c = !!h[3]; o.p = !!h[4]; o.td = h[7] ?? -1; o.gd = h[8] || 0; o.eq = h[9] ?? (o.gd ? 1 : 0); netTrav(o, h[10], h[11], h[12], h[13]); }
 // remote motion sample: remember the net velocity (sent by the peer, or estimated from packet deltas for older
 // clients / guards) so render() can extrapolate a little between 15-20Hz packets instead of stair-stepping.
 function netSample(o, x, z, vx, vz) {
@@ -1437,34 +1624,41 @@ function netSample(o, x, z, vx, vz) {
 }
 
 function onGameMsg(d) {
-  if (d.t === 'p' && role === 'host') { netSample(other, d.x, d.z, d.vx, d.vz); other.a = d.a; other.c = !!d.c; other.p = !!d.p; other.noise = d.n || 0; other.td = d.td ?? -1; other.gd = d.gd || 0; other.eq = d.eq ?? (other.gd ? 1 : 0); netTrav(other, d.y, d.tk, d.ti, d.tp); }
-  else if (d.t === 'tr' && role === 'host') { // guest solo climb / grapple: veto if I'm already on that ladder / rope, or it's over
-    const busy = me.tr && me.tr.i === d.i && ((me.tr.k === d.k && d.k === 'ld') || (ON_LINE(me.tr.k) && ON_LINE(d.k)));
-    if (busy || world.phase !== 'play') net.relay({ t: 'trx' });
+  const from = d.from ?? 1, fo = others[from]; // guest -> host packets are tagged with the sender's slot by server.js
+  if (role === 'host' && d.t !== 's' && (!fo || from === 0)) return;
+  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); }
+  else if (d.t === 'tr' && role === 'host') { // guest solo climb / rope: veto if someone's already on that ladder / rope, it's over, or a ground grapple (top-only)
+    const on = (k, i) => i === d.i && ((k === d.k && d.k === 'ld') || ((ON_LINE(k) || k === 'hr' || k === 'hp') && ON_LINE(d.k)));
+    const busy = (me.tr && on(me.tr.k, me.tr.i)) || peers().some((o) => o.s !== from && on(o.tk, o.ti));
+    if (busy || d.k === 'gp' || world.phase !== 'play') net.relay({ t: 'trx', gp: d.k === 'gp' ? 1 : 0 }, from);
   }
-  else if (d.t === 'trx' && role === 'guest') { const T = me.tr; if (T && TR_SOLO[T.k]) { me.x = T.ox ?? me.x; me.y = T.oy ?? 0; me.z = T.oz ?? me.z; me.tr = null; toast('Partner is on that line', 1000, '#ffb36b'); } }
-  else if (d.t === 'co' && role === 'host') { if (!hostCoop(d.k, d.i, d.c)) net.relay({ t: 'cox' }); }
+  else if (d.t === 'trx' && role === 'guest') { const T = me.tr; if (T && TR_SOLO[T.k]) { me.x = T.ox ?? me.x; me.y = T.oy ?? 0; me.z = T.oz ?? me.z; me.tr = null; toast(d.gp ? 'Grapple is top-only' : 'Someone is on that line', 1000, '#ffb36b'); } }
+  else if (d.t === 'co' && role === 'host') { if (!hostCoop(d.k, d.i, d.c ?? from, d.h ?? 0)) net.relay({ t: 'cox' }, from); }
   else if (d.t === 'cox' && role === 'guest') toast('Can\'t - get in position', 900, '#ffb36b');
   else if (d.t === 'td' && role === 'host') { // guest takedown request: re-check (lenient) against the authoritative guard
     const g = world.guards[d.g], p = { x: d.x, z: d.z, tun: -1 };
-    const ok = g && alive(g) && Math.abs((other.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
-    if (!ok || !hostTakedown(d.g, 1)) net.relay({ t: 'tdx' });
-    else { other.x = d.x; other.z = d.z; other.td = 0; }
+    const ok = g && alive(g) && Math.abs((fo.y || 0) - (g.y || 0)) < 0.6 && Math.hypot(p.x - g.x, p.z - g.z) < TD.lenRange && Math.abs(angDiff(Math.atan2(p.z - g.z, p.x - g.x), g.a)) > TD.lenBehind;
+    if (!ok || !hostTakedown(d.g, from)) net.relay({ t: 'tdx' }, from);
+    else { fo.x = d.x; fo.z = d.z; fo.td = 0; }
   }
   else if (d.t === 'tdx' && role === 'guest') { if (me.td) { me.td = null; toast('Spotted - grab failed', 1000, '#ffb36b'); } }
-  else if (d.t === 'sh') { remoteShot(d); if (role === 'host') hostShot(d, 1); }
+  else if (d.t === 'sh') {
+    if (role === 'host') { remoteShot(d, from); hostShot(d, from); net.relay(Object.assign({}, d, { by: from, from: undefined })); } // echo to the other guests
+    else remoteShot(d, d.by ?? 0);
+  }
   else if (d.t === 'gs' && role === 'guest') guardShotFx(d);
-  else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(1); }
+  else if (d.t === 'i' && role === 'host') { if (world.phase === 'play') armSwitch(from); }
   else if (d.t === 'r' && role === 'host') { if (world.phase !== 'play') hostRestart(); }
   else if (d.t === 's' && role === 'guest') {
     d.g.forEach((a, i) => { const g = world.guards[i]; if (!g) return; netSample(g, a[0], a[1]); g.a = a[2]; g.st = { p: 'patrol', i: 'investigate', c: 'chase', s: 'search', h: 'held', d: 'dead' }[a[3]]; g.meter = a[4]; g.tdT = a[5] || 0; g.shooting = !!a[6]; });
-    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: d.ext, dead: d.dd ?? -1, kills: d.k || 0,
-      hp: d.hp || [HP_MAX, HP_MAX], dmg: d.dm || [0, 0], kb: d.kb || '' });
+    const pad = (v, f) => { const r = Array(NP).fill(f); (v || []).forEach((x, i) => { if (i < NP) r[i] = x; }); return r; };
+    Object.assign(world, { alert: d.al, alertT: d.at, sw: d.sw, door: d.door, phase: d.ph, t: d.tm, finalT: d.ft, caught: d.c, alerts: d.n, ext: pad(d.ext, false), dead: d.dd ?? -1, kills: d.k || 0,
+      hp: pad(d.hp, HP_MAX), dmg: pad(d.dm, 0), kb: d.kb || '' });
     solo = d.solo;
-    netSample(other, d.h[0], d.h[1], d.h[5], d.h[6]); other.a = d.h[2]; other.c = !!d.h[3]; other.p = !!d.h[4]; other.td = d.h[7] ?? -1; other.gd = d.h[8] || 0; other.eq = d.h[9] ?? (other.gd ? 1 : 0);
-    netTrav(other, d.h[10], d.h[11], d.h[12], d.h[13]);
+    readPl(others[0], d.h);
+    if (d.pl) d.pl.forEach((h, s) => { if (s && s !== mySlot && h && others[s]) readPl(others[s], h); });
     if (d.co) {
-      const [id, k, i, c, h, t, dur] = d.co; world.co = { id, k: k === 'b' ? 'boost' : 'pull', i, c, h, t, dur };
+      const [id, k, i, c, h, t, dur] = d.co; world.co = { id, k: { b: 'boost', p: 'pull', r: 'rope' }[k] || 'pull', i, c, h, t, dur };
       if (id !== lastCoId) applyCo(world.co);
       else if (me.tr && me.tr.id === id && Math.abs(me.tr.t - t) > 0.25) me.tr.t = t; // drift: follow the host clock
     } else world.co = null;
@@ -1482,50 +1676,57 @@ const net = {
     ws.onopen = () => {
       this.retry = 0;
       if (role === 'host') ws.send(JSON.stringify({ t: 'create', code: roomCode || undefined, resume: !!roomCode }));
-      else ws.send(JSON.stringify({ t: 'join', code: roomCode }));
+      else ws.send(JSON.stringify({ t: 'join', code: roomCode, slot: mySlot || undefined })); // reconnect: ask for my old slot back
     };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.t === 'msg') onGameMsg(m.d);
-      else if (m.t === 'created' || m.t === 'joined') { roomCode = m.code; setPeer(!!m.peer); enterGame(); }
-      else if (m.t === 'peer-joined') { setPeer(true); if (role === 'host') sendState(); }
-      else if (m.t === 'peer-left') setPeer(false);
+      else if (m.t === 'created' || m.t === 'joined') { roomCode = m.code; mySlot = m.slot ?? (m.t === 'created' ? 0 : 1); setRoster(m.slots || [true, !!m.peer]); enterGame(); }
+      else if (m.t === 'roster') setRoster(m.slots);
+      else if (m.t === 'peer-joined') { if (others[m.slot ?? 1]) others[m.slot ?? 1].on = true; setRoster(null); if (role === 'host') sendState(); }
+      else if (m.t === 'peer-left') { const o = others[m.slot ?? (role === 'host' ? 1 : 0)]; if (o) { o.on = false; o.tk = ''; } setRoster(null); }
       else if (m.t === 'pong') { this.rtt = performance.now() - m.ts; $('ping').textContent = Math.round(this.rtt) + 'ms'; }
       else if (m.t === 'error') { this.fatal = true; ws.close(); showLobby(m.msg); }
     };
     ws.onclose = () => {
       if (this.fatal || !role) { this.fatal = false; return; }
-      setPeer(false); $('peerStatus').textContent = 'reconnecting...';
+      setRoster([]); $('peerStatus').textContent = 'reconnecting...';
       this.retry++; setTimeout(() => this.connect(), Math.min(5000, 400 * this.retry));
     };
     ws.onerror = () => { if (!roomCode && role) { /* first connect failed */ } };
   },
-  relay(d) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({ t: 'relay', d })); },
+  relay(d, to) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(to != null ? { t: 'relay', d, to } : { t: 'relay', d })); }, // host: to = one guest slot
 };
 // iOS freezes background tabs; when we come back make sure the socket is alive.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && role && net.ws && net.ws.readyState > 1) net.connect();
 });
 
-function setPeer(v) {
-  peerConnected = v;
+// roster from server.js: slots[s] = connected (slot 0 = host). null = just refresh from others[].on
+function setRoster(slots) {
+  if (slots) others.forEach((o, s) => { const on = !!slots[s] && s !== mySlot; if (o.on && !on) o.tk = ''; if (!o.on && on) o.snap = true; o.on = on; });
+  const n = peers().length, hostIn = mySlot === 0 || others[0].on;
+  peerConnected = n > 0;
   const el = $('peerStatus');
-  el.textContent = solo ? 'solo test' : v ? (role === 'host' ? 'partner in' : 'with host') : (role === 'host' ? 'waiting for partner' : 'host offline');
-  el.className = v || solo ? 'good' : 'bad';
-  $('btnShare').classList.toggle('hidden', role !== 'host' || v || solo);
+  el.textContent = solo ? 'solo test' : role === 'host' ? (n + 1) + '/' + NP + ' in' : !hostIn ? 'host offline' : (n + 1) + '/' + NP + ' in';
+  el.className = (role === 'host' ? n > 0 : hostIn) || solo ? 'good' : 'bad';
+  $('btnShare').classList.toggle('hidden', role !== 'host' || n >= NP - 1 || solo);
+  $('slotTag').textContent = role ? 'P' + (mySlot + 1) : '';
+  $('slotTag').style.color = hexCss(PLAYER_LOOK[mySlot].accent);
 }
 
 // ---------------------------------------------------------------- lobby / UI
 function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
 function showLobby(msg) {
-  role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false;
+  role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false; mySlot = 0; fpsOn = false; syncViewButton();
+  for (const o of others) { o.on = false; o.tk = ''; }
   me.c = false; me.p = false; me.tun = -1; stopMe(); resetLoadout(); syncStanceButtons(); $('lobby').classList.remove('hidden'); $('hud').classList.add('hidden'); $('overlay').classList.add('hidden');
   $('lobbyMsg').textContent = msg || '';
 }
 function enterGame() {
   if (!$('lobby').classList.contains('hidden')) {
     $('lobby').classList.add('hidden'); $('hud').classList.remove('hidden');
-    const s = SPAWNS[role === 'host' ? 0 : 1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout();
+    const s = SPAWNS[mySlot] || SPAWNS[1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout();
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
   }
   applyPlayerLooks();
@@ -1539,7 +1740,7 @@ $('btnHost').onclick = () => {
 $('btnJoin').onclick = () => {
   unlockAudio(); const c = $('codeInput').value.trim().toUpperCase();
   if (!/^[A-Z]{4}$/.test(c)) { $('lobbyMsg').textContent = 'Enter the 4-letter room code.'; return; }
-  role = 'guest'; roomCode = c; $('lobbyMsg').textContent = 'Joining ' + c + '...'; net.connect();
+  role = 'guest'; roomCode = c; mySlot = 0; $('lobbyMsg').textContent = 'Joining ' + c + '...'; net.connect();
 };
 $('codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnJoin').click(); });
 $('btnShare').onclick = async () => {
@@ -1560,13 +1761,13 @@ function toast(msg, ms = 1500, color = '#fff') {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
 }
 function rank() {
-  const t = world.finalT, a = world.alerts, c = world.caught, dm = (world.dmg[0] || 0) + (world.dmg[1] || 0);
+  const t = world.finalT, a = world.alerts, c = world.caught, dm = world.dmg.reduce((x, y) => x + (y || 0), 0);
   if (a === 0 && c === 0 && dm === 0 && t < 240) return 'PHANTOM';
   if (a <= 1 && c === 0 && dm < 40) return 'SHADOW';
   if (a <= 3 && c <= 2) return 'OPERATIVE';
   return 'ROOKIE';
 }
-const myIdx = () => (role === 'host' ? 0 : 1);
+const myIdx = () => mySlot;
 function fmtTime(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; }
 function updateOverlay() {
   if (world.phase !== lastPhase && world.phase !== 'play') {
@@ -1575,7 +1776,7 @@ function updateOverlay() {
       beep(523, 0.15, 'triangle', 0.1); setTimeout(() => beep(784, 0.3, 'triangle', 0.1), 160);
       $('overlay').classList.remove('over');
       $('ovTitle').textContent = 'MISSION COMPLETE';
-      const dmg = (world.dmg[0] || 0) + (world.dmg[1] || 0);
+      const dmg = world.dmg.reduce((x, y) => x + (y || 0), 0);
       $('ovBody').innerHTML = `Time ${fmtTime(world.finalT)}<br>Alerts ${world.alerts} &middot; Kills ${world.kills} &middot; Damage taken ${dmg}<br>Rank: <b>${rank()}</b>`;
       btn.textContent = 'RUN IT AGAIN';
     } else if (world.phase === 'over') {
@@ -1584,7 +1785,7 @@ function updateOverlay() {
       input.jx = input.jz = 0; input.keys.clear();
       $('overlay').classList.add('over');
       const how = world.kb === 'melee' ? 'beaten down by a guard' : 'cut down by FAMAS fire';
-      const who = solo || world.dead === myIdx() ? `You were killed in action &mdash; ${how}.` : `Your partner is KIA &mdash; ${how}.`;
+      const who = solo || world.dead === myIdx() ? `You were killed in action &mdash; ${how}.` : `P${world.dead + 1} ${PLAYER_LOOK[world.dead] ? PLAYER_LOOK[world.dead].name : ''} is KIA &mdash; ${how}.`;
       $('ovTitle').textContent = 'GAME OVER';
       $('ovBody').innerHTML = `${who}<br>Mission failed at ${fmtTime(world.finalT)} &middot; Alerts ${world.alerts}`;
       btn.textContent = 'RETRY';
@@ -1638,7 +1839,7 @@ function drawRadar() {
     rc.fillStyle = '#ff5050'; rc.fillRect(X(g.rx) - 2, Z(g.rz) - 2, 4, 4);
     if (g.y > 0.3) { rc.strokeStyle = g.y > 5 ? '#ffffff' : '#ffb0b0'; rc.strokeRect(X(g.rx) - 3.5, Z(g.rz) - 3.5, 7, 7); } // up on a deck / roof
   }
-  if (peerConnected) { rc.fillStyle = '#' + PLAYER_LOOK[otherLook].accent.toString(16).padStart(6, '0'); rc.fillRect(X(other.rx) - 3, Z(other.rz) - 3, 6, 6); }
+  for (const o of peers()) { rc.fillStyle = hexCss(PLAYER_LOOK[o.s].accent); rc.fillRect(X(o.rx) - 3, Z(o.rz) - 3, 6, 6); }
   rc.fillStyle = '#ffffff'; rc.fillRect(X(me.x) - 3, Z(me.z) - 3, 6, 6);
 }
 
@@ -1646,7 +1847,7 @@ function drawRadar() {
 // CUTAWAY: a tall building between the camera and a player fades to a see-through ghost (decks do the same in
 // traverse.js) so the top-down view stays readable when you are under / behind the L2 towers.
 function updateCutaway(dt) {
-  const vs = [me]; if (peerConnected) vs.push({ x: other.rx, y: other.ry || 0, z: other.rz });
+  const vs = [me]; for (const o of peers()) vs.push({ x: o.rx, y: o.ry || 0, z: o.rz });
   for (const c of cutaway) {
     const b = c.b, hide = vs.some((v) => b.h > v.y + 1.4 && occludes(b, b.h, v, 0.35) && !(v.x > b.x1 && v.x < b.x2 && v.z > b.z1 && v.z < b.z2 && !c.tun));
     const k = c.k + ((hide ? 0.28 : 1) - c.k) * Math.min(1, dt * 7);
@@ -1660,12 +1861,12 @@ function updateCutaway(dt) {
 const CAM_H = 12, CAM_Z = 7.2; // top-down cam height / back-offset before zoom (was 15 / 9)
 const topCam = new THREE.Vector3(me.x, CAM_H, me.z + CAM_Z), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
 const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
-let fpsK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
+let fpsK = 0, tunK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
 // DAMAGE REACTIONS (both roles, purely visual): watch the synced state instead of hooking each damage path, so gun /
 // melee / FAMAS hits and host- or guest-side damage all land the same way. A player's LIFE dropping -> blood + flinch
 // on that player's rig (attacker = nearest guard); a guard going down -> blood + hit-react (shot kill) or a knife-finish
 // burst (takedown). hurtN / hurtA / hurtD on a mesh feed sneaker.js update (s.hurt / s.hurtFrom / s.hurtAmt).
-const hpSeen = [HP_MAX, HP_MAX];
+const hpSeen = Array(NP).fill(HP_MAX);
 function hurtActor(mesh, fx, fz, amt, fy, blood = true) {
   mesh.hurtN = (mesh.hurtN || 0) + 1; mesh.hurtD = amt;
   mesh.hurtA = Math.atan2(fz - mesh.g.position.z, fx - mesh.g.position.x);
@@ -1673,14 +1874,14 @@ function hurtActor(mesh, fx, fz, amt, fy, blood = true) {
 }
 function hurtCheck() {
   const mi = myIdx();
-  for (let i = 0; i < 2; i++) {
-    const hp = world.hp[i] ?? HP_MAX, mine = i === mi, mesh = mine ? meMesh : otherMesh, p = mine ? me : other;
-    if (hp < hpSeen[i] && (mine || peerConnected)) {
-      const px = mine ? me.x : other.rx, pz = mine ? me.z : other.rz;
+  for (let i = 0; i < NP; i++) {
+    const hp = world.hp[i] ?? HP_MAX, mine = i === mi, mesh = meshOf(i), p = pOf(i);
+    if (hp < hpSeen[i] && (mine || others[i].on)) {
+      const px = mine ? me.x : p.rx, pz = mine ? me.z : p.rz;
       let src = null, best = 1e9; // attacker: nearest standing guard (shooter / clubber)
       for (const g of world.guards) { if (g.st === 'dead' || g.st === 'held') continue; const d = Math.hypot((g.rx ?? g.x) - px, (g.rz ?? g.z) - pz); if (d < best) { best = d; src = g; } }
       const fx = src ? (src.rx ?? src.x) : px + Math.cos(p.a || 0), fz = src ? (src.rz ?? src.z) : pz + Math.sin(p.a || 0);
-      hurtActor(mesh, fx, fz, hpSeen[i] - hp, (mine ? me.y : other.ry) || 0, !(mine && fpsK > 0.3)); // no blood in my own face in first person
+      hurtActor(mesh, fx, fz, hpSeen[i] - hp, (mine ? me.y : p.ry) || 0, !(mine && fpsK > 0.3)); // no blood in my own face in first person
     }
     hpSeen[i] = hp;
   }
@@ -1688,10 +1889,10 @@ function hurtCheck() {
     const m = guardMeshes[gi]; if (!m) return;
     const prev = m.lastSt; m.lastSt = g.st;
     if (prev === undefined || prev === g.st || g.st !== 'dead' || prev === 'dead') return;
-    // killer: host knows g.by (0 = host, 1 = guest); the guest doesn't get it, so it takes the nearest player
-    const gx = g.rx ?? g.x, gz = g.rz ?? g.z, cand = [{ x: me.x, z: me.z }, ...(peerConnected ? [{ x: other.rx, z: other.rz }] : [])];
+    // killer: host knows g.by (slot); the guests don't get it, so they take the nearest player
+    const gx = g.rx ?? g.x, gz = g.rz ?? g.z, cand = [{ x: me.x, z: me.z, s: mi }, ...peers().map((o) => ({ x: o.rx, z: o.rz, s: o.s }))];
     let k = cand[0], bd = 1e9; for (const c of cand) { const d = Math.hypot(c.x - gx, c.z - gz); if (d < bd) { bd = d; k = c; } }
-    if (role === 'host' && g.by != null) k = g.by === mi || !peerConnected ? cand[0] : cand[1] || cand[0];
+    if (role === 'host' && g.by != null) k = cand.find((c) => c.s === g.by) || cand[0];
     const fy = GUARDS[gi].y;
     if (prev === 'held') bloodOn(m, k.x, k.z, 14, fy); // knife finish: burst, no flinch (the hold already sells it)
     else hurtActor(m, k.x, k.z, 30, fy); // shot dead: big spray + snap back as he drops
@@ -1701,20 +1902,35 @@ function hurtCheck() {
 function travNear() {
   const m = curTm; if (!m || me.tr) return null;
   if (m.m === 'climb' || m.m === 'down') return { kind: 'climb', i: m.i };
-  if (m.m === 'grapple' || m.m === 'rappel') return { kind: m.m === 'grapple' ? 'link' : 'linkTop', i: m.i };
-  if (m.i >= 0 && m.m !== 'mantle') return { kind: 'coop', i: m.i };
+  if (m.m === 'rappel' || m.m === 'haul') return { kind: 'linkTop', i: m.i };
+  if (m.m === 'ropeup' || m.m === 'ropewait') return { kind: 'link', i: m.i };
+  if (m.i >= 0 && m.i < COOPS.length && m.m !== 'mantle') return { kind: 'coop', i: m.i }; // hand-placed 2P walls (generated ones: updateCoopHint)
   return null;
 }
 const lerpA = (a, b, t) => a + angDiff(b, a) * t;
+// generated co-op spot under you (no decal of its own): one shared pulsing chevron ring on the floor / lip you'd use
+const coopHint = (() => {
+  const g = new THREE.Group(), m = new THREE.MeshBasicMaterial({ color: 0xffd27f, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.34, 0.42, 20), m); ring.rotation.x = -Math.PI / 2; g.add(ring);
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 3), m); arrow.position.y = 0.9; g.add(arrow); // tip points up (= the way you go)
+  g.visible = false; scene.add(g); return { g, m, arrow };
+})();
+function updateCoopHint(dt) {
+  const m = curTm, show = !!m && !me.tr && m.i >= COOPS.length && ['kneel', 'boost', 'hoist', 'pull'].includes(m.m);
+  coopHint.g.visible = show; if (!show) return;
+  const c = COOP_ALL[m.i], g = COOP_G[m.i], top = m.m === 'pull', p = top ? g.edge : g.base;
+  coopHint.g.position.set(p.x, (top ? c.top : c.y0) + 0.04, p.z);
+  coopHint.arrow.rotation.z = top ? Math.PI : 0; coopHint.arrow.position.y = top ? 0.6 : 0.9;
+  coopHint.m.opacity = 0.55 + 0.3 * Math.sin(performance.now() / 160);
+}
 function render(dt) {
   const k = Math.min(1, dt * 12);
   // remote player smoothing: chase a slightly extrapolated position (last packet + net velocity * packet age, capped)
   const now = performance.now();
   const ext = (o) => { const age = o.pt ? Math.min(0.12, (now - o.pt) / 1000) : 0; return [o.x + (o.nvx || 0) * age, o.z + (o.nvz || 0) * age]; };
   const kr = Math.min(1, dt * 10);
-  { const [tx, tz] = ext(other); if (other.snap) { other.rx = tx; other.rz = tz; other.snap = false; } else { other.rx += (tx - other.rx) * kr; other.rz += (tz - other.rz) * kr; } }
-  other.ra = lerpA(other.ra, other.a, k);
-  const deadMe = world.phase === 'over' && world.dead === myIdx(), deadOther = world.phase === 'over' && world.dead === 1 - myIdx();
+  for (const o of peers()) { const [tx, tz] = ext(o); if (o.snap) { o.rx = tx; o.rz = tz; o.snap = false; } else { o.rx += (tx - o.rx) * kr; o.rz += (tz - o.rz) * kr; } o.ra = lerpA(o.ra, o.a, k); }
+  const deadMe = world.phase === 'over' && world.dead === myIdx();
   hurtCheck();
   meMesh.g.position.set(me.x, me.y, me.z); meMesh.g.rotation.y = -me.a;
   // auto-aim lock (pistol drawn, in play): the arms turn at the shoulders toward it; the laser rides the gun
@@ -1730,25 +1946,32 @@ function render(dt) {
   }
   meMesh.update(dt, { aimAt: myAim, moving: me.moving && !myTr, run: me.run, speed: myBusy ? (myTr ? 0 : 1.6) : Math.hypot(me.vx, me.vz), crouch: me.c && !me.p && !myBusy, prone: me.p && !myBusy, dead: deadMe, hurt: meMesh.hurtN || 0, hurtFrom: meMesh.hurtA, hurtAmt: meMesh.hurtD,
     takedown: me.td ? Math.min(1, me.td.t / TD.time) : null, aim: (me.eq || me.gunT > 0) && !myBusy, armed: me.eq && !myBusy, shot: me.shot, trav: myTr }); // drawn = always in the forward aim stance
-  // remote player: walk/run animation from its smoothed on-screen speed (net packets don't carry a run flag)
-  // remote anim speed: prefer the net velocity (smooth), fall back to on-screen motion
-  if (dt > 0) { const vNet = Math.hypot(other.nvx, other.nvz), vScr = Math.hypot(other.rx - otherPX, other.rz - otherPZ) / dt;
-    const v = other.pt && performance.now() - other.pt < 300 ? vNet : vScr; otherSpeed += (Math.min(v, 8) - otherSpeed) * Math.min(1, dt * 8); }
-  otherPX = other.rx; otherPZ = other.rz;
-  otherMesh.g.visible = peerConnected;
-  other.ry = Math.abs(other.y - other.ry) > 4 ? other.y : other.ry + (other.y - other.ry) * kr;
-  otherMesh.g.position.set(other.rx, other.ry, other.rz); otherMesh.g.rotation.y = -other.ra;
-  const oBusy = !!other.tk, oTr = oBusy ? poseFor(other.tk, other.ti, other.tp, other.ry) : null;
-  const otherAim = aimPoint({ x: other.rx, z: other.rz, y: other.ry, a: other.ra, tun: tunAt(other.rx, other.rz, other.ry) }, otherMesh, peerConnected && !!other.eq && other.td < 0 && !oBusy && play && !deadOther);
-  otherMesh.update(dt, { aimAt: otherAim, moving: otherSpeed > 0.4 && world.phase === 'play' && other.td < 0 && !oTr, run: otherSpeed > 4.2 && !other.c, speed: world.phase === 'play' && other.td < 0 && !oTr ? otherSpeed : 0,
-    crouch: other.c && !other.p && !oBusy, prone: other.p && !oBusy, dead: deadOther, hurt: otherMesh.hurtN || 0, hurtFrom: otherMesh.hurtA, hurtAmt: otherMesh.hurtD, takedown: other.td >= 0 ? other.td : null, aim: (!!other.gd || !!other.eq) && !oBusy, armed: !!other.eq && !oBusy, shot: other.shot, trav: oTr });
+  // remote players (up to 4): walk/run animation from the net velocity (smooth), falling back to on-screen motion
+  const viewers = [me];
+  for (let s = 0; s < NP; s++) {
+    if (s === mySlot) continue;
+    const o = others[s], mesh = meshOf(s), R = remoteRopes[rk(s)], on = o.on;
+    mesh.g.visible = on;
+    if (!on) { updateRope(R, mesh, '', -1, 0); updateLaser(remoteLasers[rk(s)], mesh, false, dt); continue; }
+    if (dt > 0) { const vNet = Math.hypot(o.nvx, o.nvz), vScr = Math.hypot(o.rx - o.px, o.rz - o.pz) / dt;
+      const v = o.pt && now - o.pt < 300 ? vNet : vScr; o.spd += (Math.min(v, 8) - o.spd) * Math.min(1, dt * 8); }
+    o.px = o.rx; o.pz = o.rz;
+    o.ry = Math.abs(o.y - o.ry) > 4 ? o.y : o.ry + (o.y - o.ry) * kr;
+    mesh.g.position.set(o.rx, o.ry, o.rz); mesh.g.rotation.y = -o.ra;
+    const dead = world.phase === 'over' && world.dead === s, busy = !!o.tk, tr = busy ? poseFor(o.tk, o.ti, o.tp, o.ry) : null, armed = !!o.eq && o.td < 0 && !busy && play && !dead;
+    const aim = aimPoint({ x: o.rx, z: o.rz, y: o.ry, a: o.ra, tun: tunAt(o.rx, o.rz, o.ry) }, mesh, armed);
+    mesh.update(dt, { aimAt: aim, moving: o.spd > 0.4 && play && o.td < 0 && !tr, run: o.spd > 4.2 && !o.c, speed: play && o.td < 0 && !tr ? o.spd : 0,
+      crouch: o.c && !o.p && !busy, prone: o.p && !busy, dead, hurt: mesh.hurtN || 0, hurtFrom: mesh.hurtA, hurtAmt: mesh.hurtD, takedown: o.td >= 0 ? o.td : null, aim: (!!o.gd || !!o.eq) && !busy, armed: !!o.eq && !busy, shot: o.shot, trav: tr });
+    updateRope(R, mesh, o.tk, o.ti, o.tp);
+    updateLaser(remoteLasers[rk(s)], mesh, armed, dt);
+    viewers.push({ x: o.rx, y: o.ry || 0, z: o.rz });
+  }
   updateRope(myRope, meMesh, me.tr ? me.tr.k : '', me.tr ? me.tr.i : -1, trProg(me.tr, me.y, 1));
-  updateRope(otherRope, otherMesh, peerConnected ? other.tk : '', other.ti, other.tp);
-  travFx.tick(dt, travNear(), [me, peerConnected ? { x: other.rx, y: other.ry || 0, z: other.rz } : null]);
+  travFx.tick(dt, travNear(), viewers);
+  updateCoopHint(dt);
   updateCutaway(dt);
   // laser sights: only while the pistol is drawn, not mid-takedown / dead / between missions
   updateLaser(myLaser, meMesh, me.eq && !me.td && !myBusy && play && !deadMe, dt);
-  updateLaser(otherLaser, otherMesh, peerConnected && !!other.eq && other.td < 0 && !oBusy && play && !deadOther, dt);
   world.guards.forEach((g, i) => {
     if (role === 'host') { g.rx = g.x; g.rz = g.z; g.ra = g.a; }
     else { const [tx, tz] = ext(g); if (g.snap) { g.rx = tx; g.rz = tz; g.snap = false; } else { g.rx += (tx - g.rx) * kr; g.rz += (tz - g.rz) * kr; } g.ra = lerpA(g.ra, g.a, k); }
@@ -1788,15 +2011,16 @@ function render(dt) {
   camY += (me.y - camY) * Math.min(1, dt * 4); // follow the climber up (keeps the same framing on roofs)
   topCam.y = CAM_H * zoom + camY;
   topLook.set(topCam.x, camY, topCam.z - CAM_Z * zoom - 0.5);
-  fpsK += ((role && me.tun >= 0 ? 1 : 0) - fpsK) * Math.min(1, dt * 4.5);
+  fpsK += ((role && (me.tun >= 0 || fpsOn) ? 1 : 0) - fpsK) * Math.min(1, dt * 4.5);
+  tunK += ((me.tun >= 0 ? 1 : 0) - tunK) * Math.min(1, dt * 3); // tunnel darkness (the 1ST toggle outdoors keeps daylight fog)
   if (fpsK < 0.002) fpsK = 0; if (fpsK > 0.998) fpsK = 1;
   const f = fpsK * fpsK * (3 - 2 * fpsK); // smoothstep
   camYaw = lerpA(camYaw, me.a, Math.min(1, dt * 12));
-  eyeH += ((me.p ? 0.3 : 0.92) - eyeH) * Math.min(1, dt * 6);
+  eyeH += ((me.p ? 0.3 : me.c || me.tun >= 0 || (me.tr && me.tr.k === 'kn') ? 0.92 : 1.5) - eyeH) * Math.min(1, dt * 6);
   eyeF += ((me.p ? 0.42 : 0.12) - eyeF) * Math.min(1, dt * 6);
   const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
-  fpsEye.set(me.x + cy * eyeF, eyeH, me.z + sy * eyeF);
-  fpsLook.set(fpsEye.x + cy * 4, eyeH - 0.15, fpsEye.z + sy * 4);
+  fpsEye.set(me.x + cy * eyeF, me.y + eyeH, me.z + sy * eyeF);
+  fpsLook.set(fpsEye.x + cy * 4, me.y + eyeH - 0.15 - (me.y > 0.5 ? 0.5 : 0), fpsEye.z + sy * 4); // up high: look a touch down
   camera.position.lerpVectors(topCam, fpsEye, f);
   camLook.lerpVectors(topLook, fpsLook, f);
   // screen shake (own shots, getting hit, nearby FAMAS fire): random jolt, squared falloff
@@ -1805,28 +2029,31 @@ function render(dt) {
   camera.lookAt(camLook);
   const fov = 40 + 32 * f;
   if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.near = 0.1 - 0.06 * f; camera.updateProjectionMatrix(); }
-  scene.fog.near = THREE.MathUtils.lerp(camDist + 4, 0.6, f); scene.fog.far = THREE.MathUtils.lerp(camDist + 30, 17, f);
-  scene.fog.color.lerpColors(SKY, TUNNEL_FOG, f); scene.background.copy(scene.fog.color);
+  const ft = f * tunK, L3 = THREE.MathUtils.lerp;
+  scene.fog.near = L3(L3(camDist + 4, 10, f), 0.6, ft); scene.fog.far = L3(L3(camDist + 30, 46, f), 17, ft);
+  scene.fog.color.lerpColors(SKY, TUNNEL_FOG, ft); scene.background.copy(scene.fog.color);
   meMesh.g.visible = f < 0.6; // don't render my own head in first person
-  markers[0].visible = f < 0.5;
+  meMesh.marker.visible = f < 0.5;
   if (f > 0 !== document.body.classList.contains('fps')) document.body.classList.toggle('fps', f > 0);
-  $('fpsVignette').style.opacity = f.toFixed(2);
+  $('fpsVignette').style.opacity = (f * (0.35 + 0.65 * tunK)).toFixed(2);
   updateFx(dt); updateBlood(dt);
   renderer.render(scene, camera);
 }
 
 // ACT button label + prompt for each traversal option (prompt '' = button label only)
-const TRAV_LABEL = { climb: ['CLIMB', 'CLIMB'], down: ['CLIMB DOWN', 'CLIMB DOWN'], mantle: ['MANTLE', 'MANTLE'], grapple: ['GRAPPLE', 'GRAPPLE UP THE WALL'],
-  rappel: ['RAPPEL', 'RAPPEL DOWN'], kneel: ['BOOST', 'KNEEL - BOOST PARTNER'], boost: ['CLIMB ON', 'CLIMB ON PARTNER'], hoist: ['GRAB HAND', 'GET PULLED UP'],
+const TRAV_LABEL = { climb: ['CLIMB', 'CLIMB'], down: ['CLIMB DOWN', 'CLIMB DOWN'], mantle: ['MANTLE', 'MANTLE'],
+  rappel: ['RAPPEL', 'GRAPPLE - RAPPEL DOWN'], haul: ['PULL UP', 'GRAPPLE - HAUL PARTNER UP THE ROPE'], ropeup: ['GRAB ROPE', 'GRAB ROPE - PARTNER HAULS YOU UP'],
+  ropewait: ['ROPE', 'GRAPPLE IS TOP-ONLY - PARTNER ON THE ROOF RING HAULS YOU'], kneel: ['BOOST', 'KNEEL - BOOST PARTNER'], boost: ['CLIMB ON', 'CLIMB ON PARTNER'], hoist: ['GRAB HAND', 'GET PULLED UP'],
   pull: ['PULL UP', 'PULL PARTNER UP'], solo2p: ['2P', 'TOO HIGH - CO-OP BOOST'], letgo: ['LET GO', ''], stand: ['STAND', ''], busy: ['...', ''] };
 // LIFE bars (MGS-style): green > 50%, yellow > 25%, red + blink below. A pale "damage trail" eases down behind the fill.
-const hpTrail = [HP_MAX, HP_MAX];
+const hpTrail = Array(NP).fill(HP_MAX);
+const hpRows = [1, 2, 3, 4].map((i) => $('hpO' + i)); // teammates (index.html)
 function hpBar(el, i, hp, label) {
   if (!el) return;
   const k = clamp(hp / HP_MAX, 0, 1); hpTrail[i] = Math.max(hp, hpTrail[i] - 40 / 60);
   el.querySelector('.hpFill').style.width = (k * 100).toFixed(1) + '%';
   el.querySelector('.hpTrail').style.width = (clamp(hpTrail[i] / HP_MAX, 0, 1) * 100).toFixed(1) + '%';
-  el.className = 'hpRow ' + (k > 0.5 ? 'ok' : k > 0.25 ? 'warn' : 'crit');
+  el.className = 'hpRow ' + (el.dataset.mini ? 'mini ' : '') + (k > 0.5 ? 'ok' : k > 0.25 ? 'warn' : 'crit');
   const l = el.querySelector('.hpLbl'); if (l.textContent !== label) l.textContent = label;
 }
 function updateHud() {
@@ -1840,8 +2067,13 @@ function updateHud() {
   hurtT = Math.max(0, hurtT - 1 / 60);
   $('hurtFlash').style.opacity = (hurtT / 0.35 * 0.55).toFixed(2);
   hpBar($('hpMe'), mi, myHp, (solo ? 'LIFE' : 'P' + (mi + 1) + ' LIFE'));
-  const showO = peerConnected && !solo; $('hpOther').classList.toggle('hidden', !showO);
-  if (showO) hpBar($('hpOther'), 1 - mi, world.hp[1 - mi] ?? HP_MAX, 'P' + (2 - mi) + ' LIFE');
+  // teammates' bars (compact rows, in slot order, coloured by their accent)
+  let r = 0;
+  for (let s = 0; s < NP; s++) {
+    if (s === mi) continue;
+    const el = hpRows[r++], show = !solo && others[s].on; el.classList.toggle('hidden', !show);
+    if (show) { hpBar(el, s, world.hp[s] ?? HP_MAX, 'P' + (s + 1)); el.classList.toggle('hidden', false); el.style.setProperty('--pc', hexCss(PLAYER_LOOK[s].accent)); }
+  }
   const b = $('alertBanner');
   if (world.alert === 2) { b.className = 'alert'; b.textContent = 'ALERT ' + Math.max(0, world.alertT).toFixed(1); }
   else if (world.alert === 1) { b.className = 'caution'; b.textContent = 'CAUTION'; }
@@ -1853,11 +2085,11 @@ function updateHud() {
   else if (!world.door) {
     const armed = world.sw.filter((v) => v > 0).length;
     obj = solo ? 'Stand on a switch pad (red door / relay platform) and press ACT' :
-      armed ? `Switch armed! Partner: press the OTHER switch now (${Math.max(...world.sw).toFixed(1)}s)` :
+      armed ? `Switch armed! A 2nd agent: press the OTHER switch now (${Math.max(...world.sw).toFixed(1)}s)` :
       'Switches: one by the red door, one up on the RELAY PLATFORM - ACT within 2s of each other';
   } else {
-    const n = world.ext.filter(Boolean).length;
-    obj = solo ? 'Door open - climb the EXFIL TOWER to EXTRACT' : `Door open - both climb the EXFIL TOWER to EXTRACT (${n}/2 there)`;
+    const n = world.ext.filter(Boolean).length, need = extNeed();
+    obj = solo ? 'Door open - climb the EXFIL TOWER to EXTRACT' : `Door open - any ${need} of you on the EXFIL TOWER pad to EXTRACT (${Math.min(n, need)}/${need} there)`;
   }
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
@@ -1898,7 +2130,8 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // debug hook for automated tests
-window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, other, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
+window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, get other() { return others[mySlot === 0 ? 1 : 0]; }, get mySlot() { return mySlot; }, COOP_ALL, COOP_G,
+  get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
   travMode, startTrav, groundAt, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT };
