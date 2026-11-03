@@ -1,10 +1,11 @@
-// "Sneaker" player character (Night Ops / Ash Fox / olive kits) - procedural PS1-era (MGS1-inspired, original) rig.
-// Joint hierarchy of tapered faceted lofts (6-10 sided rings: thighs / calves / biceps / forearms / torso with a chest
-// swell), deformed segmented boxes (head with jaw taper + brow/nose ridge, toe-sloped boots on thick lugged soles,
-// mitt hands with a knuckle break) and a few small cylinders. Static parts are MERGED per bone + material at build
-// time, so a player is ~3k tris in ~35 draw calls (old: ~1k tris in ~85 draws) - still cheap on phones.
-// Textures are CanvasTextures (suit 128, torso 256 wrap, face / hair / boots 128, kit 64) drawn at load, then crushed to
-// 15-bit colour with a 4x4 ordered dither and sampled with NearestFilter = crunchy PlayStation look, just sharper.
+// "Sneaker" player character - procedural rig, original geometry and canvas textures (no third-party meshes).
+// Two body densities share the joint hierarchy:
+//   low  - classic kits + guards. 6-10 sided lofts. Measured Night Ops: 3825 visible tris, 56 meshes.
+//          Suit 128 / torso 256 / face 128 / kit 64, nearest, 15-bit crush (step 8).
+//   hi   - sneak squad (Reed, Wren, Sable, Dune, Iris). 12-16 sided lofts plus a ring between each
+//          profile sample, taller standing collar, denser head/boots/hands. Measured Reed: 7010 visible
+//          tris / 54 meshes (about 9k resident — the other kits' headgear stays on the rig, hidden).
+//          Suit 256 / torso 512 / face+hair+boots 256 / kit 128, linear + mipmaps, fine dither (step 2).
 // Lofts wrap u around the limb with the FRONT (+x) at u = 0.5 and v = 1 at the top, so texture seams sit at the back.
 // Local axes: forward = +x (matches the game's rotation.y = -angle convention), up = +y, character's right = +z.
 // Two kits share the rig: 'player' (olive sneaker, open face) and 'enemy' (slate guard, helmet + balaclava + goggles +
@@ -22,20 +23,27 @@ const hex = (r, g, b) => `rgb(${clamp(r | 0, 0, 255)},${clamp(g | 0, 0, 255)},${
 const shade = ([r, g, b], f) => hex(r * f, g * f, b * f);
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
-// PS1 crush: 5 bits / channel with a 4x4 ordered dither (the console's 15-bit framebuffer look)
-function psx(x, S) {
+// Ordered dither. step 8 = the old 15-bit crush. step 2 = fine dither for the sneak-squad textures.
+function psx(x, S, step = 8) {
   const img = x.getImageData(0, 0, S, S), p = img.data;
   for (let k = 0, i = 0; k < p.length; k += 4, i++) {
-    const d = (BAYER[((i / S | 0) & 3) * 4 + (i % S & 3)] / 16 - 0.5) * 8;
-    for (let c = 0; c < 3; c++) p[k + c] = clamp(Math.round((p[k + c] + d) / 8) * 8, 0, 255);
+    const d = (BAYER[((i / S | 0) & 3) * 4 + (i % S & 3)] / 16 - 0.5) * step;
+    for (let c = 0; c < 3; c++) p[k + c] = clamp(Math.round((p[k + c] + d) / step) * step, 0, 255);
   }
   x.putImageData(img, 0, 0);
 }
-function canvasTex(size, draw, crush = true) {
+// crush: true = step 8, false = none, number = quantize step. opts.linear = mipmapped (sneak squad).
+function canvasTex(size, draw, crush = true, opts = {}) {
   const c = document.createElement('canvas'); c.width = c.height = size;
-  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; draw(x, size); if (crush) psx(x, size);
+  const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingEnabled = false; draw(x, size);
+  const step = crush === true ? 8 : crush === false || crush == null ? 0 : crush;
+  if (step) psx(x, size, step);
   const t = new THREE.CanvasTexture(c);
-  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  if (opts && opts.linear) {
+    t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true;
+  } else {
+    t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  }
   t.wrapS = t.wrapT = THREE.RepeatWrapping; // loft u runs a hair past 1 (flat-front ring offset)
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
@@ -73,13 +81,13 @@ function pline(x, c, x0, y0, x1, y1, dash = null, w = 1) {
   for (let i = 0; i <= n; i++) { if (dash && i % (dash[0] + dash[1]) >= dash[0]) continue; x.fillRect(Math.round(x0 + (x1 - x0) * i / n), Math.round(y0 + (y1 - y0) * i / n), w, w); }
 }
 // sewn seam: dark groove, lit lip beside it, stitch dashes on both sides
-function seamV(x, X, y0, y1, base, light = 1.3) {
-  pline(x, shade(base, 0.45), X, y0, X, y1); pline(x, shade(base, light), X + 1, y0, X + 1, y1);
-  pline(x, shade(base, 0.7), X - 2, y0, X - 2, y1, [2, 2]); pline(x, shade(base, 0.7), X + 3, y0 + 2, X + 3, y1, [2, 2]);
+function seamV(x, X, y0, y1, base, light = 1.3, w = 1) {
+  pline(x, shade(base, 0.45), X, y0, X, y1, null, w); pline(x, shade(base, light), X + w, y0, X + w, y1, null, w);
+  pline(x, shade(base, 0.7), X - 2 * w, y0, X - 2 * w, y1, [2, 2], w); pline(x, shade(base, 0.7), X + 3 * w, y0 + 2 * w, X + 3 * w, y1, [2, 2], w);
 }
-function seamH(x, Y, x0, x1, base, light = 1.3) {
-  pline(x, shade(base, 0.45), x0, Y, x1, Y); pline(x, shade(base, light), x0, Y + 1, x1, Y + 1);
-  pline(x, shade(base, 0.7), x0, Y + 3, x1, Y + 3, [2, 2]);
+function seamH(x, Y, x0, x1, base, light = 1.3, w = 1) {
+  pline(x, shade(base, 0.45), x0, Y, x1, Y, null, w); pline(x, shade(base, light), x0, Y + w, x1, Y + w, null, w);
+  pline(x, shade(base, 0.7), x0, Y + 3 * w, x1, Y + 3 * w, [2, 2], w);
 }
 
 // colours sampled from the reference sheets
@@ -99,12 +107,31 @@ const KITS = {
     trim: [86, 98, 58], hairStyle: 'spiky', gaiter: [70, 80, 50], seam: [22, 23, 26], piping: null, stubble: 0.3 },
   ash: { suit: [88, 104, 128], suitDk: [66, 78, 98], camo: 4, web: [28, 30, 34], webStripe: [40, 120, 255], pouch: [30, 32, 36], pad: [40, 44, 52], hair: [236, 200, 128],
     trim: [40, 120, 255], hairStyle: 'swept', gaiter: null, seam: [50, 60, 78], piping: [40, 120, 255], stubble: 0 },
+  // Sneak squad: same cut (matte suit, black webbing, high collar, belt pouches, thigh holster, boots),
+  // different cloth colour and headgear. Original palettes — not sampled from any licensed texture.
+  reed: { tier: 'sneak', detail: 'hi', seed: 1100, suit: [90, 96, 58], suitDk: [58, 64, 38], camo: 0, web: [32, 32, 34], webStripe: null,
+    pouch: [46, 48, 38], pad: [36, 38, 34], hair: [36, 28, 22], trim: [36, 36, 34], hairStyle: 'crop', gaiter: [90, 96, 58],
+    seam: [40, 44, 30], piping: null, stubble: 0.35, skin: [206, 162, 120] },
+  wren: { tier: 'sneak', detail: 'hi', seed: 1200, suit: [78, 84, 50], suitDk: [52, 58, 34], camo: 0, web: [28, 28, 30], webStripe: null,
+    pouch: [40, 42, 32], pad: [34, 36, 32], hair: [28, 22, 18], trim: [132, 48, 40], hairStyle: 'buzz', gaiter: [78, 84, 50],
+    seam: [36, 40, 26], piping: null, stubble: 0.55, skin: [200, 154, 114] },
+  sable: { tier: 'sneak', detail: 'hi', seed: 1300, suit: [36, 40, 34], suitDk: [22, 24, 22], camo: 0, web: [54, 58, 42], webStripe: null,
+    pouch: [40, 44, 34], pad: [30, 32, 28], hair: [24, 20, 18], trim: [54, 58, 42], hairStyle: 'hood', gaiter: [36, 40, 34],
+    seam: [16, 18, 16], piping: null, stubble: 0.2, skin: [196, 168, 148] },
+  dune: { tier: 'sneak', detail: 'hi', seed: 1400, suit: [124, 112, 74], suitDk: [92, 82, 52], camo: 0, web: [30, 30, 32], webStripe: null,
+    pouch: [112, 96, 62], pad: [70, 62, 46], hair: [168, 138, 90], trim: [150, 128, 88], hairStyle: 'crop', gaiter: [156, 136, 96],
+    seam: [70, 60, 40], piping: null, stubble: 0.15, skin: [196, 146, 102] },
+  iris: { tier: 'sneak', detail: 'hi', seed: 1500, suit: [68, 82, 96], suitDk: [46, 58, 70], camo: 0, web: [26, 28, 32], webStripe: null,
+    pouch: [32, 36, 42], pad: [40, 48, 56], hair: [32, 30, 36], trim: [90, 150, 166], hairStyle: 'part', gaiter: [68, 82, 96],
+    seam: [32, 42, 54], piping: [110, 168, 180], stubble: 0.1, skin: [214, 180, 156] },
 };
 const TEX = {};
 function textures(kit = 'player') {
   if (TEX[kit]) return TEX[kit];
   if (kit === 'enemy') return (TEX.enemy = enemyTextures());
-  const K = KITS[kit] || KITS.player, SU = K.suit, SD = K.suitDk, WB = K.web, HR = K.hair, seed = kit === 'player' ? 0 : kit === 'night' ? 400 : 800;
+  const K0 = KITS[kit] || KITS.player;
+  if (K0.tier === 'sneak') return (TEX[kit] = sneakTextures(K0));
+  const K = K0, SU = K.suit, SD = K.suitDk, WB = K.web, HR = K.hair, seed = kit === 'player' ? 0 : kit === 'night' ? 400 : 800;
   const swept = K.hairStyle === 'swept', SEAM = K.seam || SD;
   const camo = (x, S, n, sz) => { const r = rng(5 + seed); for (let i = 0; i < n; i++) { x.fillStyle = shade(SD, 0.9 + r() * 0.2); x.beginPath();
     const cx = r() * S, cy = r() * S; x.moveTo(cx, cy); for (let k = 0; k < 4; k++) x.lineTo(cx + (r() - 0.5) * sz, cy + (r() - 0.5) * sz); x.fill(); } };
@@ -207,48 +234,205 @@ function textures(kit = 'player') {
   };
   return TEX[kit];
 }
-// face (front of the head box, 128px, u = across the face, v = up): features laid out on the old 32px grid x4 with
-// lids, irises + catchlights, nose bridge / nostrils, lips, cheekbone + jaw shading and stubble.
-function drawFace(x, S, swept, HR, stubble) {
-  facets(x, S, SKIN, 91, 4, 0.12, 0.04);
+// face (front of the head box, u = across, v = up). Laid out on a 128 design grid and scaled with S,
+// so the classic 128px face stays put and the sneak 256px face keeps the same features with finer texels.
+// style: boolean (legacy swept flag) or 'swept' | 'part' | 'crop' | 'buzz' | 'hood' | 'spiky'.
+function drawFace(x, S, style, HR, stubble) {
+  const swept = style === true || style === 'swept' || style === 'part';
+  const k = S / 128;
+  const P = (c, X, Y, w = 1, h = 1) => px(x, c, Math.round(X * k), Math.round(Y * k), Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k)));
+  const Ln = (c, x0, y0, x1, y1, dash = null) => pline(x, c, x0 * k, y0 * k, x1 * k, y1 * k, dash, Math.max(1, Math.round(k)));
+  facets(x, S, SKIN, 91, Math.max(4, Math.round(4 * k)), 0.12, 0.04);
   const r = rng(swept ? 33 : 34);
-  px(x, shade(SKIN, 1.06), 20, 26, 88, 14); // forehead light
-  px(x, shade(SKIN, 0.84), 0, 52, 22, 44); px(x, shade(SKIN, 0.84), 106, 52, 22, 44); // cheek sides in shadow
-  px(x, shade(SKIN, 0.78), 0, 96, 18, 32); px(x, shade(SKIN, 0.78), 110, 96, 18, 32); // jaw corners
-  pline(x, shade(SKIN, 0.74), 18, 96, 40, 118); pline(x, shade(SKIN, 0.74), 110, 96, 88, 118); // jaw line
-  px(x, shade(SKIN, 1.1), 24, 70, 14, 4); px(x, shade(SKIN, 1.1), 90, 70, 14, 4); // cheekbone highlights
+  P(shade(SKIN, 1.06), 20, 26, 88, 14); // forehead light
+  P(shade(SKIN, 0.84), 0, 52, 22, 44); P(shade(SKIN, 0.84), 106, 52, 22, 44); // cheek sides in shadow
+  P(shade(SKIN, 0.78), 0, 96, 18, 32); P(shade(SKIN, 0.78), 110, 96, 18, 32); // jaw corners
+  Ln(shade(SKIN, 0.74), 18, 96, 40, 118); Ln(shade(SKIN, 0.74), 110, 96, 88, 118); // jaw line
+  P(shade(SKIN, 1.1), 24, 70, 14, 4); P(shade(SKIN, 1.1), 90, 70, 14, 4); // cheekbone highlights
   if (stubble) { // five o'clock shadow round the jaw + upper lip
-    for (let i = 0; i < 900 * stubble; i++) { const X = r() * S, Y = 86 + r() * 42; if (Y < 100 && X > 40 && X < 88 && Y > 92) continue; px(x, shade([60, 46, 38], 0.9 + r() * 0.4), X, Y); }
-    for (let i = 0; i < 120 * stubble; i++) px(x, shade([60, 46, 38], 1), 46 + r() * 36, 88 + r() * 4);
+    for (let i = 0; i < Math.round(900 * stubble * k * k); i++) {
+      const X = r() * 128, Y = 86 + r() * 42; if (Y < 100 && X > 40 && X < 88 && Y > 92) continue; P(shade([60, 46, 38], 0.9 + r() * 0.4), X, Y);
+    }
+    for (let i = 0; i < Math.round(120 * stubble * k * k); i++) P(shade([60, 46, 38], 1), 46 + r() * 36, 88 + r() * 4);
   }
-  if (swept) { // swept fringe: thick on one side, tapering diagonally across the forehead to the other temple
-    for (let i = 0; i < S; i++) { const h = Math.max(6, 32 - (i * 26 / S | 0)); px(x, shade(HR, 0.95 + ((i * 5) % 3) * 0.1), i, 0, 1, h);
-      if (i % 3 === 0) px(x, shade(HR, 0.7), i, h - 5, 1, 5); if (i % 7 === 0) px(x, shade(HR, 1.25), i, 2, 1, h - 8); }
-    px(x, shade(HR, 0.55), 0, 30, 30, 2); // shadow under the fringe
+  if (style === 'part') { // side part: longer on the left of the texture, short over the right temple
+    for (let i = 0; i < 128; i++) {
+      const h = i < 78 ? 14 + (i / 78) * 16 : Math.max(7, 28 - (i - 78) * 0.85);
+      P(shade(HR, 0.9 + (i % 3) * 0.08), i, 0, 1, h);
+      if (i % 5 === 0) P(shade(HR, 1.2), i, 2, 1, Math.max(4, h - 8));
+    }
+    P(shade(HR, 0.55), 70, 22, 40, 2);
+  } else if (swept) { // swept fringe: thick on one side, tapering diagonally across the forehead
+    for (let i = 0; i < 128; i++) { const h = Math.max(6, 32 - (i * 26 / 128 | 0)); P(shade(HR, 0.95 + ((i * 5) % 3) * 0.1), i, 0, 1, h);
+      if (i % 3 === 0) P(shade(HR, 0.7), i, h - 5, 1, 5); if (i % 7 === 0) P(shade(HR, 1.25), i, 2, 1, Math.max(2, h - 8)); }
+    P(shade(HR, 0.55), 0, 30, 30, 2); // shadow under the fringe
+  } else if (style === 'buzz') { // clipped hairline, almost no fringe
+    P(shade(HR, 1), 0, 0, 128, 8);
+    for (let i = 0; i < 128; i += 3) P(shade(HR, 0.75 + (i % 5) * 0.05), i, 8, 2, 3 + (i % 4));
+  } else if (style === 'hood') { // hair mostly covered; a short line at the brow
+    P(shade(HR, 1), 0, 0, 128, 6);
   } else { // spiky fringe: jagged points
-    px(x, shade(HR, 1), 0, 0, S, 18);
-    for (let i = 0; i < S; i += 6) { const d = 6 + ((i * 7) % 11); for (let k = 0; k < d; k++) px(x, shade(HR, 1.05 + (k % 2) * 0.1), i + (k >> 2), 18 + k, Math.max(1, 5 - (k >> 1)), 1); }
-    for (let i = 2; i < S; i += 5) pline(x, shade(HR, 1.5), i, 2, i + 1, 14, [3, 2]);
+    P(shade(HR, 1), 0, 0, 128, 18);
+    for (let i = 0; i < 128; i += 6) { const d = 6 + ((i * 7) % 11); for (let n = 0; n < d; n++) P(shade(HR, 1.05 + (n % 2) * 0.1), i + (n >> 2), 18 + n, Math.max(1, 5 - (n >> 1)), 1); }
+    for (let i = 2; i < 128; i += 5) Ln(shade(HR, 1.5), i, 2, i + 1, 14, [3, 2]);
   }
   const brow = swept ? [110, 90, 62] : [43, 33, 27];
   for (const [bx, dir] of [[22, 1], [72, -1]]) { // brows angled down toward the nose (stern)
-    for (let i = 0; i < 34; i++) px(x, shade(brow, 0.9 + (i % 3) * 0.08), bx + i, 44 + (dir > 0 ? (i / 11 | 0) : 3 - (i / 11 | 0)), 1, 5);
+    for (let i = 0; i < 34; i++) P(shade(brow, 0.9 + (i % 3) * 0.08), bx + i, 44 + (dir > 0 ? (i / 11 | 0) : 3 - (i / 11 | 0)), 1, 5);
   }
-  px(x, shade(SKIN, 0.7), 20, 54, 36, 2); px(x, shade(SKIN, 0.7), 72, 54, 36, 2); // brow-ridge shadow
-  const iris = swept ? [44, 74, 102] : [29, 42, 48];
+  P(shade(SKIN, 0.7), 20, 54, 36, 2); P(shade(SKIN, 0.7), 72, 54, 36, 2); // brow-ridge shadow
+  const iris = style === 'part' ? [64, 92, 78] : swept ? [44, 74, 102] : [29, 42, 48];
   for (const ex of [30, 76]) { // eyes: lid line, white, iris, pupil, catchlight, lower lid
-    px(x, '#2a1e18', ex - 2, 57, 26, 2); px(x, '#e4d8c4', ex, 59, 22, 7); px(x, shade([228, 216, 196], 0.8), ex, 59, 22, 1);
-    px(x, shade(iris, 1), ex + 7, 59, 9, 7); px(x, '#0c0c0e', ex + 9, 60, 5, 5); px(x, '#f4f0e8', ex + 8, 60, 2, 2);
-    px(x, shade(SKIN, 0.78), ex, 66, 22, 2); px(x, shade(SKIN, 0.86), ex + 2, 69, 18, 2); // lower lid + bag
+    P('#2a1e18', ex - 2, 57, 26, 2); P('#e4d8c4', ex, 59, 22, 7); P(shade([228, 216, 196], 0.8), ex, 59, 22, 1);
+    P(shade(iris, 1), ex + 7, 59, 9, 7); P('#0c0c0e', ex + 9, 60, 5, 5); P('#f4f0e8', ex + 8, 60, 2, 2);
+    P(shade(SKIN, 0.78), ex, 66, 22, 2); P(shade(SKIN, 0.86), ex + 2, 69, 18, 2); // lower lid + bag
   }
-  px(x, shade(SKIN, 0.82), 58, 56, 4, 24); px(x, shade(SKIN, 1.12), 62, 56, 4, 26); // nose bridge: shadow / lit side
-  px(x, shade(SKIN, 0.66), 54, 80, 20, 3); px(x, shade(SKIN, 1.15), 60, 76, 8, 4); // nose tip + underside
-  px(x, '#5a3a2c', 55, 81, 4, 2); px(x, '#5a3a2c', 69, 81, 4, 2); // nostrils
-  px(x, shade(SKIN, 0.8), 62, 85, 4, 7); // philtrum
-  px(x, '#6e4636', 46, 95, 36, 2); px(x, '#8a5a46', 50, 93, 28, 2); px(x, shade(SKIN, 1.08), 50, 98, 28, 3); // mouth + lips
-  px(x, shade(SKIN, 0.8), 52, 104, 24, 2); px(x, shade(SKIN, 0.7), 50, 114, 28, 4); px(x, shade(SKIN, 1.08), 56, 108, 16, 4); // chin
+  P(shade(SKIN, 0.82), 58, 56, 4, 24); P(shade(SKIN, 1.12), 62, 56, 4, 26); // nose bridge: shadow / lit side
+  P(shade(SKIN, 0.66), 54, 80, 20, 3); P(shade(SKIN, 1.15), 60, 76, 8, 4); // nose tip + underside
+  P('#5a3a2c', 55, 81, 4, 2); P('#5a3a2c', 69, 81, 4, 2); // nostrils
+  P(shade(SKIN, 0.8), 62, 85, 4, 7); // philtrum
+  P('#6e4636', 46, 95, 36, 2); P('#8a5a46', 50, 93, 28, 2); P(shade(SKIN, 1.08), 50, 98, 28, 3); // mouth + lips
+  P(shade(SKIN, 0.8), 52, 104, 24, 2); P(shade(SKIN, 0.7), 50, 114, 28, 4); P(shade(SKIN, 1.08), 56, 108, 16, 4); // chin
 }
-export const PLAYER_KITS = ['night', 'ash', 'player'];
+
+// Higher-res sneak-suit textures. Painters are authored on the classic pixel grid (128 limb / 256 torso / 64 kit)
+// and drawn at 2x so seams land in the same place with twice the texels. Solid matte cloth, not a camo print.
+const SNEAK_TEX = { suit: 256, torso: 512, face: 256, hair: 256, boot: 256, kit: 128, small: 64, skin: 128 };
+function sneakTextures(K) {
+  const SU = K.suit, SD = K.suitDk, WB = K.web, HR = K.hair, seed = K.seed || 1, SEAM = K.seam || SD;
+  const lin = { linear: true };
+  const skinC = K.skin || SKIN;
+  const limb = (x, S) => {
+    const k = S / 128, w = Math.max(1, Math.round(k));
+    facets(x, S, SU, 11 + seed, 14, 0.16, 0.045); weave(x, S, 2, 0.93, 3 + seed, 0.008);
+    seamV(x, 30 * k, 0, S, SEAM, 1.3, w); seamV(x, 96 * k, 0, S, SEAM, 1.3, w); seamV(x, 2 * k, 0, S, SEAM, 1.15, w);
+    seamH(x, 40 * k, 0, S, SEAM, 1.3, w); seamH(x, 86 * k, 0, S, SEAM, 1.3, w);
+    for (let y = 46; y < 84; y += 4) pline(x, shade(SU, 0.82), 44 * k, y * k, 84 * k, y * k, null, w); // fine rib over the knee / elbow
+    if (K.piping) { pline(x, shade(K.piping, 0.95), 97 * k, 0, 97 * k, S, null, w); pline(x, shade(K.piping, 0.95), 31 * k, 0, 31 * k, S, null, w); }
+  };
+  const torso = (x, S) => {
+    const k = S / 256, w = Math.max(1, Math.round(k));
+    const Ln = (c, x0, y0, x1, y1) => pline(x, c, x0 * k, y0 * k, x1 * k, y1 * k, null, w);
+    const P = (c, X, Y, W, H) => px(x, c, X * k, Y * k, Math.max(1, W * k), Math.max(1, H * k));
+    facets(x, S, SU, 23 + seed, 16, 0.15, 0.04); weave(x, S, 2, 0.93, 7 + seed, 0.006);
+    x.fillStyle = shade(SD, 0.92); x.beginPath();
+    x.moveTo(0, 0); x.lineTo(S, 0); x.lineTo(S, 40 * k); x.lineTo(170 * k, 52 * k); x.lineTo(128 * k, 96 * k); x.lineTo(86 * k, 52 * k); x.lineTo(0, 40 * k); x.fill();
+    Ln(shade(SEAM, 0.6), 0, 40, 86, 52); Ln(shade(SEAM, 0.6), 86, 52, 128, 96); Ln(shade(SEAM, 0.6), 128, 96, 170, 52); Ln(shade(SEAM, 0.6), 170, 52, 256, 40);
+    Ln(shade(SU, 1.28), 0, 41, 86, 53); Ln(shade(SU, 1.28), 86, 53, 127, 97); Ln(shade(SU, 1.28), 129, 97, 170, 53); Ln(shade(SU, 1.28), 170, 53, 256, 41);
+    if (K.piping) { Ln(shade(K.piping, 1), 0, 43, 86, 55); Ln(shade(K.piping, 1), 86, 55, 126, 99); Ln(shade(K.piping, 1), 130, 99, 170, 55); Ln(shade(K.piping, 1), 170, 55, 256, 43); }
+    for (let y = 150; y < 236; y += 5) { Ln(shade(SD, 0.72), 84, y, 172, y); Ln(shade(SU, 1.12), 84, y + 1, 172, y + 1); }
+    seamV(x, 82 * k, 140 * k, S, SEAM, 1.3, w); seamV(x, 172 * k, 140 * k, S, SEAM, 1.3, w); seamH(x, 140 * k, 84 * k, 172 * k, SEAM, 1.3, w);
+    seamV(x, 60 * k, 40 * k, S, SEAM, 1.3, w); seamV(x, 196 * k, 40 * k, S, SEAM, 1.3, w); seamV(x, 2 * k, 40 * k, S, SEAM, 1.15, w);
+    for (const cx of [92, 140]) { P(shade(SD, 0.8), cx, 104, 24, 26); P(shade(SU, 1.2), cx, 104, 24, 2); P(shade(SD, 0.5), cx, 112, 24, 3);
+      pline(x, shade(SU, 1.3), (cx + 1) * k, 106 * k, (cx + 22) * k, 106 * k, [2, 1], w); }
+    P(shade(SD, 0.5), 124, 0, 9, 256);
+    for (let y = 0; y < 256; y += 2) { P('#8c8f92', 126 + ((y >> 1) & 1) * 2, y, 3, 1); P('#303234', 126 + (((y >> 1) + 1) & 1) * 2, y, 3, 1); }
+    P('#c4c8cc', 125, 8, 7, 16); P('#3a3c3e', 127, 12, 3, 8); // zipper pull near the collar
+  };
+  return {
+    suit: canvasTex(SNEAK_TEX.suit, limb, 2, lin),
+    suitFront: canvasTex(SNEAK_TEX.torso, torso, 2, lin),
+    gear: canvasTex(SNEAK_TEX.small, (x, S) => {
+      facets(x, S, BLACK, 31 + seed, 6, 0.22, 0.05); weave(x, S, 2, 0.86, 31, 0);
+      px(x, shade(BLACK, 1.7), 0, 2, S, 2); px(x, shade(BLACK, 1.7), 0, S - 4, S, 2);
+    }, 2, lin),
+    web: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      const k = S / 64;
+      facets(x, S, WB, 33 + seed, 8, 0.18, 0.05);
+      for (let i = 0; i < S; i += 2) pline(x, shade(WB, 0.8), i, 0, i, S); // tight nylon ribs
+      px(x, shade(WB, 1.55), 0, 2 * k, S, k); px(x, shade(WB, 1.55), 0, S - 3 * k, S, k);
+      pline(x, shade(WB, 0.5), 5 * k, 5 * k, S - 6 * k, 5 * k, [3, 2]); pline(x, shade(WB, 0.5), 5 * k, S - 6 * k, S - 6 * k, S - 6 * k, [3, 2]);
+    }, 2, lin),
+    pouch: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      const k = S / 64, PB = K.pouch;
+      facets(x, S, PB, 41 + seed, 8, 0.2, 0.05); weave(x, S, 2, 0.9, 41 + seed, 0.008);
+      px(x, shade(PB, 1.12), 0, 0, S, 24 * k); px(x, shade(PB, 0.45), 0, 24 * k, S, 3 * k); px(x, shade(PB, 1.7), 0, 27 * k, S, k);
+      pline(x, shade(PB, 0.6), 3 * k, 3 * k, S - 4 * k, 3 * k, [2, 2]);
+      px(x, '#8a8e90', 27 * k, 14 * k, 10 * k, 8 * k); px(x, '#222', 29 * k, 16 * k, 6 * k, 4 * k); px(x, '#d0d4d6', 28 * k, 14 * k, 3 * k, k);
+    }, 2, lin),
+    pad: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      const k = S / 64;
+      facets(x, S, K.pad, 51 + seed, 6, 0.28, 0.05); px(x, '#1c1c1c', 0, 0, S, 3 * k); px(x, '#1c1c1c', 0, S - 3 * k, S, 3 * k);
+      for (const y of [16, 30, 44]) { px(x, shade(K.pad, 1.45), 6 * k, y * k, S - 12 * k, k); px(x, shade(K.pad, 0.6), 6 * k, (y + 1) * k, S - 12 * k, 2 * k); }
+    }, 2, lin),
+    trim: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      facets(x, S, K.trim, 55 + seed, 6, 0.2, 0.05); weave(x, S, 3, 0.86, seed + 4, 0.012);
+      px(x, shade(K.trim, 0.55), 0, 0, S, 4); px(x, shade(K.trim, 1.3), 0, 4, S, 2); px(x, shade(K.trim, 0.7), 0, S - 5, S, 5);
+    }, 2, lin),
+    gaiter: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      const GC = K.gaiter || SD;
+      facets(x, S, GC, 57 + seed, 8, 0.22, 0.08); weave(x, S, 3, 0.9, seed + 9, 0.01);
+      for (let i = 0; i < S; i += 3) pline(x, shade(GC, 0.78), i, 0, i, S);
+      for (let y = 1; y < S; y += 4) px(x, shade(GC, 0.84), 0, y, S, 1);
+      px(x, shade(GC, 1.3), 0, S * 0.32, S, 2); px(x, shade(GC, 0.5), 0, S * 0.32 + 2, S, 2);
+    }, 2, lin),
+    boot: canvasTex(SNEAK_TEX.boot, (x, S) => {
+      const k = S / 128, w = Math.max(1, Math.round(k));
+      facets(x, S, BOOT, 61 + seed, 10, 0.2, 0.05);
+      px(x, '#141516', 0, S - 22 * k, S, 22 * k); px(x, '#3a3b3c', 0, S - 22 * k, S, 2 * k);
+      for (let i = 0; i < S; i += 8 * k) px(x, '#2a2b2c', i, S - 16 * k, 4 * k, 10 * k);
+      seamH(x, S - 40 * k, 0, S, BOOT, 1.55, w);
+      px(x, '#222324', 46 * k, 0, 36 * k, S - 40 * k);
+      for (let y = 6; y < 88; y += 8) { pline(x, '#7a7c7e', 48 * k, y * k, 80 * k, (y + 6) * k, null, w); pline(x, '#7a7c7e', 80 * k, y * k, 48 * k, (y + 6) * k, null, w);
+        px(x, '#9a9c9e', 44 * k, y * k, 3 * k, 3 * k); px(x, '#9a9c9e', 80 * k, y * k, 3 * k, 3 * k); }
+      seamV(x, 30 * k, 0, S - 40 * k, BOOT, 1.45, w); seamV(x, 98 * k, 0, S - 40 * k, BOOT, 1.45, w);
+    }, 2, lin),
+    sole: canvasTex(SNEAK_TEX.small, (x, S) => {
+      facets(x, S, [26, 26, 27], 63, 5, 0.18, 0.04);
+      for (let i = 0; i < S; i += 6) for (let j = 0; j < S; j += 6) px(x, '#121213', i + ((j / 6 | 0) & 1) * 3, j, 3, 4);
+    }, 2, lin),
+    skin: canvasTex(SNEAK_TEX.skin, (x, S) => { facets(x, S, skinC, 71 + seed, 6, 0.12, 0.035); }, 2, lin),
+    stubble: canvasTex(SNEAK_TEX.skin, (x, S) => {
+      facets(x, S, skinC, 73 + seed, 6, 0.12, 0.035); const r = rng(13 + seed);
+      x.fillStyle = 'rgba(90,70,52,0.38)'; x.fillRect(0, 0, S, S * 0.62);
+      for (let i = 0; i < 700; i++) px(x, shade(HR, 0.45 + r() * 0.3), r() * S | 0, r() * S * 0.62 | 0);
+    }, 2, lin),
+    hair: canvasTex(SNEAK_TEX.hair, (x, S) => {
+      facets(x, S, HR, 81 + seed, 10, 0.28, 0.06);
+      const r = rng(9 + seed), n = K.hairStyle === 'buzz' ? 500 : 1100;
+      for (let i = 0; i < n; i++) {
+        const X = r() * S, Y = r() * S, L = 5 + r() * (K.hairStyle === 'part' ? 22 : 14), f = 0.5 + r() * 0.75;
+        if (K.hairStyle === 'part') pline(x, shade(HR, f), X, Y, X + L * 0.8, Y + L * 0.25);
+        else pline(x, shade(HR, f), X, Y, X + (r() - 0.5) * 3, Y + L);
+      }
+    }, 2, lin),
+    face: canvasTex(SNEAK_TEX.face, (x, S) => drawFace(x, S, K.hairStyle, HR, K.stubble), 2, lin),
+    gun: canvasTex(SNEAK_TEX.small, (x, S) => {
+      facets(x, S, [40, 42, 46], 121, 5, 0.24, 0.06);
+      px(x, '#8a9096', 0, 0, S, 2); for (let i = 3; i < S; i += 3) px(x, '#1a1b1d', i, 6, 1, 10);
+      px(x, '#24262a', 0, S - 10, S, 10);
+    }, 2, lin),
+    blade: canvasTex(SNEAK_TEX.small, (x, S) => {
+      facets(x, S, [150, 156, 160], 131, 4, 0.3, 0.05); px(x, '#eef3f4', 0, 0, S, 3); px(x, '#5a5e60', 0, S - 3, S, 3);
+    }, 2, lin),
+    glove: canvasTex(SNEAK_TEX.kit, (x, S) => {
+      const k = S / 64;
+      facets(x, S, BLACK, 101 + seed, 8, 0.22, 0.05); weave(x, S, 2, 0.9, 101, 0);
+      px(x, shade(BLACK, 1.55), 0, 24 * k, S, 2 * k); px(x, shade(BLACK, 0.55), 0, 26 * k, S, 2 * k);
+      px(x, shade(skinC, 1), 0, S - 16 * k, S, 16 * k);
+      for (let i = 0; i < S; i += 16 * k) { px(x, shade(skinC, 0.7), i, S - 16 * k, 2 * k, 16 * k); px(x, shade(BLACK, 0.8), i, S - 18 * k, 16 * k, 2 * k); }
+    }, 2, lin),
+  };
+}
+export const PLAYER_KITS = ['night', 'ash', 'player', 'reed', 'wren', 'sable', 'dune', 'iris'];
+// What a mission rig actually samples. Classic stays nearest + 15-bit. Sneak squad is the hi set above.
+export const TEX_TARGETS = {
+  classic: { suit: 128, torso: 256, face: 128, hair: 128, boot: 128, kit: 64, small: 32, filter: 'nearest', crush: 8 },
+  sneak: { ...SNEAK_TEX, filter: 'linear+mipmap', crush: 2 },
+};
+// Playable looks. First five are the sneak squad (default slot order). The rest are the older kits.
+export const AGENT_ROSTER = [
+  { id: 'reed', kit: 'reed', accent: 0xc6d36a, tint: 0xffffff, name: 'REED', hat: null, tier: 'sneak', blurb: 'Olive sneak suit, black harness, cropped hair, earpiece' },
+  { id: 'wren', kit: 'wren', accent: 0xc45a48, tint: 0xffffff, name: 'WREN', hat: null, tier: 'sneak', blurb: 'Olive sneak suit, rust head-wrap, one short tail' },
+  { id: 'sable', kit: 'sable', accent: 0x9aaa78, tint: 0xffffff, name: 'SABLE', hat: null, tier: 'sneak', blurb: 'Black-olive suit, hood down on the shoulders, headset' },
+  { id: 'dune', kit: 'dune', accent: 0xe0a84a, tint: 0xffffff, name: 'DUNE', hat: null, tier: 'sneak', blurb: 'Khaki sneak suit, sand shemagh, bleached crop' },
+  { id: 'iris', kit: 'iris', accent: 0x7ec8d4, tint: 0xffffff, name: 'IRIS', hat: null, tier: 'sneak', blurb: 'Blue-grey suit, ice piping, goggles up on the brow' },
+  { id: 'night', kit: 'night', accent: 0x9fd060, tint: 0xffffff, name: 'NIGHT OPS', hat: null, tier: 'classic', blurb: 'Classic charcoal suit, quad NVG' },
+  { id: 'ash', kit: 'ash', accent: 0x2f8cff, tint: 0xffffff, name: 'ASH FOX', hat: null, tier: 'classic', blurb: 'Classic slate suit, blue bandana' },
+  { id: 'viper', kit: 'player', accent: 0xff8a20, tint: 0xffffff, name: 'DUST VIPER', hat: 'boonie', tier: 'classic', blurb: 'Classic olive kit, boonie hat' },
+  { id: 'heron', kit: 'night', accent: 0xff3a4a, tint: 0xc89a92, name: 'RED HERON', hat: 'beret', tier: 'classic', blurb: 'Night kit tinted red, beret' },
+  { id: 'owl', kit: 'ash', accent: 0xffe040, tint: 0xe0cfa0, name: 'SAND OWL', hat: 'cap', tier: 'classic', blurb: 'Ash kit tinted sand, cap' },
+];
 
 function enemyTextures() {
   return {
@@ -410,65 +594,92 @@ function pivot(parent, x, y, z) { const p = new THREE.Group(); p.position.set(x,
 // leg / arm lengths used by the pose solver
 const THIGH = 0.42, SHIN = 0.4, ANKLE = 0.1, HIP_Y = THIGH + SHIN + ANKLE; // 0.92
 
-// shared shapes (built once, cloned into the per-bone batches)
-const SHAPES = {};
-function shapes() {
-  if (SHAPES.ready) return SHAPES;
-  Object.assign(SHAPES, {
+// shared shapes, one cache per density. 'low' matches the original kit. 'hi' adds a ring between every
+// profile sample and raises the side counts so the sneak squad reads rounder without a different skeleton.
+const SHAPE_CACHE = {};
+function shapes(detail = 'low') {
+  if (SHAPE_CACHE[detail]) return SHAPE_CACHE[detail];
+  const hi = detail === 'hi';
+  const sub = (rings) => {
+    if (!hi) return rings;
+    const pad = (r) => [r[0], r[1], r[2], r[3] || 0, r[4] || 0];
+    const out = [];
+    for (let i = 0; i < rings.length - 1; i++) {
+      const a = pad(rings[i]), b = pad(rings[i + 1]);
+      out.push(rings[i], a.map((v, k) => v + (b[k] - v) * 0.5));
+    }
+    out.push(rings[rings.length - 1]);
+    return out;
+  };
+  const n = (lo, hiN) => (hi ? hiN : lo);
+  const seg = (lo, hiS) => (hi ? hiS : lo);
+  const pelvisR = [[-0.13, 0.105, 0.17], [-0.06, 0.122, 0.2], [0.04, 0.128, 0.198], [0.12, 0.124, 0.192]];
+  const torsoR = [[0, 0.126, 0.194], [0.1, 0.13, 0.192], [0.2, 0.142, 0.212, 0.004], [0.3, 0.152, 0.236, 0.008], [0.4, 0.15, 0.246, 0.004], [0.465, 0.128, 0.226], [0.52, 0.085, 0.13]];
+  const thighR = [[0.04, 0.098, 0.098], [-0.05, 0.112, 0.108], [-0.18, 0.108, 0.103, 0.004], [-0.32, 0.09, 0.086], [-0.43, 0.078, 0.077]];
+  const shinR = [[0.01, 0.082, 0.079], [-0.09, 0.089, 0.085, -0.008], [-0.19, 0.083, 0.08, -0.01], [-0.3, 0.068, 0.068], [-0.38, 0.07, 0.07]];
+  const armR = [[-0.04, 0.072, 0.068], [-0.12, 0.075, 0.071, 0.006], [-0.24, 0.063, 0.06], [-0.32, 0.057, 0.056]];
+  const foreR = [[0.02, 0.057, 0.055], [-0.07, 0.064, 0.06, 0.004], [-0.17, 0.052, 0.05], [-0.25, 0.045, 0.044]];
+  const bootR = [[-0.075, 0.098, 0.088, 0.008], [0.0, 0.092, 0.085], [0.085, 0.084, 0.079]];
+  const S = {
     ready: true,
-    pelvis: loft([[-0.13, 0.105, 0.17], [-0.06, 0.122, 0.2], [0.04, 0.128, 0.198], [0.12, 0.124, 0.192]], 10),
-    belt: band(0.07, 0.075, 0.142, 0.218, 10),
-    torso: loft([[0, 0.126, 0.194], [0.1, 0.13, 0.192], [0.2, 0.142, 0.212, 0.004], [0.3, 0.152, 0.236, 0.008], [0.4, 0.15, 0.246, 0.004], [0.465, 0.128, 0.226], [0.52, 0.085, 0.13]], 10),
-    collar: loft([[0.47, 0.088, 0.1, 0.01], [0.56, 0.08, 0.092, 0.012]], 8, [false, true]),
-    thigh: loft([[0.04, 0.098, 0.098], [-0.05, 0.112, 0.108], [-0.18, 0.108, 0.103, 0.004], [-0.32, 0.09, 0.086], [-0.43, 0.078, 0.077]], 8),
-    knee: loft([[0.05, 0.05, 0.05], [0, 0.084, 0.08], [-0.06, 0.062, 0.06]], 8),
-    shin: loft([[0.01, 0.082, 0.079], [-0.09, 0.089, 0.085, -0.008], [-0.19, 0.083, 0.08, -0.01], [-0.3, 0.068, 0.068], [-0.38, 0.07, 0.07]], 8),
-    cuff: loft([[-0.33, 0.082, 0.08], [-0.37, 0.09, 0.088], [-0.405, 0.085, 0.083]], 8, [false, false]),
-    bootShaft: loft([[-0.075, 0.098, 0.088, 0.008], [0.0, 0.092, 0.085], [0.085, 0.084, 0.079]], 8),
-    // foot: toe slopes down + narrows, heel rounded
-    foot: shaped(0.3, 0.075, 0.172, [3, 1, 2], (v, nx, ny, nz) => {
+    pelvis: loft(sub(pelvisR), n(10, 16)),
+    belt: band(0.07, 0.075, 0.142, 0.218, n(10, 16)),
+    torso: loft(sub(torsoR), n(10, 16)),
+    // hi collar stands higher and flares at the lip (the sneak-suit neck). low stays the original short collar.
+    collar: hi
+      ? loft([[0.44, 0.096, 0.112, 0.004], [0.50, 0.084, 0.096, 0.01], [0.56, 0.074, 0.086, 0.014], [0.615, 0.082, 0.102, 0.02]], 14, [false, true])
+      : loft([[0.47, 0.088, 0.1, 0.01], [0.56, 0.08, 0.092, 0.012]], 8, [false, true]),
+    thigh: loft(sub(thighR), n(8, 14)),
+    knee: loft([[0.05, 0.05, 0.05], [0, 0.084, 0.08], [-0.06, 0.062, 0.06]], n(8, 12)),
+    shin: loft(sub(shinR), n(8, 14)),
+    cuff: loft([[-0.33, 0.082, 0.08], [-0.37, 0.09, 0.088], [-0.405, 0.085, 0.083]], n(8, 12), [false, false]),
+    bootShaft: loft(sub(bootR), n(8, 14)),
+    foot: shaped(0.3, 0.075, 0.172, seg([3, 1, 2], [6, 2, 3]), (v, nx, ny) => {
       if (nx > 0.2 && ny > 0) v.y -= 0.034 * (nx - 0.2) / 0.8; if (nx > 0.6) v.z *= 0.86; if (nx < -0.6) v.z *= 0.9;
       if (nx > 0.98 && ny > 0) v.x -= 0.012; }),
-    sole: shaped(0.318, 0.032, 0.186, [3, 1, 1], (v, nx, ny, nz) => { if (nx > 0.6) v.z *= 0.88; if (nx > 0.98) v.x -= 0.004; }),
-    kneePad: shaped(0.05, 0.135, 0.15, [1, 2, 2], (v, nx, ny, nz) => { const c = (1 - nz * nz) * (1 - 0.5 * ny * ny); v.x += c * 0.016 - (1 - c) * 0.004; v.z *= 1 - 0.12 * (ny < 0 ? -ny : 0); }),
-    deltoid: loft([[0.085, 0.035, 0.035], [0.055, 0.078, 0.074], [-0.02, 0.09, 0.086], [-0.1, 0.074, 0.07]], 8),
-    upperArm: loft([[-0.04, 0.072, 0.068], [-0.12, 0.075, 0.071, 0.006], [-0.24, 0.063, 0.06], [-0.32, 0.057, 0.056]], 8),
-    elbow: loft([[0.04, 0.042, 0.042], [0, 0.06, 0.058], [-0.04, 0.05, 0.05]], 6),
-    forearm: loft([[0.02, 0.057, 0.055], [-0.07, 0.064, 0.06, 0.004], [-0.17, 0.052, 0.05], [-0.25, 0.045, 0.044]], 8),
-    gauntlet: loft([[-0.19, 0.052, 0.05], [-0.255, 0.06, 0.058], [-0.28, 0.055, 0.053]], 8, [false, true]),
-    palm: shaped(0.1, 0.078, 0.074, [1, 2, 1], (v, nx, ny) => { if (ny < 0) { v.x *= 0.95; v.z *= 0.94; } if (ny > 0.9) { v.x *= 0.88; v.z *= 0.9; } }),
-    fingers: shaped(0.096, 0.044, 0.07, [2, 1, 1], (v, nx, ny) => { if (nx > 0.9) v.y -= 0.008; }),
-    fingerTips: shaped(0.05, 0.034, 0.068, [1, 1, 1], (v, nx, ny) => { if (ny < 0) v.x *= 0.85; }),
-    thumb: shaped(0.034, 0.05, 0.03, [1, 1, 1], (v, nx, ny) => { if (ny < 0) { v.x *= 0.8; v.z *= 0.8; } }),
-    neck: loft([[-0.03, 0.048, 0.052], [0.07, 0.044, 0.048]], 8),
-    // head: jaw tapers in, crown rounds off, brow + nose ridge down the centre of the face, back of skull bulges
-    head: shaped(0.215, 0.27, 0.198, [2, 4, 2], (v, nx, ny, nz) => {
+    sole: shaped(0.318, 0.032, 0.186, seg([3, 1, 1], [6, 2, 2]), (v, nx) => { if (nx > 0.6) v.z *= 0.88; if (nx > 0.98) v.x -= 0.004; }),
+    kneePad: shaped(0.05, 0.135, 0.15, seg([1, 2, 2], [2, 3, 3]), (v, nx, ny, nz) => { const c = (1 - nz * nz) * (1 - 0.5 * ny * ny); v.x += c * 0.016 - (1 - c) * 0.004; v.z *= 1 - 0.12 * (ny < 0 ? -ny : 0); }),
+    deltoid: loft([[0.085, 0.035, 0.035], [0.055, 0.078, 0.074], [-0.02, 0.09, 0.086], [-0.1, 0.074, 0.07]], n(8, 12)),
+    upperArm: loft(sub(armR), n(8, 14)),
+    elbow: loft([[0.04, 0.042, 0.042], [0, 0.06, 0.058], [-0.04, 0.05, 0.05]], n(6, 10)),
+    forearm: loft(sub(foreR), n(8, 14)),
+    gauntlet: loft([[-0.19, 0.052, 0.05], [-0.255, 0.06, 0.058], [-0.28, 0.055, 0.053]], n(8, 12), [false, true]),
+    palm: shaped(0.1, 0.078, 0.074, seg([1, 2, 1], [2, 3, 2]), (v, nx, ny) => { if (ny < 0) { v.x *= 0.95; v.z *= 0.94; } if (ny > 0.9) { v.x *= 0.88; v.z *= 0.9; } }),
+    fingers: shaped(0.096, 0.044, 0.07, seg([2, 1, 1], [3, 2, 2]), (v, nx, ny) => { if (nx > 0.9) v.y -= 0.008; }),
+    fingerTips: shaped(0.05, 0.034, 0.068, seg([1, 1, 1], [2, 2, 2]), (v, nx, ny) => { if (ny < 0) v.x *= 0.85; }),
+    thumb: shaped(0.034, 0.05, 0.03, seg([1, 1, 1], [2, 2, 1]), (v, nx, ny) => { if (ny < 0) { v.x *= 0.8; v.z *= 0.8; } }),
+    neck: loft([[-0.03, 0.048, 0.052], [0.07, 0.044, 0.048]], n(8, 12)),
+    head: shaped(0.215, 0.27, 0.198, seg([2, 4, 2], [4, 8, 4]), (v, nx, ny, nz) => {
       if (ny < -0.2) { const k = (-0.2 - ny) / 0.8; v.z *= 1 - 0.2 * k; if (nx < 0) v.x *= 1 - 0.28 * k; }
       if (ny > 0.45) { const k = (ny - 0.45) / 0.55; v.z *= 1 - 0.1 * k; v.x *= 1 - 0.08 * k; }
       if (nx > 0.99 && Math.abs(nz) < 0.01 && ny > -0.9 && ny < 0.6) v.x += 0.012;
-      if (nx > 0.99 && Math.abs(nz) > 0.99 && ny > -0.6 && ny < 0.2) v.x -= 0.008; // cheeks recede -> face plane reads
+      if (nx > 0.99 && Math.abs(nz) > 0.99 && ny > -0.6 && ny < 0.2) v.x -= 0.008;
       if (nx < -0.99 && ny > -0.3 && ny < 0.6) v.x -= 0.01;
-      if (Math.abs(nx) > 0.99 && Math.abs(nz) > 0.99) { v.x *= 0.95; v.z *= 0.93; } // chamfered vertical edges -> octagonal skull
-      if (ny < -0.99 && nx > 0.99 && Math.abs(nz) < 0.01) { v.x += 0.006; v.y -= 0.006; } // chin point
+      if (Math.abs(nx) > 0.99 && Math.abs(nz) > 0.99) { v.x *= 0.95; v.z *= 0.93; }
+      if (ny < -0.99 && nx > 0.99 && Math.abs(nz) < 0.01) { v.x += 0.006; v.y -= 0.006; }
     }),
-    ear: shaped(0.045, 0.065, 0.022, [1, 2, 1], (v, nx, ny) => { if (ny < -0.5) v.x *= 0.6; }),
-    pouch: shaped(0.064, 0.1, 0.074, [1, 2, 1], (v, nx, ny) => { if (ny > 0.9) { v.x *= 0.9; } if (ny < -0.9) { v.x *= 0.85; v.z *= 0.95; } }),
-    flap: shaped(0.07, 0.03, 0.08, [1, 1, 1], (v, nx, ny) => { if (nx > 0.9 && ny < 0) v.y -= 0.006; }),
-    spike: new THREE.ConeGeometry(0.05, 0.12, 5),
-    tip: new THREE.ConeGeometry(0.045, 0.14, 4),
-  });
-  return SHAPES;
+    ear: shaped(0.045, 0.065, 0.022, seg([1, 2, 1], [2, 3, 2]), (v, nx, ny) => { if (ny < -0.5) v.x *= 0.6; }),
+    pouch: shaped(0.064, 0.1, 0.074, seg([1, 2, 1], [2, 3, 2]), (v, nx, ny) => { if (ny > 0.9) { v.x *= 0.9; } if (ny < -0.9) { v.x *= 0.85; v.z *= 0.95; } }),
+    flap: shaped(0.07, 0.03, 0.08, seg([1, 1, 1], [2, 1, 2]), (v, nx, ny) => { if (nx > 0.9 && ny < 0) v.y -= 0.006; }),
+    spike: new THREE.ConeGeometry(0.05, 0.12, hi ? 8 : 5),
+    tip: new THREE.ConeGeometry(0.045, 0.14, hi ? 6 : 4),
+  };
+  return (SHAPE_CACHE[detail] = S);
 }
 
 /**
- * Build one sneaker. opts.kit = 'night' (Night Ops, default) | 'ash' (Ash Fox) | 'player' (legacy olive) | 'enemy'.
- * opts.accent = hex colour for P1/P2 accents (shoulder patch, radio LED, marker),
- * opts.tint = optional subtle suit tint. Returns { g, inner, update(dt, state), setKit(kit) }.
+ * Build one sneaker. opts.kit = a PLAYER_KITS id, or 'enemy'.
+ * opts.detail = 'hi' | 'low' (default: hi for sneak-squad kits, low otherwise). Guards stay low.
+ * opts.accent = hex colour for the shoulder patch, radio LED and marker.
+ * opts.tint = optional suit tint multiplied over the albedo. Returns the rig handle.
  */
 export function makeSneaker(scene, opts = {}) {
   const enemy = opts.kit === 'enemy';
   let kit = enemy ? 'enemy' : KITS[opts.kit] ? opts.kit : 'night';
-  const T = textures(kit), G = shapes();
+  const detail = enemy || opts.detail === 'low' ? 'low' : (opts.detail === 'hi' || (KITS[kit] && KITS[kit].detail === 'hi') ? 'hi' : 'low');
+  const hi = detail === 'hi';
+  const bn = hi ? 14 : 8;
+  const T = textures(kit), G = shapes(detail);
   const L = (map, color = 0xffffff) => new THREE.MeshLambertMaterial({ map, color, flatShading: true });
   const suitTint = opts.tint ?? 0xffffff;
   const M = {
@@ -483,11 +694,13 @@ export function makeSneaker(scene, opts = {}) {
   else { M.gun = L(T.gun); M.blade = L(T.blade);
     M.nvg = new THREE.MeshBasicMaterial({ color: 0x7dff6a }); // Night Ops NVG lens glow
     M.hud = new THREE.MeshBasicMaterial({ color: 0x58d8ff, transparent: true, opacity: 0.85 }); // Ash Fox HUD monocle glass
+    M.smoke = new THREE.MeshBasicMaterial({ color: 0xb7c4c8 }); // Iris brow-goggle glass
   }
   const suitFrontMat = M.suitFront = L(T.suitFront, suitTint);
   // box face order: +x(front) -x(back) +y -y +z(right) -z(left)
   const headMats = enemy ? [M.face, M.skin, M.hair, M.skin, M.skin, M.skin] : [M.face, M.headSide, M.hair, M.skin, M.headSide, M.headSide];
-  const kitParts = { night: [], ash: [], player: [] }; // per-kit extra meshes (hair style, gaiter, trims) toggled by setKit
+  const kitParts = {}; // per-kit extra meshes (hair, headgear) toggled by setKit
+  for (const id of Object.keys(KITS)) kitParts[id] = [];
   const B = batcher(), add = B.add.bind(B);
 
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
@@ -516,7 +729,7 @@ export function makeSneaker(scene, opts = {}) {
     if (side === 1) { // drop-leg holster: tapered body + flap, two straps wrapping the thigh, hanger strap to the belt
       add(hip, shaped(0.15, 0.21, 0.055, [1, 2, 1], (v, nx, ny) => { if (ny < 0) v.x *= 0.8; }), M.pouch, 0.012, -0.2, 0.128);
       add(hip, boxG(0.06, 0.3, 0.035), M.web, 0.02, -0.12, 0.153);
-      add(hip, band(-0.14, 0.04, 0.118, 0.114), M.web); add(hip, band(-0.3, 0.04, 0.1, 0.096), M.web);
+      add(hip, band(-0.14, 0.04, 0.118, 0.114, bn), M.web); add(hip, band(-0.3, 0.04, 0.1, 0.096, bn), M.web);
       add(hip, boxG(0.03, 0.03, 0.02), M.metal, 0.02, -0.02, 0.17); // QD buckle
       if (!enemy) { // holstered pistol: slide sunk in the holster, grip + hammer sticking out the top, angled back
         holstered = pivot(hip, 0.0, -0.08, 0.15);
@@ -524,16 +737,22 @@ export function makeSneaker(scene, opts = {}) {
         add(holstered, shaped(0.1, 0.05, 0.04, [2, 1, 1], (v, nx) => { if (nx < -0.9) v.y -= 0.006; }), M.gun, -0.04, 0.02, 0, { r: [0, 0, -0.25] });
         add(holstered, boxG(0.03, 0.03, 0.03), M.gear, 0.02, 0.035, 0); // hammer / rear sight
       }
-    } else add(hip, band(-0.2, 0.03, 0.115, 0.11), M.web); // map-pocket strap on the left thigh
+    } else { // map-pocket strap on the left thigh; hi squad also carries a sheath on the outer thigh
+      add(hip, band(-0.2, 0.03, 0.115, 0.11, bn), M.web);
+      if (hi) {
+        add(hip, shaped(0.045, 0.18, 0.05, [1, 3, 1], (v, nx, ny) => { if (ny < -0.7) { v.x *= 0.65; v.z *= 0.8; } }), M.gear, 0.015, -0.18, -0.125);
+        add(hip, boxG(0.022, 0.04, 0.03), M.metal, 0.02, -0.075, -0.132);
+      }
+    }
     const knee = pivot(hip, 0, -THIGH, 0);
     add(knee, G.knee, M.suit);
     add(knee, G.shin, M.suit);
     add(knee, G.kneePad, M.pad, 0.083, -0.035, 0);
-    add(knee, band(-0.1, 0.022, 0.092, 0.088), M.web); // knee-pad strap behind the calf
+    add(knee, band(-0.1, 0.022, 0.092, 0.088, bn), M.web); // knee-pad strap behind the calf
     add(knee, G.cuff, M.suit); // trouser bloused over the boot
     const ankle = pivot(knee, 0, -SHIN, 0);
     add(ankle, G.bootShaft, M.boot);
-    if (!enemy) add(ankle, band(0.06, 0.03, 0.088, 0.083), M.trim); // ankle band (olive on Night Ops, blue on Ash Fox)
+    if (!enemy) add(ankle, band(0.06, 0.03, 0.088, 0.083, bn), M.trim); // ankle band (olive on Night Ops, blue on Ash Fox)
     add(ankle, G.foot, M.boot, 0.05, -ANKLE + 0.067, 0);
     add(ankle, G.sole, M.sole, 0.05, -ANKLE + 0.016, 0);
     add(ankle, boxG(0.05, 0.035, 0.18), M.sole, -0.075, -ANKLE + 0.042, 0); // heel block
@@ -547,9 +766,21 @@ export function makeSneaker(scene, opts = {}) {
   add(torso, G.torso, suitFrontMat);
   add(torso, G.collar, M.suit); // high collar
   // harness: two shoulder straps that follow the chest curve and run over the shoulders to the back, chest strap, buckles
+  const harness = [[0.134, 0.0], [0.15, 0.16], [0.16, 0.3], [0.148, 0.43], [0.06, 0.5], [-0.06, 0.5], [-0.148, 0.43], [-0.16, 0.3], [-0.15, 0.16], [-0.134, 0.0]];
+  const densify = (pts) => {
+    if (!hi) return pts;
+    const o = [];
+    for (let i = 0; i < pts.length - 1; i++) { const a = pts[i], b = pts[i + 1]; o.push(a, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); }
+    o.push(pts[pts.length - 1]); return o;
+  };
   for (const z of [-0.11, 0.11]) {
-    B.strap(torso, [[0.134, 0.0], [0.15, 0.16], [0.16, 0.3], [0.148, 0.43], [0.06, 0.5], [-0.06, 0.5], [-0.148, 0.43], [-0.16, 0.3], [-0.15, 0.16], [-0.134, 0.0]], z, 0.05, 0.018, M.web);
+    B.strap(torso, densify(harness), z, 0.05, 0.018, M.web);
     add(torso, boxG(0.022, 0.045, 0.045), M.metal, 0.168, 0.25, z); add(torso, boxG(0.012, 0.025, 0.028), M.gear, 0.178, 0.25, z);
+  }
+  if (hi && !enemy) { // black lip on the standing collar + a sternum strap down to the belt
+    add(torso, band(0.595, 0.022, 0.09, 0.11, 14, 0.02), M.web);
+    add(torso, boxG(0.016, 0.3, 0.036), M.web, 0.172, 0.16, 0);
+    add(torso, boxG(0.026, 0.026, 0.044), M.metal, 0.186, 0.14, 0);
   }
   add(torso, shaped(0.02, 0.04, 0.3, [1, 1, 4], (v, nx, ny, nz) => { v.x -= 0.012 * nz * nz; }), M.web, 0.168, 0.36, 0);
   add(torso, boxG(0.02, 0.18, 0.1), M.web, -0.168, 0.3, 0, { r: [0.78, 0, 0] }); add(torso, boxG(0.02, 0.18, 0.1), M.web, -0.168, 0.3, 0, { r: [-0.78, 0, 0] }); // back X
@@ -566,7 +797,7 @@ export function makeSneaker(scene, opts = {}) {
   add(torso, shaped(0.06, 0.14, 0.09, [1, 2, 1], (v, nx, ny) => { if (nx > 0.9 && Math.abs(ny) > 0.9) v.x -= 0.006; }), M.pouch, 0.185, 0.33, 0.13);
   add(torso, boxG(0.012, 0.03, 0.06), M.metal, 0.217, 0.37, 0.13); // dial / PTT
   const ant = pivot(torso, 0.18, 0.48, 0.16);
-  add(ant, new THREE.CylinderGeometry(0.006, 0.01, 0.16, 4), M.gear);
+  add(ant, new THREE.CylinderGeometry(0.006, 0.01, 0.16, hi ? 8 : 4), M.gear);
   add(torso, boxG(0.012, 0.025, 0.025), M.accent, 0.218, 0.33, 0.11);
   add(ant, boxG(0.025, 0.025, 0.025), M.accent, 0, 0.08, 0);
 
@@ -644,6 +875,52 @@ export function makeSneaker(scene, opts = {}) {
     add(headPivot, boxG(0.12, 0.012, 0.014), M.gear, 0.055, 0.2, 0.112, AF); // monocle arm along the right temple
     add(headPivot, boxG(0.014, 0.06, 0.07), M.gear, 0.124, 0.165, 0.05, AF); // monocle frame
     add(headPivot, boxG(0.008, 0.046, 0.056), M.hud, 0.133, 0.165, 0.05, AF); // HUD glass
+
+    // Sneak squad headgear. Same body, different silhouette so five agents read as a team.
+    const crop = (tag, y = 0.275) => add(headPivot, shaped(0.228, 0.062, 0.206, [2, 2, 2], (v, nx, ny, nz) => {
+      if (ny > 0) v.y += 0.018 * (1 - nx * nx) * (1 - nz * nz); if (nx > 0.85) v.y -= 0.012;
+      if (Math.abs(nx) > 0.9 && Math.abs(nz) > 0.9) { v.x *= 0.94; v.z *= 0.94; }
+    }), M.hair, 0, y, 0, { tag });
+    // REED: short crop + a bead earpiece on the right
+    const RD = { tag: 'reed' };
+    crop('reed');
+    add(headPivot, shaped(0.04, 0.11, 0.19, [1, 2, 2], (v, nx, ny) => { if (ny < 0) v.z *= 0.9; }), M.hair, -0.1, 0.21, 0, RD);
+    add(headPivot, shaped(0.028, 0.042, 0.02, [1, 2, 1], (v, nx, ny) => { v.x *= 1 - 0.12 * Math.abs(ny); }), M.gear, 0.02, 0.14, 0.112, RD);
+    add(headPivot, boxG(0.012, 0.012, 0.012), M.accent, 0.028, 0.155, 0.122, RD);
+    add(headPivot, boxG(0.045, 0.008, 0.008), M.gear, -0.01, 0.2, 0.1, { ...RD, r: [0.5, 0, 0.35] });
+    // WREN: rust cloth wrap (knot off to one side, one short tail) over a buzz cut
+    const WR = { tag: 'wren' };
+    add(headPivot, band(0.25, 0.05, 0.134, 0.124, bn, 0.01), M.trim, 0, 0, 0, WR);
+    add(headPivot, shaped(0.04, 0.05, 0.055, [1, 2, 1], (v, nx, ny) => { v.z *= 1 - 0.3 * Math.abs(ny); }), M.trim, -0.12, 0.25, 0.03, WR);
+    add(tails, shaped(0.16, 0.012, 0.046, [3, 1, 1], (v, nx) => { v.z *= 1 - 0.45 * Math.max(0, -nx); }), M.trim, -0.09, -0.01, 0.03, { ...WR, r: [0.45, 0.35, 0.15] });
+    add(headPivot, shaped(0.21, 0.04, 0.19, [2, 1, 2], (v, nx, ny, nz) => { if (ny > 0) v.y += 0.008 * (1 - nz * nz); }), M.hair, 0, 0.275, 0, WR);
+    // SABLE: hood down — a cowl behind the skull and two shoulder capes, plus a left headset.
+    // Panels sit outside the head/torso so they are not swallowed by the suit mesh.
+    const SB = { tag: 'sable' };
+    add(headPivot, shaped(0.07, 0.24, 0.22, [1, 2, 2], (v, nx, ny, nz) => { v.x -= 0.01 * (1 - nz * nz); if (ny > 0.6) v.z *= 0.85; }), M.suit, -0.13, 0.16, 0, SB);
+    add(headPivot, shaped(0.16, 0.16, 0.045, [2, 2, 1], (v, nx, ny) => { if (nx > 0.4) v.z *= 0.7; }), M.suit, -0.02, 0.16, 0.125, SB);
+    add(headPivot, shaped(0.16, 0.16, 0.045, [2, 2, 1], (v, nx, ny) => { if (nx > 0.4) v.z *= 0.7; }), M.suit, -0.02, 0.16, -0.125, SB);
+    add(torso, shaped(0.1, 0.1, 0.14, [1, 2, 2], (v, nx, ny) => { if (ny < 0) v.x *= 0.75; }), M.suit, -0.04, 0.46, 0.2, { ...SB, r: [0.5, 0, 0.15] });
+    add(torso, shaped(0.1, 0.1, 0.14, [1, 2, 2], (v, nx, ny) => { if (ny < 0) v.x *= 0.75; }), M.suit, -0.04, 0.46, -0.2, { ...SB, r: [-0.5, 0, -0.15] });
+    add(headPivot, band(0.18, 0.02, 0.126, 0.116, bn, 0.008), M.gear, 0, 0, 0, SB);
+    add(headPivot, shaped(0.04, 0.07, 0.028, [1, 2, 1], (v, nx, ny) => { v.x *= 1 - 0.1 * Math.abs(ny); }), M.gear, 0.02, 0.14, -0.12, SB);
+    add(headPivot, boxG(0.012, 0.012, 0.012), M.accent, 0.03, 0.16, -0.134, SB);
+    add(headPivot, boxG(0.11, 0.01, 0.01), M.metal, 0.06, 0.08, -0.112, { ...SB, r: [0, 0.15, -0.4] });
+    add(headPivot, shaped(0.2, 0.04, 0.16, [2, 1, 2], (v, nx, ny, nz) => { if (ny > 0) v.y += 0.008 * (1 - nx * nx); }), M.hair, 0.02, 0.26, 0.02, SB);
+    // DUNE: sand shemagh around the neck with a tail over the chest, sun-bleached crop
+    const DN = { tag: 'dune' };
+    add(neck, loft([[-0.04, 0.092, 0.104], [0.0, 0.11, 0.125], [0.05, 0.086, 0.1]], bn, [false, false]), M.gaiter, 0, 0, 0, DN);
+    add(neck, shaped(0.05, 0.13, 0.15, [1, 2, 2], (v, nx, ny, nz) => { v.x += 0.012 * (1 - nz * nz); }), M.gaiter, 0.09, -0.02, 0.04, { ...DN, r: [0.15, 0.25, -0.3] });
+    crop('dune', 0.278);
+    // IRIS: twin lenses resting on the brow (tilted up, facing forward), side-parted hair.
+    // Cylinder axis is Y, so a -Z rotation of about 90° lays each lens facing +X.
+    const IR = { tag: 'iris' };
+    add(headPivot, band(0.23, 0.022, 0.128, 0.118, bn, 0.01), M.web, 0, 0, 0, IR);
+    add(headPivot, shaped(0.03, 0.04, 0.16, [1, 1, 2], (v, nx, ny, nz) => { v.x += 0.006 * (1 - nz * nz); }), M.gear, 0.115, 0.23, 0, IR);
+    const lens = new THREE.CylinderGeometry(0.032, 0.032, 0.012, hi ? 12 : 8);
+    for (const z of [-0.04, 0.04]) add(headPivot, lens, M.smoke, 0.132, 0.232, z, { ...IR, r: [0, 0, -1.15] });
+    add(headPivot, shaped(0.23, 0.05, 0.2, [2, 2, 2], (v, nx, ny, nz) => { if (ny > 0) v.y += 0.016 * (1 - nz * nz) * (nx < 0.2 ? 1 : 0.55); }), M.hair, -0.005, 0.285, 0.01, IR);
+    add(headPivot, shaped(0.07, 0.05, 0.11, [1, 1, 2], (v, nx, ny) => { if (ny < 0) v.z *= 0.65; }), M.hair, 0.09, 0.25, -0.04, { ...IR, r: [0.25, 0, 0.35] });
   }
 
   // --- arms
@@ -1229,13 +1506,27 @@ export function makeSneaker(scene, opts = {}) {
     if (enemy || !KITS[k]) return kit;
     const TT = textures(k);
     for (const [m, t] of Object.entries(MAPS)) if (M[m] && TT[t]) { M[m].map = TT[t]; M[m].needsUpdate = true; }
-    M.headSide.map = KITS[k].hairStyle === 'swept' ? TT.stubble : TT.skin; M.headSide.needsUpdate = true;
-    const on = new Set(kitParts[k]);
+    const hs = KITS[k].hairStyle;
+    M.headSide.map = (hs === 'swept' || hs === 'buzz') && TT.stubble ? TT.stubble : TT.skin; M.headSide.needsUpdate = true;
+    const on = new Set(kitParts[k] || []);
     for (const list of Object.values(kitParts)) for (const m of list) m.visible = on.has(m);
     kit = k; return kit;
   }
   if (!enemy) setKit(kit);
-  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld, setKit, get kit() { return kit; } };
+  return { g, inner, update, materials: M, head: headPivot, muzzleWorld, muzzleDir, handWorld, setKit, detail, get kit() { return kit; } };
+}
+
+/** Triangle + mesh counts. visibleOnly skips kit parts setKit has hidden. */
+export function trisOf(root, visibleOnly = false) {
+  let tris = 0, meshes = 0;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    if (visibleOnly) { let v = true, p = o; while (p) { if (!p.visible) { v = false; break; } p = p.parent; } if (!v) return; }
+    meshes++;
+    const g = o.geometry;
+    tris += g.index ? g.index.count / 3 : (g.attributes.position ? g.attributes.position.count / 3 : 0);
+  });
+  return { tris: tris | 0, meshes };
 }
 
 // enemy head: balaclava (head shape), domed helmet shell + brim + NVG mount, opaque goggles, respirator with twin filters.

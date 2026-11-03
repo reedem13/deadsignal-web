@@ -4,7 +4,7 @@
 Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way around.
 
 > Original IP, inspired by PS1-era tactical stealth. No third-party names or assets.
-> Players use the procedural low-poly olive "sneaker" and guards use the masked slate enemy kit of the same rig (`public/sneaker.js`, preview at `/character.html?who=both`). The yard is still greybox.
+> Players default to the higher-detail sneak squad in `public/sneaker.js` (Reed, Wren, Sable, Dune, Iris — original olive / khaki / black / blue-grey suits, not copied models). Guards stay on the low-poly masked kit. Preview at `/character.html?squad=1`. The yard is still greybox.
 > **This is the browser test build. The Unreal Engine / Steam build comes later** and will reuse the design, not this code.
 
 ## What's in the slice
@@ -98,6 +98,11 @@ Gear art + the table live in `public/gear.js`. Damage, sleep, stun, C4 and heali
 - Movement is client-trusted (fine for co-op testing with family, not cheat-proof).
 - No mid-game host migration: if the host quits, the guest waits until the host returns.
 - Placeholder art. Collision is box-based. Guards can sometimes give up a chase when a wall is in the way.
+
+## Agents
+Lobby **YOUR AGENT** row. **AUTO** assigns the sneak squad by slot (host Reed, then Wren, Sable, Dune, Iris). Pick a name to override; **CLASSIC** is the older Night Ops / Ash Fox / Dust Viper / Red Heron / Sand Owl kits on the same hi body. `?agent=wren` preselects. Co-op repeats the choice (`lk` on the player/state packets) so partners see the right suit.
+
+The sneak body is a denser version of the same joint rig (more loft sides, an extra ring between profile samples, a taller collar, sheath on the off thigh). Textures are still drawn in code at load — suit 256, torso 512, face/hair/boots 256, kit 128, linear with mipmaps — against the classic suit 128 / torso 256 / nearest 15-bit crush. Counts are printed on `/character.html?squad=1`. Notes: `art/sneak-squad.md`.
 
 ## Files
 ```

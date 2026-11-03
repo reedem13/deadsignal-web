@@ -25,7 +25,7 @@
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
-import { makeSneaker, makeEnemy } from './sneaker.js';
+import { makeSneaker, makeEnemy, AGENT_ROSTER } from './sneaker.js';
 import { TRAV, L1, L2, L3 as H3, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
 
 // ---------------------------------------------------------------- level data (vertical relay station - see traverse.js)
@@ -538,24 +538,22 @@ function marker(color) { // little floating triangle so you can find each other
   const m = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.4, 3), new THREE.MeshBasicMaterial({ color }));
   m.rotation.x = Math.PI; return m;
 }
-// Players (see sneaker.js kits): P1 = host = NIGHT OPS (charcoal suit, olive webbing + gaiter, dark spiky hair, olive accents),
-// P2 = ASH FOX (slate blue-grey suit, vivid blue straps, ash-blonde swept undercut, blue accents).
-// P3-P5 reuse the three rig kits with their own accent / suit tint + a cheap hat (2-4 boxes / cylinders on the head pivot)
-// so five sneakers read apart from the top-down camera: P3 DUST VIPER (olive kit, wide boonie hat, orange),
-// P4 RED HERON (Night Ops kit tinted red-brown, crimson beret over the NVG, red), P5 SAND OWL (Ash Fox kit in sand,
-// black ball cap + whip antenna, yellow).
-// Guards use the enemy kit of the same rig (sneaker.js makeEnemy): slate fatigues, helmet, balaclava, goggles, respirator.
-const PLAYER_LOOK = [
-  { kit: 'night', accent: 0x9fd060, tint: 0xffffff, name: 'NIGHT OPS', hat: null },
-  { kit: 'ash', accent: 0x2f8cff, tint: 0xffffff, name: 'ASH FOX', hat: null },
-  { kit: 'player', accent: 0xff8a20, tint: 0xffffff, name: 'DUST VIPER', hat: 'boonie' },
-  { kit: 'night', accent: 0xff3a4a, tint: 0xc89a92, name: 'RED HERON', hat: 'beret' },
-  { kit: 'ash', accent: 0xffe040, tint: 0xe0cfa0, name: 'SAND OWL', hat: 'cap' },
-];
+// Players wear the sneak squad by default (AGENT_ROSTER 0..4: Reed, Wren, Sable, Dune, Iris) — hi-detail body,
+// one suit colour + headgear each. Classic Night Ops / Ash Fox / Dust Viper / Red Heron / Sand Owl stay in the
+// lobby picker and swap onto the same hi rig. Guards stay on the low-detail enemy kit.
+// slotLook[s] is an index into AGENT_ROSTER. pickedLook === null means "wear my slot's squad suit".
+const slotLook = [0, 1, 2, 3, 4];
+let pickedLook = null;
+{
+  const q = (qs.get('agent') || '').toLowerCase();
+  if (q) { const i = AGENT_ROSTER.findIndex((L) => L.id === q || L.name.toLowerCase() === q); if (i >= 0) pickedLook = i; }
+}
+const lookOf = (s) => AGENT_ROSTER[slotLook[s]] || AGENT_ROSTER[0];
 const hexCss = (c) => '#' + c.toString(16).padStart(6, '0');
 // my rig + 4 remote rigs. Slot s -> rig: mine, or remoteMeshes[s < mySlot ? s : s - 1] (rk).
-const meMesh = makeSneaker(scene, PLAYER_LOOK[0]);
-const remoteMeshes = [1, 2, 3, 4].map((i) => makeSneaker(scene, PLAYER_LOOK[i]));
+// Every player rig is the hi body so the sneak suits (and a classic kit, if someone picks one) share the denser mesh.
+const meMesh = makeSneaker(scene, { ...AGENT_ROSTER[0], detail: 'hi' });
+const remoteMeshes = [1, 2, 3, 4].map((i) => makeSneaker(scene, { ...AGENT_ROSTER[i], detail: 'hi' }));
 const rk = (s) => (s < mySlot ? s : s - 1);
 const meshOf = (s) => (s === mySlot ? meMesh : remoteMeshes[rk(s)]);
 const otherMesh = remoteMeshes[0]; // (debug hook name)
@@ -580,18 +578,34 @@ function makeHat(kind, accent) {
   g.traverse((o) => { o.frustumCulled = false; });
   return g;
 }
-const hats = PLAYER_LOOK.map((L) => (L.hat ? makeHat(L.hat, L.accent) : null));
-function applyPlayerLooks() { // every rig wears its slot's look (host = P1 Night Ops, P2 Ash Fox, P3-P5 variants)
-  for (let s = 0; s < NP; s++) {
-    const ch = meshOf(s), L = PLAYER_LOOK[s];
-    ch.setKit(L.kit);
-    ch.materials.accent.color.setHex(L.accent);
-    ch.materials.patch.color.setHex(L.accent).multiplyScalar(0.55);
-    ch.materials.suit.color.setHex(L.tint);
-    ch.marker.material.color.setHex(L.accent);
-    if (ch.hat && ch.hat !== hats[s]) ch.head.remove(ch.hat);
-    ch.hat = hats[s]; if (ch.hat) ch.head.add(ch.hat);
-  }
+function applyOne(s) {
+  const ch = meshOf(s); if (!ch) return;
+  const L = lookOf(s);
+  if (ch._look === L.id && ch._tint === L.tint && ch._accent === L.accent) return;
+  ch.setKit(L.kit);
+  ch.materials.accent.color.setHex(L.accent);
+  ch.materials.patch.color.setHex(L.accent).multiplyScalar(0.55);
+  ch.materials.suit.color.setHex(L.tint);
+  if (ch.materials.suitFront) ch.materials.suitFront.color.setHex(L.tint);
+  ch.marker.material.color.setHex(L.accent);
+  if (ch.hat) ch.head.remove(ch.hat);
+  ch.hat = L.hat ? makeHat(L.hat, L.accent) : null;
+  if (ch.hat) ch.head.add(ch.hat);
+  ch._look = L.id; ch._tint = L.tint; ch._accent = L.accent;
+}
+function applyLooks() {
+  for (let s = 0; s < NP; s++) applyOne(s);
+  paintSlotTag();
+}
+function paintSlotTag() {
+  if (!role) return;
+  const L = lookOf(mySlot);
+  $('slotTag').textContent = 'P' + (mySlot + 1) + ' ' + L.name;
+  $('slotTag').style.color = hexCss(L.accent);
+}
+function commitMyLook() {
+  slotLook[mySlot] = pickedLook == null ? (mySlot % 5) : pickedLook;
+  applyLooks();
 }
 
 function textSprite(txt, color) {
@@ -1946,11 +1960,13 @@ function sendState() {
     h: plMe(), // host (P1) - kept for old clients
     pl: others.map((o, s) => (s === mySlot ? 0 : o.on ? plOf(o) : 0)), // every guest slot (0 = empty); a guest skips its own
     c4: world.c4.map((c) => [c.id, r2(c.x), r2(c.y), r2(c.z), c.by]),
+    lk: slotLook.slice(),
     co: world.co ? [world.co.id, world.co.k[0], world.co.i, world.co.c, world.co.h, r2(world.co.t), world.co.dur] : 0 });
 }
 const tdProg = () => (me.td ? r2(Math.min(1, me.td.t / TD.time)) : -1);
 function sendPlayer() { net.relay({ t: 'p', x: r2(me.x), z: r2(me.z), a: r2(me.a), c: me.c ? 1 : 0, p: me.p ? 1 : 0, n: noiseOf(me), vx: r2(me.vx), vz: r2(me.vz),
-  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y), bx: me.box ? 1 : 0, w: wkey() }); }
+  td: tdProg(), gd: me.gunT > 0 ? 1 : 0, eq: me.eq ? 1 : 0, y: r2(me.y), tk: me.tr ? me.tr.k : '', ti: me.tr ? me.tr.i : -1, tp: trProg(me.tr, me.y), bx: me.box ? 1 : 0, w: wkey(), lk: slotLook[mySlot] }); }
+function takeLook(slot, idx) { if (typeof idx !== 'number' || slot === mySlot || slotLook[slot] === idx || !AGENT_ROSTER[idx]) return; slotLook[slot] = idx; applyOne(slot); }
 function netTrav(o, y, tk, ti, tp) { o.y = y || 0; o.tk = tk || ''; o.ti = ti ?? -1; o.tp = tp || 0; }
 // a teammate fired: tracer + recoil on their model (host also applies the hit)
 function remoteShot(d, by) {
@@ -1974,7 +1990,7 @@ function netSample(o, x, z, vx, vz) {
 function onGameMsg(d) {
   const from = d.from ?? 1, fo = others[from]; // guest -> host packets are tagged with the sender's slot by server.js
   if (role === 'host' && d.t !== 's' && (!fo || from === 0)) return;
-  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || ''; }
+  if (d.t === 'p' && role === 'host') { netSample(fo, d.x, d.z, d.vx, d.vz); fo.a = d.a; fo.c = !!d.c; fo.p = !!d.p; fo.noise = d.n || 0; fo.td = d.td ?? -1; fo.gd = d.gd || 0; fo.eq = d.eq ?? (fo.gd ? 1 : 0); netTrav(fo, d.y, d.tk, d.ti, d.tp); fo.box = d.bx || 0; fo.w = d.w || ''; takeLook(from, d.lk); }
   else if (d.t === 'tr' && role === 'host') { // guest solo climb / rope: veto if someone's already on that ladder / rope, it's over, or a ground grapple (top-only)
     const on = (k, i) => i === d.i && ((k === d.k && d.k === 'ld') || ((ON_LINE(k) || k === 'hr' || k === 'hp') && ON_LINE(d.k)));
     const busy = (me.tr && on(me.tr.k, me.tr.i)) || peers().some((o) => o.s !== from && on(o.tk, o.ti));
@@ -2012,6 +2028,7 @@ function onGameMsg(d) {
     solo = d.solo;
     readPl(others[0], d.h);
     if (d.pl) d.pl.forEach((h, s) => { if (s && s !== mySlot && h && others[s]) readPl(others[s], h); });
+    if (d.lk) d.lk.forEach((i, s) => takeLook(s, i));
     if (d.co) {
       const [id, k, i, c, h, t, dur] = d.co; world.co = { id, k: { b: 'boost', p: 'pull', r: 'rope' }[k] || 'pull', i, c, h, t, dur };
       if (id !== lastCoId) applyCo(world.co);
@@ -2066,8 +2083,7 @@ function setRoster(slots) {
   el.textContent = solo ? 'solo test' : role === 'host' ? (n + 1) + '/' + NP + ' in' : !hostIn ? 'host offline' : (n + 1) + '/' + NP + ' in';
   el.className = (role === 'host' ? n > 0 : hostIn) || solo ? 'good' : 'bad';
   $('btnShare').classList.toggle('hidden', role !== 'host' || n >= NP - 1 || solo);
-  $('slotTag').textContent = role ? 'P' + (mySlot + 1) : '';
-  $('slotTag').style.color = hexCss(PLAYER_LOOK[mySlot].accent);
+  if (role) paintSlotTag(); else $('slotTag').textContent = '';
 }
 
 // ---------------------------------------------------------------- lobby / UI
@@ -2085,7 +2101,7 @@ function enterGame() {
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
     setTimeout(() => { if (role && world.phase === 'play' && !me.wpn) toast('UNARMED — P-9 locker through the south gate', 2600, '#ffd27f'); }, role === 'host' && !solo ? 1800 : 500);
   }
-  applyPlayerLooks();
+  commitMyLook();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
   history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
 }
@@ -2111,6 +2127,29 @@ if (qs.get('room')) {
   $('btnJoin').textContent = 'JOIN ' + $('codeInput').value;
   $('lobbyMsg').textContent = 'Tap JOIN to enter your partner\'s mission.';
 }
+let agentTier = (pickedLook != null && AGENT_ROSTER[pickedLook].tier) || 'sneak';
+function renderAgentPick() {
+  const row = $('agentRow'); if (!row) return;
+  row.replaceChildren();
+  const addBtn = (label, on, accent, fn) => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+    if (on) b.className = 'on'; if (accent) b.style.borderColor = hexCss(accent);
+    b.onclick = () => { unlockAudio(); fn(); renderAgentPick(); };
+    row.appendChild(b);
+  };
+  addBtn('AUTO', pickedLook == null, null, () => { pickedLook = null; agentTier = 'sneak'; });
+  for (let i = 0; i < AGENT_ROSTER.length; i++) {
+    const L = AGENT_ROSTER[i]; if (L.tier !== agentTier) continue;
+    addBtn(L.name, pickedLook === i, L.accent, () => { pickedLook = i; });
+  }
+  addBtn(agentTier === 'sneak' ? 'CLASSIC' : 'SNEAK', false, null, () => { agentTier = agentTier === 'sneak' ? 'classic' : 'sneak'; });
+  const L = pickedLook == null ? null : AGENT_ROSTER[pickedLook];
+  $('agentBlurb').textContent = L
+    ? L.name + ' — ' + L.blurb
+    : 'AUTO wears your squad slot: host REED, then WREN, SABLE, DUNE, IRIS. CLASSIC swaps in the older kits.';
+}
+renderAgentPick();
+if (qs.get('solo') === '1') { $('soloBox').checked = true; setTimeout(() => $('btnHost').click(), 60); }
 let toastTimer = 0;
 function toast(msg, ms = 1500, color = '#fff') {
   const t = $('toast'); t.textContent = msg; t.style.color = color; t.classList.remove('hidden');
@@ -2141,7 +2180,7 @@ function updateOverlay() {
       input.jx = input.jz = 0; input.keys.clear();
       $('overlay').classList.add('over');
       const how = world.kb === 'melee' ? 'beaten down by a guard' : world.kb === 'c4' ? 'caught in a C4 blast' : 'cut down by FAMAS fire';
-      const who = solo || world.dead === myIdx() ? `You were killed in action &mdash; ${how}.` : `P${world.dead + 1} ${PLAYER_LOOK[world.dead] ? PLAYER_LOOK[world.dead].name : ''} is KIA &mdash; ${how}.`;
+      const who = solo || world.dead === myIdx() ? `You were killed in action &mdash; ${how}.` : `P${world.dead + 1} ${lookOf(world.dead).name} is KIA &mdash; ${how}.`;
       $('ovTitle').textContent = 'GAME OVER';
       $('ovBody').innerHTML = `${who}<br>Mission failed at ${fmtTime(world.finalT)} &middot; Alerts ${world.alerts}`;
       btn.textContent = 'RETRY';
@@ -2198,7 +2237,7 @@ function drawRadar() {
   }
   for (const pk of pickups) if (pk.on) { rc.fillStyle = Math.abs(pk.y - me.y) < 1 ? '#7fd6ff' : 'rgba(127,214,255,0.5)'; rc.fillRect(X(pk.x) - 1.5, Z(pk.z) - 1.5, 3, 3); }
   for (const c of world.c4 || []) if (c.by === mySlot) { rc.fillStyle = (performance.now() / 250 | 0) % 2 ? '#ff3030' : '#601010'; rc.fillRect(X(c.x) - 2, Z(c.z) - 2, 4, 4); }
-  for (const o of peers()) { rc.fillStyle = hexCss(PLAYER_LOOK[o.s].accent); rc.fillRect(X(o.rx) - 3, Z(o.rz) - 3, 6, 6); }
+  for (const o of peers()) { rc.fillStyle = hexCss(lookOf(o.s).accent); rc.fillRect(X(o.rx) - 3, Z(o.rz) - 3, 6, 6); }
   rc.fillStyle = '#ffffff'; rc.fillRect(X(me.x) - 3, Z(me.z) - 3, 6, 6);
 }
 
@@ -2698,7 +2737,7 @@ function updateHud() {
   for (let s = 0; s < NP; s++) {
     if (s === mi) continue;
     const el = hpRows[r++], show = !solo && others[s].on; el.classList.toggle('hidden', !show);
-    if (show) { hpBar(el, s, world.hp[s] ?? HP_MAX, 'P' + (s + 1)); el.classList.toggle('hidden', false); el.style.setProperty('--pc', hexCss(PLAYER_LOOK[s].accent)); }
+    if (show) { hpBar(el, s, world.hp[s] ?? HP_MAX, 'P' + (s + 1)); el.classList.toggle('hidden', false); el.style.setProperty('--pc', hexCss(lookOf(s).accent)); }
   }
   const b = $('alertBanner');
   if (world.alert === 2) { b.className = 'alert'; b.textContent = 'ALERT ' + Math.max(0, world.alertT).toFixed(1); }
@@ -2763,7 +2802,7 @@ requestAnimationFrame(loop);
 
 // debug hook for automated tests
 window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, get other() { return others[mySlot === 0 ? 1 : 0]; }, get mySlot() { return mySlot; }, COOP_ALL, COOP_G,
-  get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
+  get fpsOn() { return fpsOn; }, toggleView, AGENT_ROSTER, get slotLook() { return slotLook; }, lookOf, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
   travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3 };

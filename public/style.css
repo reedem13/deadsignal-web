@@ -24,6 +24,11 @@ h2 { margin: 0; font-size: 30px; letter-spacing: 4px; color: #c9ffd6; }
 input#codeInput { width: 130px; font: inherit; font-size: 26px; text-align: center; letter-spacing: 6px; text-transform: uppercase;
   background: #071612; color: #c9ffd6; border: 2px solid #4fbf7a; border-radius: 6px; padding: 8px; -webkit-user-select: text; user-select: text; }
 .solo { font-size: 12px; opacity: .75; }
+#agentPick { display: flex; flex-direction: column; gap: 6px; align-items: center; max-width: 460px; }
+#agentRow { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+#agentRow button { font-size: 11px; padding: 6px 8px; letter-spacing: 0.4px; }
+#agentRow button.on { background: #2a6b4a; color: #fff; box-shadow: inset 0 0 0 1px #e8ffe8; }
+#agentBlurb { font-size: 12px; opacity: .75; min-height: 2.4em; max-width: 420px; line-height: 1.4; }
 #lobbyMsg { min-height: 1.2em; color: #ffd27f; max-width: 420px; }
 .help { font-size: 12px; opacity: .65; max-width: 460px; line-height: 1.6; }
 #ovBody { line-height: 1.7; font-size: 16px; }

@@ -1,67 +1,105 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Deadsignal - sneaker model preview</title>
+<title>Deadsignal - agent preview</title>
 <style>html,body{margin:0;height:100%;background:#111;color:#cfd;font:12px monospace;overflow:hidden}canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
-#ui{position:fixed;left:8px;top:8px}button{font:inherit;margin:2px;padding:6px 10px;background:#223;color:#cfd;border:1px solid #456}</style>
+canvas.smooth{image-rendering:auto}
+#ui{position:fixed;left:8px;top:8px;max-width:calc(100% - 16px);line-height:1.45}button{font:inherit;margin:2px;padding:6px 10px;background:#223;color:#cfd;border:1px solid #456}
+#stats{margin-top:4px;color:#9cba8a}</style>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script></head>
 <body><canvas id="c"></canvas>
-<div id="ui">MODEL PREVIEW (?who=player|enemy|both&amp;pose=idle|walk|run|crouch|crouchwalk|prone|crawl|dead|ready|readywalk|aim|crouchaim|proneaim|takedown&amp;spin=0&amp;aimyaw=rad)<br>
-<button data-p="idle">idle</button><button data-p="walk">walk</button><button data-p="run">run</button><button data-p="crouch">crouch</button><button data-p="crouchwalk">crouch-walk</button><button data-p="prone">prone</button><button data-p="crawl">crawl</button><button data-p="dead">dead</button><button data-p="ready">ready</button><button data-p="readywalk">ready-walk</button><button data-p="aim">aim</button><button data-p="crouchaim">crouch-aim</button><button data-p="proneaim">prone-aim</button><button data-p="takedown">takedown</button><br>CLIMB: <button data-p="climb">ladder</button><button data-p="hang">rope</button><button data-p="mantle">mantle</button><button data-p="kneel">kneel</button><button data-p="lift">boost-lift</button><button data-p="pull">pull-up</button><button data-p="throw">grapple-throw</button><br><button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button></div>
+<div id="ui">AGENT PREVIEW (?squad=1 lineup, ?k1=reed&amp;one=1 close-up, ?px=1 sharp, ?detail=low classic body)<br>
+<span id="poses"></span><br>
+<span id="kits"></span><br>
+<button data-w="player">players</button><button data-w="enemy">enemies</button><button data-w="both">both</button>
+<button id="squadBtn">squad</button>
+<div id="stats"></div></div>
 <script type="module">
 import * as THREE from 'three';
-import { makeSneaker, makeEnemy } from './sneaker.js';
+import { makeSneaker, makeEnemy, AGENT_ROSTER, trisOf, TEX_TARGETS } from './sneaker.js';
+const $ = (id) => document.getElementById(id);
 const qs = new URLSearchParams(location.search);
-const r = new THREE.WebGLRenderer({ canvas: c, antialias: false }); r.setPixelRatio(0.5);
+const squadMode = qs.get('squad') === '1';
+const px = qs.has('px') ? Math.min(2, +qs.get('px') || 1) : (squadMode ? 1 : 0.5);
+const r = new THREE.WebGLRenderer({ canvas: $('c'), antialias: px >= 1 }); r.setPixelRatio(px);
+if (px >= 1) $('c').classList.add('smooth');
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181a);
 scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
 const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
+const fill = new THREE.DirectionalLight(0xfff2dd, 0.35); fill.position.set(6, 4, -4); scene.add(fill);
 const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
-const ACC = (k) => (k === 'ash' ? 0x2f8cff : 0x9fd060); // P1 olive-lime / P2 blue accents, as in main.js
-const P = [makeSneaker(scene, { kit: qs.get('k1') || 'night', accent: ACC(qs.get('k1') || 'night') }), makeSneaker(scene, { kit: qs.get('k2') || 'ash', accent: ACC(qs.get('k2') || 'ash') })];
+const byId = (id) => AGENT_ROSTER.find((a) => a.id === id || a.kit === id) || AGENT_ROSTER[0];
+function build(id, detail) {
+  const L = byId(id);
+  return makeSneaker(scene, { kit: L.kit, accent: L.accent, tint: L.tint, detail: detail || (L.tier === 'sneak' ? 'hi' : 'low') });
+}
+const squad = AGENT_ROSTER.filter((a) => a.tier === 'sneak').map((L, i) => {
+  const m = makeSneaker(scene, { ...L, detail: 'hi' });
+  m.g.position.x = (i - 2) * 0.78; m.g.visible = squadMode; return m;
+});
+const P = [build(qs.get('k1') || 'reed', qs.get('detail') || 'hi'), build(qs.get('k2') || 'wren', 'hi')];
 const E = [makeEnemy(scene), makeEnemy(scene)];
+const classic = makeSneaker(scene, { kit: 'night', accent: 0x9fd060, detail: 'low' });
+const squadVis = squad[0].g.visible; squad[0].g.visible = true;
+const hiSample = trisOf(squad[0].g, true);
+const hiAll = trisOf(squad[0].g, false);
+const loSample = trisOf(classic.g, true);
+squad[0].g.visible = squadVis;
+classic.g.visible = false; classic.g.position.y = -40;
+$('stats').textContent = `visible tris  sneak ${hiSample.tris} (${hiSample.meshes} meshes, ${hiAll.tris} resident)   classic Night Ops ${loSample.tris} (${loSample.meshes} meshes)\n`
+  + `textures  sneak suit ${TEX_TARGETS.sneak.suit} / torso ${TEX_TARGETS.sneak.torso} / face ${TEX_TARGETS.sneak.face}  ${TEX_TARGETS.sneak.filter} crush ${TEX_TARGETS.sneak.crush}`
+  + `    classic suit ${TEX_TARGETS.classic.suit} / torso ${TEX_TARGETS.classic.torso} / face ${TEX_TARGETS.classic.face}  ${TEX_TARGETS.classic.filter} crush ${TEX_TARGETS.classic.crush}`;
+if (qs.get('ui') === '0') $('ui').style.display = 'none';
+const poses = ['idle', 'walk', 'run', 'crouch', 'crouchwalk', 'prone', 'crawl', 'dead', 'ready', 'aim'];
+$('poses').innerHTML = poses.map((p) => `<button data-p="${p}">${p}</button>`).join('');
+$('kits').innerHTML = AGENT_ROSTER.map((L) => `<button data-k="${L.id}" style="border-color:${'#' + L.accent.toString(16).padStart(6, '0')}">${L.name}</button>`).join('');
 let who = qs.get('who') || 'player';
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshLambertMaterial({ color: 0x26352e })); floor.rotation.x = -Math.PI / 2; scene.add(floor);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(10, 6), new THREE.MeshLambertMaterial({ color: 0x26352e })); floor.rotation.x = -Math.PI / 2; scene.add(floor);
 let pose = qs.get('pose') || 'idle', ang = +(qs.get('ang') || 0.6);
 const spin = qs.get('spin') !== '0';
-document.querySelectorAll('button').forEach((b) => b.onclick = () => { if (b.dataset.p) pose = b.dataset.p; if (b.dataset.w) who = b.dataset.w; });
+let squadOn = squadMode;
+function wear(m, id) {
+  const L = byId(id);
+  m.setKit(L.kit);
+  m.materials.accent.color.setHex(L.accent);
+  m.materials.patch.color.setHex(L.accent).multiplyScalar(0.55);
+  m.materials.suit.color.setHex(L.tint);
+  if (m.materials.suitFront) m.materials.suitFront.color.setHex(L.tint);
+}
+document.querySelectorAll('button').forEach((b) => b.onclick = () => {
+  if (b.dataset.p) pose = b.dataset.p;
+  if (b.dataset.w) { who = b.dataset.w; squadOn = false; }
+  if (b.dataset.k) { squadOn = false; wear(P[0], b.dataset.k); P[0].g.position.set(0, 0, 0); }
+  if (b.id === 'squadBtn') { squadOn = true; who = 'player'; }
+});
 function size() { r.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
 addEventListener('resize', size); size();
-let last = performance.now(), tdT = 0, shotT = 0, shot = 0, eShot = 0, eBurst = 0, hurtT = 0, hurtN = 0;
+let last = performance.now();
+const stateFor = () => ({
+  armed: /ready|aim/.test(pose), moving: /walk|run|crawl/.test(pose), run: pose === 'run',
+  crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead', aim: /aim/.test(pose),
+});
 function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.5;
-  const low = /prone|crawl/.test(pose), dist = +(qs.get('dist') || 5); const ly = qs.has('ly') ? +qs.get('ly') : low ? 0.25 : 0.8; cam.position.set(Math.cos(ang) * dist, qs.has('cy') ? +qs.get('cy') : low ? 1.5 : 1.6, Math.sin(ang) * dist); cam.lookAt(0, ly, 0);
-  const sp = /prone|crawl/.test(pose) ? 0.75 : 0.6, px = -Math.sin(ang) * sp, pz = Math.cos(ang) * sp;
-  if (pose === 'takedown') { // sneaker behind a guard, both facing +x; loops: hold 2.2s (= TD_TIME in main.js) then guard lies dead for 1s
-    tdT = (tdT + dt) % 3.2; const p = qs.has('p') ? +qs.get('p') : Math.min(1, tdT / 2.2), done = !qs.has('p') && tdT > 2.2;
-    for (const m of [...P, ...E]) m.g.visible = m === P[0] || m === E[0];
-    P[0].g.position.set(-0.42, 0, 0); E[0].g.position.set(0, 0, 0); P[0].g.rotation.y = E[0].g.rotation.y = 0;
-    P[0].update(dt, { takedown: done ? null : p }); E[0].update(dt, done ? { dead: true } : { held: p });
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; if (spin) ang += dt * 0.4;
+  const low = /prone|crawl/.test(pose);
+  const dist = +(qs.get('dist') || (squadOn ? 6.4 : 4.2));
+  const ly = qs.has('ly') ? +qs.get('ly') : low ? 0.25 : 0.85;
+  cam.position.set(Math.cos(ang) * dist, qs.has('cy') ? +qs.get('cy') : (low ? 1.35 : 1.45), Math.sin(ang) * dist);
+  cam.lookAt(0, ly, 0);
+  const s = stateFor();
+  if (squadOn) {
+    for (const m of [...P, ...E, ...squad]) m.g.visible = squad.includes(m);
+    squad.forEach((m, i) => { m.g.position.set((i - 2) * 0.78, 0, 0); m.g.rotation.y = 0.15; m.update(dt, s); });
     r.render(scene, cam); requestAnimationFrame(loop); return;
   }
   const pair = who === 'enemy' ? E : who === 'both' ? [P[0], E[0]] : P;
-  for (const m of [...P, ...E]) m.g.visible = pair.includes(m) && !(qs.get('one') && m === pair[1]);
-  if (qs.get('one')) pair[0].g.position.set(0, 0, 0); else { pair[0].g.position.set(px, 0, pz); pair[1].g.position.set(-px, 0, -pz); }
-  shotT += dt; if (/aim/.test(pose) && shotT > 1.1) { shotT = 0; shot++; eBurst = 0; }
-  // guards: 3-round FAMAS burst at the start of each cycle (?p freezes the kick: no shots)
-  if (/aim/.test(pose) && !qs.has('p') && eBurst < 3 && shotT > eBurst * 0.085) { eBurst++; eShot++; }
-  // traversal poses (?p=0..1 freezes progress, else loops every 2s)
-  const TRV = ['climb', 'hang', 'mantle', 'kneel', 'lift', 'pull', 'throw'];
-  if (TRV.includes(pose)) {
-    const tp = qs.has('p') ? +qs.get('p') : (now / 2000) % 1;
-    for (const m of [...P, ...E]) m.update(dt, { trav: { k: pose, p: tp, ph: now / 250 } });
-    r.render(scene, cam); requestAnimationFrame(loop); return;
-  }
-  const s = { armed: /ready|aim/.test(pose), moving: /walk|run|crawl/.test(pose), run: pose === 'run', crouch: pose.startsWith('crouch'), prone: /prone|crawl/.test(pose), dead: pose === 'dead',
-    aim: /aim/.test(pose), shot };
-  // ?hurt=1: hit-react (flinch) every 0.9s, hit coming from the camera side
-  if (qs.get('hurt')) { hurtT += dt; if (hurtT > 0.9) { hurtT = 0; hurtN++; }
-    Object.assign(s, { hurt: hurtN, hurtFrom: Math.atan2(cam.position.z, cam.position.x), hurtAmt: 12 }); }
-  // ?aimyaw=<rad> (aim poses): lock target 4m out at that angle off the facing -> arms turn at the shoulders toward it
-  const ay = qs.has('aimyaw') ? +qs.get('aimyaw') : null;
-  for (const m of E) m.update(dt, { ...s, armed: false, aim: false, rifleAim: s.aim, shot: eShot });
-  for (const m of P) m.update(dt, ay == null || !s.aim ? s : { ...s, aimAt: { x: m.g.position.x + Math.cos(ay) * 4, y: 1.0, z: m.g.position.z + Math.sin(ay) * 4 } });
+  for (const m of [...P, ...E, ...squad]) m.g.visible = pair.includes(m) && !(qs.get('one') && m === pair[1]);
+  if (qs.get('one') || who !== 'player') pair[0].g.position.set(0, 0, 0);
+  else { const sp = 0.55; pair[0].g.position.set(-Math.sin(ang) * sp, 0, Math.cos(ang) * sp); if (pair[1]) pair[1].g.position.set(Math.sin(ang) * sp, 0, -Math.cos(ang) * sp); }
+  for (const m of E) if (m.g.visible) m.update(dt, { ...s, armed: false, aim: false });
+  for (const m of P) if (m.g.visible) m.update(dt, s);
   r.render(scene, cam); requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 window.__ready = true;
+window.__stats = { hi: hiSample, low: loSample, tex: TEX_TARGETS };
 </script></body></html>
