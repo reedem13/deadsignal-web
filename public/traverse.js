@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 
 export const TRAV = {
-  climbSpeed: { ladder: 1.5, pipe: 1.15 }, // m/s up / down
+  climbSpeed: { ladder: 1.5, pipe: 1.15, net: 1.2 }, // m/s up / down (cargo nets are a touch slower than a ladder)
   hangBelow: 1.1,   // feet this far under the top = hands on the lip -> auto vault
   mantleT: 0.62,    // crate / ledge mantle
   topVaultT: 0.7,   // ladder top -> roof
@@ -20,127 +20,67 @@ export const TRAV = {
   landNoise: 4.2, landDrop: 1.8, // standing drop from > landDrop m = thud guards can hear (crouch = silent hang-drop)
 };
 
-// ---------------------------------------------------------------- VERTICAL LEVEL (relay station, 3 layers)
-//   G  = ground (0)     L1 = catwalk / roof layer (3.2)     L2 = tower / skybridge layer (6.4)
-// West: PUMP TOWER (L2) + SCAFFOLD (L1) + PIPE BRIDGE (L2) -> COMMS HUT (L2); barracks roof (L1) + crawlspace (G).
-// Centre: ATRIUM - an open L1 catwalk ring around the MAST (L2), crawl UNDERPASS through the mast base (G), PLANK to
-//   the barracks roof, spur + grapple up to the mast roof, SKYBRIDGE (L2) east to the TANK HOUSE roof.
-// East: GANTRY (L1) over the switch lane -> RELAY PLATFORM (L1, upper switch pad); TANK BRIDGE (L1) + BALCONY (L1).
-// Compound (behind the red door): EXFIL TOWER (L2) - extraction is on its roof.
-// Expanded wings (outside the original fence, reached through gates + culverts):
-//   SOUTH motor pool — L1 shed + catwalk. EAST cooling plant — L1 ring, L2 tower, L3 penthouse.
-//   WEST service yard — L1 step, L2 lookout. NORTH dock — L1 rack, L2 crane cab.
-export const L1 = 3.2, L2 = 6.4, L3 = 9.6;
+// ---------------------------------------------------------------- OPEN OCEAN
+// Waterline is y = 0. L1 main decks, L2 bridges, L3 crane / funnel. HOLD is a cargo-pit floor.
+// BOAT is a low deck you mantle onto from a swim platform, then ladder up.
+//   MERIDIAN — north VLCC, east-west. Switches, red door, bridge extract, bilge crawl, cargo hold.
+//   CINDER — southwest product tanker, north-south. First P-9 is on her deck.
+//   ASH HOLD — southeast freighter. Open hold, deckhouse, crane tower.
+// Swim platforms, the pier and the bilge are dry pads in main.js (DRY). Ships do not touch.
+export const L1 = 3.2, L2 = 6.4, L3 = 9.6, HOLD = 1.15, BOAT = 1.2;
 const RAIL_H = 0.9;
 const W = (x1, x2, z1, z2, h, name, extra = {}) => ({ x1, x2, z1, z2, h, name, ...extra });
 export const WALKS = [
-  W(-11.6, -4.4, -7.1, -4.9, L1, 'BARRACKS ROOF', { noDeck: 1 }), // slab over the crawlspace (drawn by the tunnel roof)
-  W(-15.5, -10.4, -12.2, -9.6, L1, 'SCAFFOLD'),
-  W(-11.6, -10.4, -9.6, -8.5, L1, 'SCAFFOLD LINK'),                // scaffold -> barracks roof
-  W(-15.5, -6, -14, -13, L2, 'PIPE BRIDGE'),                       // pump tower roof -> comms hut roof
-  W(-6.8, -5.9, -3.5, -1.6, L1, 'PLANK'),                          // barracks roof -> atrium ring
-  W(-7, 5, -1.6, -0.4, L1, 'RING N'), W(-7, 5, 7, 8.2, L1, 'RING S'),
-  W(-7, -5.8, -0.4, 7, L1, 'RING W'), W(3.8, 5, -0.4, 7, L1, 'RING E'),
-  W(-0.6, 0.6, -0.4, 1.5, L1, 'RING SPUR'),                        // ring -> foot of the mast grapple
-  W(-2, 2, 2.5, 4, L2, 'MAST ROOF', { noDeck: 1 }),               // roof over the underpass (drawn by the tunnel roof)
-  W(2, 9, 2.6, 3.6, L2, 'SKYBRIDGE'),                              // mast roof -> tank house roof
-  W(4.2, 5, -2.3, -1.6, L1, 'SHED LINK'),                          // ring NE corner -> gantry / shed roof
-  W(4.2, 17.5, -3.3, -2.3, L1, 'GANTRY'),
-  W(14.5, 19.6, -7.6, -3.3, L1, 'RELAY PLATFORM'),                 // upper switch pad
-  W(10.6, 11.8, -2.3, 0.5, L1, 'TANK BRIDGE'),
-  W(9, 13.5, 6, 7.2, L1, 'TANK BALCONY'),
-  // ---- south motor pool
-  W(-2.2, 14, 22.8, 24.2, L1, 'ANNEX CATWALK'),
-  // ---- east cooling plant (L1 ring around the tower)
-  W(20.4, 28.2, 5.15, 6.55, L1, 'EAST SPINE'),
-  W(27.6, 30.4, 5.15, 6.55, L1, 'EAST BRIDGE'),
-  W(24.4, 25.8, 2.4, 6.6, L1, 'EAST LINK'),
-  W(24.2, 36, 2.15, 3.45, L1, 'EAST NORTH'),
-  W(28.3, 29.7, 3.2, 13.2, L1, 'EAST SKIRT'),
-  W(28.3, 37.2, 11.7, 13.3, L1, 'COOLING BALCONY'),
-  // ---- west service
-  W(-34.6, -32.4, 1.15, 2.8, L1, 'LOOKOUT STEP'),
-  // ---- north dock
-  W(-5.2, 7, -22.8, -17.4, L1, 'DOCK RACK'),
+  // MERIDIAN: cross the cargo pit. Ends meet the stern (x = -8) and the bow (x = 6).
+  W(-8, 6, -18.6, -16.2, L1, 'HOLD CATWALK'),
+  // ASH HOLD: crane boom off the tower. Guards stay on the cab.
+  W(19.6, 30.5, 16.7, 18.1, L3, 'CRANE BOOM'),
 ];
-// rails: thin boxes that only exist up high (y0..h). rx = along x at edge z (side -1 = rail sits on the -z side of the
-// line, +1 = +z side); rz = along z at edge x.
 const rx = (x1, x2, z, side, y) => ({ x1, x2, z1: side < 0 ? z - 0.08 : z, z2: side < 0 ? z : z + 0.08, y0: y, h: y + RAIL_H });
 const rz = (z1, z2, x, side, y) => ({ x1: side < 0 ? x - 0.08 : x, x2: side < 0 ? x : x + 0.08, z1, z2, y0: y, h: y + RAIL_H });
 export const RAILS = [
-  // scaffold (gap at the ladder x -13)
-  rx(-15.5, -13.6, -9.6, 1, L1), rx(-12.4, -11.6, -9.6, 1, L1), rx(-15.5, -10.4, -12.2, -1, L1), rz(-12.2, -8.5, -10.4, 1, L1),
-  // pipe bridge (L2)
-  rx(-15.5, -6, -14, -1, L2), rx(-15.5, -6, -13, 1, L2),
-  // plank
-  rz(-3.5, -1.6, -6.8, -1, L1), rz(-3.5, -1.6, -5.9, 1, L1),
-  // atrium ring: outer (gaps: plank, shed link, west ladder, SE crate steps), inner (gaps: spur, two drop-down spots)
-  rx(-5.9, 4.2, -1.6, -1, L1), rx(-7, 3.8, 8.2, 1, L1), rz(-1.6, 2.4, -7, -1, L1), rz(3.6, 8.2, -7, -1, L1), rz(-1.6, 8.2, 5, 1, L1),
-  rx(-5.8, -0.6, -0.4, 1, L1), rx(0.6, 3.8, -0.4, 1, L1), rx(-5.8, -1, 7, -1, L1), rx(1, 3.8, 7, -1, L1),
-  rz(-0.4, 2, -5.8, 1, L1), rz(4, 7, -5.8, 1, L1), rz(-0.4, 7, 3.8, -1, L1),
-  rz(-0.4, 1.5, -0.6, -1, L1), rz(-0.4, 1.5, 0.6, 1, L1), // spur
-  // skybridge (L2)
-  rx(2, 9, 2.6, -1, L2), rx(2, 9, 3.6, 1, L2),
-  // gantry (gaps: tank bridge, shed link) + relay platform (gap: ladder)
-  rx(4.2, 14.5, -3.3, -1, L1), rx(5, 10.6, -2.3, 1, L1), rx(11.8, 17.5, -2.3, 1, L1),
-  rz(-7.6, -3.3, 14.5, -1, L1), rx(14.5, 19.6, -7.6, -1, L1), rz(-7.6, -3.3, 19.6, 1, L1), rx(17.5, 18, -3.3, 1, L1), rx(19.2, 19.6, -3.3, 1, L1),
-  // tank bridge + balcony (gap: crate steps)
-  rz(-2.3, 0.5, 10.6, -1, L1), rz(-2.3, 0.5, 11.8, 1, L1),
-  rx(9, 11.5, 7.2, 1, L1), rx(12.6, 13.5, 7.2, 1, L1), rz(6, 7.2, 9, -1, L1), rz(6, 7.2, 13.5, 1, L1),
-  // annex catwalk (gaps: rappel ~x6, east ladder ~x12)
-  rx(-1.5, 5.2, 24.2, 1, L1), rx(6.8, 11.2, 24.2, 1, L1), rx(12.8, 13.8, 24.2, 1, L1), rx(0, 13.8, 22.8, -1, L1),
-  // east spine (gap on the south edge at the ground ladder)
-  rx(20.6, 21.6, 6.55, 1, L1), rx(23.4, 30.2, 6.55, 1, L1), rx(20.6, 30.2, 5.15, -1, L1),
-  rx(28.6, 36.8, 13.3, 1, L1), // cooling balcony, outside edge
-  // dock rack (gaps at the ground ladder and the crane ladder)
-  rx(-4.6, -1.1, -17.4, 1, L1), rx(1.2, 6.6, -17.4, 1, L1),
-  rx(-4.8, -1.2, -22.8, -1, L1), rx(1.2, 6.6, -22.8, -1, L1),
+  rx(-8, 6, -18.6, -1, L1), rx(-8, 6, -16.2, 1, L1),
+  rx(19.6, 30.5, 16.7, -1, L3), rx(19.6, 30.5, 18.1, 1, L3),
 ];
 // support legs (main.js adds them to WALLS as kind 'post'): [x, z, height]
 export const DECK_POSTS = [
-  [-12.5, -12.0, L1], [-10.6, -12.0, L1], [-12.5, -9.75, L1], [-15.3, -9.75, L1],
-  [-12.5, -13.5, L2], [-9, -13.5, L2],
-  [-6.9, -1.5, L1], [4.9, -1.5, L1], [-6.9, 8.1, L1], [4.9, 8.1, L1], [-3, 8.1, L1], [1.5, -1.5, L1], [-6.9, 0.9, L1], [4.9, 3.3, L1],
-  [6.5, 3.1, L2],
-  ...[6, 10, 14].flatMap((x) => [[x, -3.22, L1], [x, -2.38, L1]]),
-  [14.6, -7.5, L1], [19.5, -7.5, L1], [19.5, -3.4, L1],
-  // annex catwalk
-  [2, 22.95, L1], [2, 24.05, L1], [8, 22.95, L1], [8, 24.05, L1], [12.4, 23.5, L1],
-  // east wing
-  [22, 5.25, L1], [22, 6.45, L1], [26, 5.25, L1], [26, 6.45, L1], [29.2, 5.25, L1], [29.2, 6.45, L1],
-  [24.55, 4.2, L1], [25.65, 4.2, L1], [30, 2.3, L1], [30, 3.3, L1], [34, 2.3, L1],
-  [28.45, 8, L1], [29.55, 8, L1], [32, 11.85, L1], [32, 13.15, L1], [36, 12.5, L1],
-  // west step + dock rack
-  [-34.2, 1.35, L1], [-33.1, 2.5, L1],
-  [-2, -18.2, L1], [-2, -21.4, L1], [4, -18.2, L1], [4, -21.6, L1],
+  [-7.2, -17.4, L1], [4.8, -17.4, L1], // under MERIDIAN's hold catwalk
 ];
-export const GANTRY_POSTS = DECK_POSTS; // old name
+export const GANTRY_POSTS = DECK_POSTS;
 
-// solo ladders / drainpipes. y0 = floor the foot stands on (ladders can start on a catwalk), top = floor up top.
+// solo ladders / drainpipes / cargo nets. y0 = floor the foot stands on, top = floor up top.
+// a = facing INTO the wall. Feet sit ~0.52 m off the face so a swimmer who just stood up can grab.
 export const CLIMBS = [
-  { name: 'BARRACKS LADDER', kind: 'ladder', x: -9.5, z: -3.1, a: -Math.PI / 2, y0: 0, top: L1, lx: -9.5, lz: -4.2 },
-  { name: 'SCAFFOLD LADDER', kind: 'ladder', x: -13, z: -9.25, a: -Math.PI / 2, y0: 0, top: L1, lx: -13, lz: -10.3 },
-  { name: 'PUMP TOWER LADDER', kind: 'ladder', x: -15.12, z: -11, a: Math.PI, y0: L1, top: L2, lx: -16.2, lz: -11 },
-  { name: 'RING LADDER', kind: 'ladder', x: -7.75, z: 3, a: 0, y0: 0, top: L1, lx: -6.4, lz: 3 },
-  { name: 'RELAY LADDER', kind: 'ladder', x: 18.6, z: -2.95, a: -Math.PI / 2, y0: 0, top: L1, lx: 18.6, lz: -4.0 },
-  { name: 'TANK HOUSE PIPE', kind: 'pipe', x: 13.88, z: 3, a: Math.PI, y0: 0, top: L2, lx: 12.8, lz: 3 },
-  { name: 'EXFIL LADDER', kind: 'ladder', x: 13.62, z: -11.2, a: 0, y0: 0, top: L2, lx: 14.7, lz: -11.2 },
-  // expanded wings (appended so existing climb indices stay put)
-  { name: 'ANNEX SHED LADDER', kind: 'ladder', x: -6, z: 27.45, a: -Math.PI / 2, y0: 0, top: L1, lx: -6, lz: 26.1 },
-  { name: 'ANNEX CAT LADDER', kind: 'ladder', x: 12, z: 24.7, a: -Math.PI / 2, y0: 0, top: L1, lx: 12, lz: 23.5 },
-  { name: 'EAST SPINE LADDER', kind: 'ladder', x: 22.5, z: 7.05, a: -Math.PI / 2, y0: 0, top: L1, lx: 22.5, lz: 5.9 },
-  { name: 'COOLING LADDER', kind: 'ladder', x: 29.5, z: 5.9, a: 0, y0: L1, top: L2, lx: 31.1, lz: 5.9 },
-  { name: 'PENTHOUSE LADDER', kind: 'ladder', x: 33, z: 10.15, a: -Math.PI / 2, y0: L2, top: L3, lx: 33, lz: 8.5 },
-  { name: 'SERVICE SHED LADDER', kind: 'ladder', x: -29.2, z: 7.3, a: -Math.PI / 2, y0: 0, top: L1, lx: -29.2, lz: 5.6 },
-  { name: 'LOOKOUT STEP LADDER', kind: 'ladder', x: -33.5, z: 3.25, a: -Math.PI / 2, y0: 0, top: L1, lx: -33.5, lz: 2.05 },
-  { name: 'LOOKOUT LADDER', kind: 'ladder', x: -33.5, z: 1.7, a: -Math.PI / 2, y0: L1, top: L2, lx: -33.5, lz: 0.2 },
-  { name: 'DOCK RACK LADDER', kind: 'ladder', x: 0, z: -16.85, a: -Math.PI / 2, y0: 0, top: L1, lx: 0, lz: -18.3 },
-  { name: 'CRANE LADDER', kind: 'ladder', x: 0, z: -22.45, a: -Math.PI / 2, y0: L1, top: L2, lx: 0, lz: -24.3 },
+  // MERIDIAN — three ways out of the water, plus the bilge, the hold, and the bridge
+  { name: 'MERIDIAN SOUTH LADDER', kind: 'ladder', x: 15, z: -9.48, a: -Math.PI / 2, y0: 0, top: L1, lx: 15, lz: -11.15 },
+  { name: 'MERIDIAN NORTH NET', kind: 'net', x: 18.5, z: -26.52, a: Math.PI / 2, y0: 0, top: L1, lx: 18.5, lz: -24.9 },
+  { name: 'MERIDIAN BOAT LADDER', kind: 'ladder', x: -24.52, z: -23.2, a: 0, y0: BOAT, top: L1, lx: -23.1, lz: -23.2 },
+  { name: 'MERIDIAN BILGE LADDER', kind: 'ladder', x: 0, z: -22.82, a: -Math.PI / 2, y0: 0, top: L1, lx: 0, lz: -24.25 },
+  { name: 'MERIDIAN HOLD LADDER', kind: 'ladder', x: -4, z: -13.15, a: Math.PI / 2, y0: HOLD, top: L1, lx: -4, lz: -11.55 },
+  { name: 'MERIDIAN EAST LADDER', kind: 'ladder', x: -11.48, z: -18.5, a: Math.PI, y0: L1, top: L2, lx: -13.05, lz: -18.5 },
+  { name: 'MERIDIAN BRIDGE PIPE', kind: 'pipe', x: -13.8, z: -22.52, a: Math.PI / 2, y0: L1, top: L2, lx: -13.8, lz: -21.15 },
+  { name: 'MERIDIAN POCKET LADDER', kind: 'ladder', x: -19.2, z: -13.48, a: Math.PI / 2, y0: L1, top: L2, lx: -19.2, lz: -15.15 },
+  { name: 'MERIDIAN STACK LADDER', kind: 'ladder', x: -14.08, z: -16.5, a: Math.PI, y0: L2, top: L3, lx: -15.4, lz: -16.5 },
+  // CINDER
+  { name: 'CINDER EAST LADDER', kind: 'ladder', x: -19.48, z: 11, a: Math.PI, y0: 0, top: L1, lx: -21.15, lz: 11 },
+  { name: 'CINDER WEST NET', kind: 'net', x: -32.52, z: 8.2, a: 0, y0: 0, top: L1, lx: -30.9, lz: 8.2 },
+  { name: 'CINDER BOAT LADDER', kind: 'ladder', x: -26, z: 1.48, a: Math.PI / 2, y0: BOAT, top: L1, lx: -26, lz: 3.05 },
+  { name: 'CINDER BRIDGE LADDER', kind: 'ladder', x: -26, z: 15.48, a: Math.PI / 2, y0: L1, top: L2, lx: -26, lz: 17.15 },
+  // ASH HOLD
+  { name: 'ASH NORTH LADDER', kind: 'ladder', x: 14.2, z: 7.48, a: Math.PI / 2, y0: 0, top: L1, lx: 14.2, lz: 9.15 },
+  { name: 'ASH SOUTH NET', kind: 'net', x: 27.4, z: 20.52, a: -Math.PI / 2, y0: 0, top: L1, lx: 27.4, lz: 18.85 },
+  { name: 'ASH BOAT LADDER', kind: 'ladder', x: 9.48, z: 15.6, a: 0, y0: BOAT, top: L1, lx: 11.25, lz: 15.6 },
+  { name: 'ASH HOUSE LADDER', kind: 'ladder', x: 13, z: 9.68, a: Math.PI / 2, y0: L1, top: L2, lx: 13, lz: 11.15 },
+  { name: 'ASH HOLD LADDER', kind: 'ladder', x: 23, z: 17.05, a: Math.PI / 2, y0: HOLD, top: L1, lx: 23, lz: 18.4 },
+  { name: 'ASH CRANE LADDER', kind: 'ladder', x: 18.3, z: 15.08, a: Math.PI / 2, y0: L1, top: L3, lx: 18.3, lz: 16.35 },
 ];
 for (const c of CLIMBS) c.y0 = c.y0 || 0;
 
 export const COOPS = [
-  { name: 'SIGNAL SHED', x: 3, z: -2.1, a: -Math.PI / 2, top: L1 },
+  { name: 'MERIDIAN HULL', x: 10.6, z: -10, a: -Math.PI / 2, top: L1, y0: 0 },
+  { name: 'CINDER HULL', x: -20, z: 7.2, a: Math.PI, top: L1, y0: 0 },
+  { name: 'ASH HOLD', x: 17.6, z: 8, a: Math.PI / 2, top: L1, y0: 0 },
+  { name: 'MERIDIAN BRIDGE', x: -12, z: -19.4, a: Math.PI, top: L2, y0: L1 },
 ];
 // derived points for a co-op wall: base = booster kneels here (back to the wall), step = climber's run-up spot,
 // hang = climber against the wall, edge = puller kneels here on the roof, land = where the climber ends up on top
@@ -149,36 +89,15 @@ export function coopGeom(c) {
   return { dx, dz, base: P(-0.45), step: P(-1.15), hang: P(-0.4), edge: P(0.35), land: P(0.65) };
 }
 
-// Vertical grapple lines: the hook bites the top lip of a wall (or the gantry rail) and the rope hangs straight down the
-// face. Lines are set from the TOP only: stand at the TOP ring (just back from the lip) -> RAPPEL down, or PULL UP a
-// teammate standing at the FOOT ring (co-op rope haul, main.js). Once you're on your own line you can still climb it
-// back up. No swings, no lateral arcs - you only ever move up / down the face.
-//   x,z  = foot spot (where you stand / hang, `wall` m off the face)   a = facing INTO the wall
-//   y0   = foot floor height   top = floor up top   lip = height the claw bites (roof edge or rail top)
-//   land = how far past the face you end up on top
-const RL = L1 + RAIL_H + 0.02, RL2 = L2 + RAIL_H + 0.02; // rail-top lips
+// Vertical grapple lines. TOP-ONLY: the top ring rappels, or hauls a teammate off the foot ring.
+// Feet on a swim platform board by co-op haul; solo players take the ladder or the net beside it.
 export const LINKS = [
-  { name: 'SHED WEST WALL', x: 1.42, z: -2.9, a: 0, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.38, land: 0.55 },
-  { name: 'BARRACKS NORTH WALL', x: -6.6, z: -8.88, a: Math.PI / 2, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'GANTRY NORTH LINE', x: 6.5, z: -3.76, a: Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'GANTRY SOUTH LINE', x: 7.5, z: -1.84, a: -Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'RELAY WEST LINE', x: 14.04, z: -5.5, a: 0, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'PUMP TOWER SOUTH', x: -17.5, z: -9.12, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'COMMS HUT SOUTH', x: -4.2, z: -11.12, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'RING SOUTH LINE', x: -2, z: 8.66, a: -Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'ATRIUM DROP', x: -4, z: 0.06, a: -Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'MAST NORTH FACE', x: 0, z: 1.12, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'TANK HOUSE NORTH', x: 11.2, z: 0.12, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'TANK HOUSE SOUTH', x: 11.25, z: 6.38, a: -Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'SKYBRIDGE LINE', x: 7.5, z: 4.06, a: -Math.PI / 2, y0: 0, top: L2, lip: RL2, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'EXFIL TOWER SOUTH', x: 16.2, z: -9.82, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  // expanded wings — still top-only (appended so existing line indices stay put)
-  { name: 'ANNEX CATWALK LINE', x: 6, z: 24.65, a: -Math.PI / 2, y0: 0, top: L1, lip: RL, wall: 0.38, land: 0.62, rail: 1 },
-  { name: 'COOLING TOWER EAST', x: 37.45, z: 8, a: Math.PI, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'COOLING TOWER SOUTH', x: 35.8, z: 12.05, a: -Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'PENTHOUSE EAST', x: 34.98, z: 8, a: Math.PI, y0: L2, top: L3, lip: L3 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'LOOKOUT WEST', x: -35.25, z: -0.4, a: 0, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
-  { name: 'CRANE NORTH', x: 0, z: -26.85, a: Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.38, land: 0.6 },
+  { name: 'MERIDIAN BOW', x: 28.5, z: -18, a: Math.PI, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.5, land: 0.62 },
+  { name: 'CINDER STERN', x: -26, z: 24.5, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
+  { name: 'ASH EAST', x: 36.5, z: 14.5, a: Math.PI, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.5, land: 0.62 },
+  { name: 'MERIDIAN BRIDGE LINE', x: -15.6, z: -22.5, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
+  { name: 'CINDER BRIDGE LINE', x: -28.2, z: 15.5, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
+  { name: 'ASH CRANE LINE', x: 16.7, z: 17.4, a: 0, y0: L1, top: L3, lip: L3 + 0.06, wall: 0.5, land: 0.62 },
 ];
 // Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
 //   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom   [disabled: top-only grapple]
@@ -298,12 +217,13 @@ export function buildTraversal(scene, { walls, hazardMat }) {
   CLIMBS.forEach((c, i) => {
     const dx = Math.cos(c.a), dz = Math.sin(c.a), tx = -dz, tz = dx; // tangent along the wall
     const fx = c.x + dx * 0.34, fz = c.z + dz * 0.34, y0 = c.y0 || 0; // just off the wall face
-    if (c.kind === 'ladder') {
-      const h = c.top - y0 + 0.55;
-      for (const s of [-0.24, 0.24]) I.box(yellow, Math.abs(tx) * 0.05 + 0.05, h, Math.abs(tz) * 0.05 + 0.05, fx + tx * s, y0 + h / 2, fz + tz * s);
-      for (let y = y0 + 0.3; y < c.top + 0.05; y += 0.3) I.box(metal, Math.abs(tx) * 0.48 + 0.035, 0.035, Math.abs(tz) * 0.48 + 0.035, fx, y, fz);
-      // grab hoops over the lip
-      for (const s of [-0.24, 0.24]) I.box(yellow, Math.abs(dx) * 0.32 + 0.05, 0.05, Math.abs(dz) * 0.32 + 0.05, fx + tx * s + dx * 0.16, y0 + h, fz + tz * s + dz * 0.16);
+    if (c.kind === 'ladder' || c.kind === 'net') {
+      const h = c.top - y0 + 0.55, net = c.kind === 'net', sideM = net ? rust : yellow, rungM = net ? rust : metal;
+      const span = net ? 0.62 : 0.48;
+      for (const s of [-0.24, 0.24]) I.box(sideM, Math.abs(tx) * 0.05 + 0.05, h, Math.abs(tz) * 0.05 + 0.05, fx + tx * s, y0 + h / 2, fz + tz * s);
+      if (net) I.box(rust, Math.abs(tx) * 0.04 + 0.04, h, Math.abs(tz) * 0.04 + 0.04, fx, y0 + h / 2, fz); // centre rope
+      for (let y = y0 + 0.28; y < c.top + 0.05; y += net ? 0.28 : 0.3) I.box(rungM, Math.abs(tx) * span + 0.03, 0.03, Math.abs(tz) * span + 0.03, fx, y, fz);
+      for (const s of [-0.24, 0.24]) I.box(sideM, Math.abs(dx) * 0.32 + 0.05, 0.05, Math.abs(dz) * 0.32 + 0.05, fx + tx * s + dx * 0.16, y0 + h, fz + tz * s + dz * 0.16);
     } else {
       const len = c.top - y0 + 0.2;
       const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, len, 6), pipeMat); pipe.position.set(fx + dx * 0.04, y0 + len / 2, fz + dz * 0.04); scene.add(pipe);
@@ -337,7 +257,7 @@ export function buildTraversal(scene, { walls, hazardMat }) {
     const g = coopGeom(c), tx = -g.dz, tz = g.dx;
     boxAt(scene, Math.abs(tx) * 1.8 + 0.12, 0.12, Math.abs(tz) * 1.8 + 0.12, hazardMat, c.x - g.dx * 0.02, c.top - 0.06, c.z - g.dz * 0.02);
     const dec = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.5), new THREE.MeshBasicMaterial({ map: coopTex, transparent: true, opacity: 0.6, depthWrite: false }));
-    dec.rotation.x = -Math.PI / 2; dec.rotation.z = -c.a - Math.PI / 2; dec.position.set(g.base.x - g.dx * 0.25, 0.04, g.base.z - g.dz * 0.25); scene.add(dec);
+    dec.rotation.x = -Math.PI / 2; dec.rotation.z = -c.a - Math.PI / 2; dec.position.set(g.base.x - g.dx * 0.25, (c.y0 || 0) + 0.04, g.base.z - g.dz * 0.25); scene.add(dec);
     hot.push({ mesh: dec, kind: 'coop', i });
   });
   // grapple walls: orange anchor plate + scuffed boot-mark stripe down the face, foot ring on the floor, top ring
