@@ -29,77 +29,11 @@
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, L1, L2, L3 as H3, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { TRAV, L3 as H3, WALKS, RAILS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { MAP, MAP_NAME, WALLS, TUNNELS, TUNNEL_H, TUNNEL_WALL, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, PICKUPS, PADS } from './mapcompile.js';
 
-// ---------------------------------------------------------------- level data (vertical relay station - see traverse.js)
-// Layers: ground (0), L1 catwalks / low roofs (3.2), L2 towers / bridges (6.4), L3 penthouse (9.6, east cooling wing).
-// The original yard is still the centre. Four wings sit outside the old fence, each through a gate (and, where noted,
-// a culvert): south motor pool, east cooling plant, west service yard, north dock.
-// Playable extents, used by the radar, the ground plane and co-op spot culling.
-const MAP = { x1: -38, x2: 40, z1: -30, z2: 32 };
-// Solid boxes below are walkable on top (crates + buildings); open decks (WALKS) live in traverse.js.
-const B = (cx, cz, w, d, h, kind = 'crate') => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind });
-const WALLS = [
-  // outer fence of the original yard, split so each wing has a gate (and the culverts have a mouth-sized hole)
-  B(-13.5, -15.5, 15, 1, 2.5, 'wall'), B(11.5, -15.5, 19, 1, 2.5, 'wall'),                         // north: gap x -6..2 (dock)
-  B(-19.5, 15.5, 3, 1, 2.5, 'wall'), B(-2.3, 15.5, 15.4, 1, 2.5, 'wall'), B(13.9, 15.5, 14.2, 1, 2.5, 'wall'), // south: gate x -18..-10, culvert mouth x 5.4..6.8
-  B(-20.5, -9.1, 1, 13.8, 2.5, 'wall'), B(-20.5, -0.4, 1, 0.8, 2.5, 'wall'), B(-20.5, 11.5, 1, 9, 2.5, 'wall'), // west: crawl z -2.2..-0.8, gate z 0..7
-  B(20.5, -7, 1, 18, 2.5, 'wall'), B(20.5, 14, 1, 8, 2.5, 'wall'),                                   // east: gate z 2..10
-  // south motor pool (z 16..32)
-  B(-20.5, 24, 1, 16, 2.5, 'wall'), B(20.5, 24, 1, 16, 2.5, 'wall'), B(0, 31.5, 42, 1, 2.5, 'wall'),
-  B(-6, 24, 8, 6, L1, 'building'),                                                                   // MOTOR SHED
-  B(-18, 20.5, 1.5, 1.4, 1), B(6, 24.5, 1.4, 1.4, 1), B(4, 27.5, 1.6, 1.6, 1), B(14, 24, 1.5, 1.2, 1),
-  // east cooling plant (x 21..40)
-  B(30.5, -1.5, 19, 1, 2.5, 'wall'), B(30.5, 17.5, 19, 1, 2.5, 'wall'), B(39.5, 8, 1, 20, 2.5, 'wall'),
-  B(33.5, 8.1, 7, 7, L2, 'building'),                                                                // COOLING TOWER
-  B(33, 7.95, 3.2, 2.9, H3, 'building'),                                                             // L3 PENTHOUSE on the tower roof
-  B(24, 12, 1.6, 1.4, 1), B(24.5, 6.2, 1.4, 1.4, 1), B(38.2, 8, 1.2, 1.2, 1), B(28, 15.4, 1.5, 1.2, 1),
-  // west service yard (x -36..-21)
-  B(-36.5, 5, 1, 18, 2.5, 'wall'), B(-29, -3.5, 16, 1, 2.5, 'wall'), B(-29, 13.5, 16, 1, 2.5, 'wall'),
-  B(-29.2, 4.3, 6, 5, L1, 'building'),                                                               // SERVICE SHED
-  B(-32.7, -0.5, 4.2, 3.4, L2, 'building'),                                                          // LOOKOUT
-  B(-25, 11.2, 1.4, 1.2, 1), B(-34.2, 5, 1.2, 1.2, 1), B(-26, -2.2, 1.3, 1.2, 1),
-  // north dock (z -28..-16)
-  B(4, -29.5, 24, 1, 2.5, 'wall'), B(-7.5, -23, 1, 14, 2.5, 'wall'), B(15.5, -23, 1, 14, 2.5, 'wall'),
-  B(0, -24.8, 4.4, 3.2, L2, 'building'),                                                             // CRANE CAB
-  B(11.2, -19.4, 1.6, 1.2, 1), B(-6.2, -20, 1.3, 1.3, 1), // pier cover, clear of the slip's south bank
-  // extraction compound (north-east), door between the two switches
-  B(7, -8.25, 6, 0.5, 2.5, 'wall'), B(16.5, -8.25, 7, 0.5, 2.5, 'wall'), B(4.25, -13.925, 0.5, 2.65, 2.5, 'wall'), B(4.25, -9.325, 0.5, 2.15, 2.5, 'wall'), // gap = T3 drain
-  B(11.5, -8.25, 3, 0.5, 2.5, 'door'),
-  // ---- L2 towers (6.4)
-  B(-17.5, -12, 4, 5, L2, 'building'),      // PUMP TOWER (west): scaffold ladder / south-face grapple; pipe bridge east
-  B(-4.25, -13, 3.5, 3, L2, 'building'),    // COMMS HUT: far end of the pipe bridge, rappel off its south face
-  B(0, 2, 4, 1, L2, 'building'), B(0, 4.5, 4, 1, L2, 'building'), // MAST (atrium centre), split by the crawl underpass
-  B(11.25, 3.25, 4.5, 5.5, L2, 'building'), // TANK HOUSE (east): drainpipe, grapples from the tank bridge / balcony
-  B(16.2, -12.4, 4.4, 4.4, L2, 'building'), // EXFIL TOWER (inside the compound): extraction pad on the roof
-  // ---- L1 roofs (3.2)
-  B(-8, -7.8, 6, 1.4, L1, 'building'), B(-8, -4.2, 6, 1.4, L1, 'building'), // barracks, split by the crawlspace
-  B(3, -2.9, 2.4, 1.6, L1, 'building'),     // SIGNAL SHED: co-op boost wall on its south face, roof joins the gantry
-  // ---- crates (low cover; the stacked pairs are mantle steps up to a catwalk)
-  B(-14, 0, 2, 2, 1), B(-13, 6, 1.5, 1.5, 1), B(-10, 11, 1.2, 2.5, 1), B(-4, 11.5, 1.5, 1.5, 1), B(1, 11, 2.4, 1.2, 1),
-  B(8, 10.5, 2.4, 1.2, 1), B(16, 9, 2, 2, 1), B(-2, -4.5, 1.5, 2, 1), B(9, -3, 1.5, 1.5, 1), B(9, -0.6, 1.4, 1.2, 1),
-  B(-4.6, 5.8, 1, 1, 1), B(4.3, 1, 0.8, 0.8, 1),                       // atrium floor cover (under the ring)
-  B(4.4, 8.9, 1.2, 1.2, 2.2), B(4.4, 10.4, 1.2, 1.2, 1),               // steps -> atrium ring (SE)
-  B(12.05, 7.85, 1.1, 1.1, 2.2), B(12.05, 9.15, 1.1, 1.1, 1),          // steps -> tank balcony
-];
-for (const [x, z, h] of DECK_POSTS) WALLS.push(B(x, z, 0.16, 0.16, h, 'post')); // catwalk / bridge legs
-// ---- TUNNELS: interior volumes (x1..x2, z1..z2) are the FPS trigger + guard no-go zones. axis = direction of travel.
-// Side walls (kind 'tunnel', tall enough to block sight) are generated into WALLS; both ends are open mouths.
-const TUNNEL_H = 1.25, TUNNEL_WALL = 0.3;
-const TUNNELS = [
-  { name: 'WEST CULVERT', x1: -19.8, x2: -18.2, z1: -3, z2: 9.5, axis: 'z', roof: 0.2 },      // spawn yard <-> north-west yard
-  { name: 'BARRACKS CRAWLSPACE', x1: -11.6, x2: -4.4, z1: -6.8, z2: -5.2, axis: 'x', roof: L1 - TUNNEL_H }, // under/through the barracks
-  { name: 'COMPOUND DRAIN', x1: 0.6, x2: 7.6, z1: -12.3, z2: -10.7, axis: 'x', roof: 0.2 },  // west yard <-> inside the extraction compound
-  { name: 'MAST UNDERPASS', x1: -2, x2: 2, z1: 2.5, z2: 4, axis: 'x', roof: L2 - TUNNEL_H },  // through the base of the atrium mast
-  { name: 'ANNEX CULVERT', x1: 5.4, x2: 6.8, z1: 12.2, z2: 20.4, axis: 'z', roof: 0.2 },       // south yard -> motor pool (mouth-width hole in the fence)
-  { name: 'COOLING CULVERT', x1: 16.2, x2: 26.4, z1: 6.9, z2: 8.3, axis: 'x', roof: 0.2 },     // east yard -> cooling plant, under the spine
-  { name: 'SERVICE CRAWL', x1: -24.6, x2: -17.4, z1: -2.2, z2: -0.8, axis: 'x', roof: 0.2 },   // west yard -> service wing, through the west fence
-];
-for (const t of TUNNELS) {
-  const W = TUNNEL_WALL, h = TUNNEL_H + 0.2;
-  if (t.axis === 'z') WALLS.push({ x1: t.x1 - W, x2: t.x1, z1: t.z1, z2: t.z2, h, kind: 'tunnel' }, { x1: t.x2, x2: t.x2 + W, z1: t.z1, z2: t.z2, h, kind: 'tunnel' });
-  else WALLS.push({ x1: t.x1, x2: t.x2, z1: t.z1 - W, z2: t.z1, h, kind: 'tunnel' }, { x1: t.x1, x2: t.x2, z1: t.z2, z2: t.z2 + W, h, kind: 'tunnel' });
-}
+// Level geometry is the compiled map (public/leveldata.js, or a map the editor saved).
+// The Relay Yard still compiles to the same boxes, water, guards and climbs as before.
 // index of the tunnel containing (x,z), or -1. inset shrinks the volume at the open ends (hysteresis for the camera switch).
 function tunnelAt(x, z, inset = 0) {
   for (let i = 0; i < TUNNELS.length; i++) {
@@ -111,62 +45,9 @@ function tunnelAt(x, z, inset = 0) {
 // guards treat tunnel interiors (+ a lip at each mouth) as solid so they never crawl in after you
 const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0), x2: t.x2 + (t.axis === 'x' ? 0.3 : 0),
   z1: t.z1 - (t.axis === 'z' ? 0.3 : 0), z2: t.z2 + (t.axis === 'z' ? 0.3 : 0), h: 0, kind: 'block' }));
-// SWITCHES: y = floor height of the pad. One is on the ground by the red door, the other up on the RELAY PLATFORM (L1).
-const SWITCHES = [{ x: 6.5, z: -6.6, y: 0 }, { x: 17, z: -5.5, y: L1 }]; // ~10.5 apart -> one person can't hit both in time
-const EXTRACT = { x: 16.2, z: -12.4, y: L2, r: 1.8 };  // helipad ring on the EXFIL TOWER roof
-// 5 spawn slots in the south-west yard (P1 host .. P5), spread a little so nobody overlaps and all start equally far
-const SPAWNS = [{ x: -17, z: 13 }, { x: -15.5, z: 13.2 }, { x: -14, z: 12.6 }, { x: -16.4, z: 11.6 }, { x: -12.6, z: 13.4 }];
-const NP = SPAWNS.length; // max players per room (server.js MAX_GUESTS + 1)
-// GUARDS: y = the floor a guard lives on. Elevated guards (y > 0) stay on their decks: `area` = the walkable rects they
-// may stand in (overlapping where decks join, so they can walk across the seams); they chase / investigate to the
-// nearest edge, then hold there and use their FAMAS / vertical vision. 5 guards (was 3): 3 of them on decks / roofs; the
-// The original north yard stays watched from the L2 overwatch. New wings each have their own patrols.
-// `home` clamps a ground guard's search so he doesn't path across the whole expanded yard and get stuck in a wing.
-const RING_AREA = [{ x1: -7, x2: 5, z1: -1.6, z2: -0.4 }, { x1: -7, x2: 5, z1: 7, z2: 8.2 }, { x1: -7, x2: -5.8, z1: -1.6, z2: 8.2 }, { x1: 3.8, x2: 5, z1: -1.6, z2: 8.2 }];
-const GANTRY_AREA = [{ x1: 4.2, x2: 17.5, z1: -3.3, z2: -2.3 }, { x1: 14.5, x2: 19.6, z1: -7.6, z2: -3.3 }, { x1: 14.5, x2: 17.5, z1: -7.6, z2: -2.3 }];
-const WEST_L2_AREA = [{ x1: -19.5, x2: -15.5, z1: -14.5, z2: -9.5 }, { x1: -16, x2: -5.5, z1: -14, z2: -13 }, { x1: -6, x2: -2.5, z1: -14.5, z2: -11.5 }];
-const ANNEX_L1 = [{ x1: -9.7, x2: -1.9, z1: 21.5, z2: 26.5 }, { x1: -2.3, x2: 13.5, z1: 23.05, z2: 23.95 }];
-const EAST_L1 = [
-  { x1: 20.6, x2: 30.1, z1: 5.35, z2: 6.35 }, { x1: 24.55, x2: 25.65, z1: 2.5, z2: 6.45 },
-  { x1: 24.4, x2: 35.6, z1: 2.35, z2: 3.5 }, { x1: 28.45, x2: 29.55, z1: 3.1, z2: 13.05 },
-  { x1: 28.5, x2: 36.8, z1: 11.85, z2: 13.1 },
-];
-const EAST_L2 = [
-  { x1: 30.35, x2: 36.65, z1: 4.85, z2: 6.5 }, { x1: 30.35, x2: 36.65, z1: 9.4, z2: 11.25 },
-  { x1: 30.35, x2: 31.25, z1: 6.1, z2: 9.8 }, { x1: 34.7, x2: 36.65, z1: 6.1, z2: 9.8 },
-];
-const DOCK_L1 = [{ x1: -4.8, x2: 6.6, z1: -22.5, z2: -17.7 }];
-const LOOK_L2 = [{ x1: -34.4, x2: -31.0, z1: -1.8, z2: 0.8 }];
-const GUARDS = [
-  { y: 0, home: [-8, 8, -2, 10], path: [[-3.2, 0.6], [3, 0.6], [3, 6.2], [-3.2, 6.2]] },             // atrium floor, around the mast
-  { y: L1, area: RING_AREA, path: [[-6.4, -1], [4.4, -1], [4.4, 7.6], [-6.4, 7.6]] },                // atrium ring catwalk
-  { y: 0, home: [0, 19.5, -8, -3], path: [[2, -5.4], [19, -5.4]] },                                  // switch lane (under the gantry)
-  { y: L1, area: GANTRY_AREA, path: [[5, -2.8], [16, -2.8], [16, -6.8], [19, -6.8], [16, -6.8], [16, -2.8]] }, // gantry + relay platform
-  { y: L2, area: WEST_L2_AREA, path: [[-17.5, -12], [-15, -13.5], [-4.2, -13.5], [-4.2, -12.2], [-4.2, -13.5], [-15, -13.5]] }, // L2 overwatch
-  { y: 0, home: [-19, -9, -6, 11], path: [[-16, -2], [-12, 2], [-16, 6], [-13, 8], [-16, 2]] },     // west yard (original), between culvert and barracks
-  { y: 0, home: [-20, 20, 16.8, 30.5], path: [[-16, 18.2], [-16, 29], [13, 29], [13, 20.6], [-1, 20.6], [-1, 18.2]] }, // motor pool
-  { y: L1, area: ANNEX_L1, path: [[-8, 24], [-3, 24], [6, 23.5], [12, 23.5], [6, 23.5], [-6, 23.2]] }, // shed roof + annex catwalk
-  { y: 0, home: [21.5, 38.5, 2.85, 16.5], path: [[22.2, 4.2], [27.5, 4.2], [27.5, 14.2], [37.2, 14.2], [37.2, 3.45], [27.5, 3.45]] }, // cooling yard (basin is the north fence)
-  { y: L1, area: EAST_L1, path: [[22, 5.85], [29, 5.85], [29, 12.4], [34, 12.4], [29, 12.4], [29, 2.8], [33, 2.8], [25, 2.8], [25, 5.85]] }, // east catwalks
-  { y: L2, area: EAST_L2, path: [[33, 5.5], [35.5, 5.5], [35.8, 8], [35.5, 10.4], [32, 10.4], [30.7, 8], [30.7, 5.6]] }, // cooling tower roof, around the penthouse
-  { y: 0, home: [-35.2, -21.5, -2.6, 12.5], path: [[-23, 3], [-23, 10], [-34, 10], [-34, 8], [-24, 8], [-24, 0.5], [-28, 0.5], [-23, 1]] }, // service yard
-  { y: L2, area: LOOK_L2, path: [[-33.5, -1], [-31.5, -1], [-31.5, 0.3], [-33.5, 0.3]] },            // lookout roof
-  { y: 0, home: [-6.8, 14.2, -21.6, -16.6], path: [[-5.2, -18.3], [11.4, -18.3], [12.6, -20.7], [3.2, -21.15], [-4.6, -20.75], [-5.4, -19]] }, // dock pier (slip to the north is water)
-  { y: L1, area: DOCK_L1, path: [[-3, -19], [5, -19], [5, -22], [-3, -22]] },                        // dock rack
-];
-const GUARD_PATHS = GUARDS.map((g) => g.path);
-// Surface-swim volumes (world XZ). The visible sheet sits on the shore (y ≈ 0); the mesh sinks into a cut basin.
-// Dock: two slips around the crane cab, joined along the north fence, with a dry pad on the crane's north face
-// (grapple foot). Cooling: a channel along the north fence, under the catwalk, beside the yard patrol.
-const WATERS = [
-  { name: 'DOCK SLIP', x1: -6.55, x2: -2.15, z1: -28.6, z2: -23.05 },
-  { name: 'DOCK SLIP', x1: 2.15, x2: 14.2, z1: -28.6, z2: -23.05 },
-  { name: 'DOCK SLIP', x1: -2.28, x2: -1.02, z1: -28.6, z2: -26.48 },
-  { name: 'DOCK SLIP', x1: 1.02, x2: 2.28, z1: -28.6, z2: -26.48 },
-  { name: 'DOCK SLIP', x1: -1.14, x2: 1.14, z1: -28.6, z2: -27.38 },
-  { name: 'COOLING BASIN', x1: 22.3, x2: 38.5, z1: -0.92, z2: 2.4 },
-];
 const waterVolume = (x, z, pad = 0) => WATERS.find((w) => x >= w.x1 - pad && x <= w.x2 + pad && z >= w.z1 - pad && z <= w.z2 + pad) || null;
+const GUARD_PATHS = GUARDS.map((g) => g.path);
+const NP = SPAWNS.length; // max players per room (server.js MAX_GUESTS + 1)
 const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
 // guards: patrol 1.8 -> 1.4, investigate 2.6 -> 2.2, chase 4.6 -> 4.1 (still slower than a running player)
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
@@ -183,62 +64,26 @@ const SWIM = { speed: 1.9, dive: 1.25, accel: 7.5, decel: 5.2, turn: 4.6, diveT:
 const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
 const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
 // vertical vision (host): anyone off the ground (roof, gantry, ladder, rope) is checked in 3D from the guard's eye.
-//   upFov / upFovAlert = how far above eye level a guard looks (rad, ~49 / ~60 deg). Straight overhead is blind.
-//   high / rope = range scale for a target up on a roof / gantry vs hanging on a rope (silhouetted against the wall).
-//   steep = range lost at the top of the vertical cone (looking up hard = shorter sight). slowUp = meter fill lost there,
-//   calmUp = extra meter scale while CALM (a patrolling guard isn't scanning rooftops). Roof edges / decks occlude.
-// downFov = how far below eye level a guard up on a deck looks (rad, ~57 deg): right under a catwalk is blind.
-// downK = how much of the drop counts toward range when he looks down (overwatch on a tower covers the yard below).
 const SIGHT_V = { eye: 1.6, downFov: 1.0, downK: 0.5, upFov: 0.85, upFovAlert: 1.05, high: 0.85, rope: 0.95, steep: 0.35, slowUp: 0.45, calmUp: 0.8,
   chest: { stand: 1.2, crouch: 0.75, prone: 0.25 } };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
-// takedown: must be within range and inside the guard's rear arc (|angle off his facing| > behind -> ~+-64deg behind him).
-// Host re-checks guest requests with the looser 'lenient' numbers to absorb lag.
 const TD = { range: 1.45, behind: 1.95, time: 2.2, gap: 0.42, lenRange: 2.3, lenBehind: 1.55 };
-// handgun: 12 rounds per mission, slow-ish fire, auto-aim cone in front, gunshot noise pulls guards in this radius
 const GUN = { ammo: 12, cooldown: 0.5, range: 13, cone: 0.35, fpsCone: 0.14, noise: 12, drawTime: 2.0,
-  // P-9 RECOIL / BLOOM: every shot adds `bloom` (radians of random throw) that bleeds off slowly while the gun is up and
-  // fast once you stop firing. The auto-aim still picks the target, but the round goes out at aim + random(+-spread)
-  // and only connects if that line still crosses the guard's body -> spamming the trigger at range misses.
   spread0: 0.02, bloom: 0.085, bloomMax: 0.28, bloomDecay: 0.1, bloomRest: 0.35, moveSpread: 0.03, bodyW: 0.34,
   kickShake: 0.14, wobble: 1 };
-// PLAYER HEALTH + ENEMY FAMAS. Getting spotted only raises the alert; you die (GAME OVER) when your LIFE hits 0.
-// Guards in ALERT chase you and, with line of sight, plant their feet, shoulder the FAMAS (aim delay), then fire
-// 3-round bursts with a cooldown. Rounds: random spread + cyclic climb (later rounds of a burst go high: they miss at
-// range / vs low targets) + extra spread vs a moving target. Up close a chasing guard also clubs you (melee).
 const HP_MAX = 100;
 const FAMAS = { range: 12, minR: 1.4, aim: 0.5, burst: 3, rof: 0.085, cool: 0.85, coolRand: 0.7, dmg: 9, spread: 0.05,
   climbYaw: 0.035, climb: 0.05, moveSpread: 0.06, noise: 14, hitInv: 0, melee: 20, meleeR: 0.95, meleeInv: 1.1, turn: 9 };
-// PLAYER WEAPONS (key = what rides the wire as sh.w; sd = P-9 with the suppressor). noise = radius guards hear the shot.
 const WPN = {
   p9:  { ammo: 'p9', cd: GUN.cooldown, range: GUN.range, spread0: GUN.spread0, bloom: GUN.bloom, bloomMax: GUN.bloomMax, noise: GUN.noise, kick: GUN.kickShake, wob: 1 },
   sd:  { ammo: 'p9', cd: GUN.cooldown, range: GUN.range, spread0: GUN.spread0, bloom: GUN.bloom, bloomMax: GUN.bloomMax, noise: 3, kick: 0.08, wob: 0.8, quiet: true },
   fr5: { ammo: 'fr5', cd: 0.4, burst: 3, rof: 0.09, range: 15, spread0: 0.03, bloom: 0.05, bloomMax: 0.32, noise: 16, kick: 0.12, wob: 0.6, rifle: true },
   mkt: { ammo: 'mkt', cd: 1.1, range: 11, spread0: 0.012, bloom: 0.04, bloomMax: 0.18, noise: 2.5, kick: 0.05, wob: 0.5, quiet: true, tranq: true },
 };
-const TRANQ = { sleep: 30 };                                   // MK-T dart: guard sleeps this long (then wakes + investigates)
-const STUN = { range: 7, r: 5, fuse: 1.2, ko: 7, flight: 0.6 }; // stun grenade: throw distance, blast radius, fuse, stun time
-const C4 = { kill: 3.2, pr: 3, pdmg: 50, noise: 18, max: 12 };  // kill radius for guards, player damage radius / max dmg
+const TRANQ = { sleep: 30 };
+const STUN = { range: 7, r: 5, fuse: 1.2, ko: 7, flight: 0.6 };
+const C4 = { kill: 3.2, pr: 3, pdmg: 50, noise: 18, max: 12 };
 const RATION_HP = 40, STIM_T = 30;
-// map pickups (feet y from groundAt). n = rounds / count; re = respawns after `re` seconds (ammo), else once per mission.
-// locker = tall cabinet instead of the olive crate. Nothing here is free at spawn — the south gate is the first kit.
-const PICKUPS = [
-  { id: 'fr5', n: 30, x: -6.4, z: 3.5, lv: 3.2 }, { id: 'mkt', n: 6, x: -8, z: -7.8, lv: 3.2 }, { id: 'stun', n: 2, x: 8, z: 9, lv: 0, re: 45 },
-  { id: 'c4', n: 2, x: 11.25, z: 3.25, lv: 6.4 }, { id: 'scope', n: 1, x: -17.5, z: -12, lv: 6.4 }, { id: 'supp', n: 1, x: -4.25, z: -13, lv: 6.4 },
-  { id: 'ration', n: 1, x: 3, z: -2.9, lv: 3.2 }, { id: 'ration', n: 1, x: 14, z: 12, lv: 0, re: 60 }, { id: 'stim', n: 1, x: 10, z: -2.8, lv: 3.2 },
-  { id: 'p9', n: 12, x: 1, z: 9, lv: 0, re: 40, ammo: 1 }, { id: 'fr5', n: 30, x: 17, z: -5.5, lv: 3.2, re: 45, ammo: 1 },
-  // south motor pool — first things you can reach from the spawn yard
-  { id: 'p9', n: 12, x: -15.2, z: 17.4, lv: 0, locker: 1 }, { id: 'stun', n: 2, x: -13.2, z: 19.8, lv: 0 },
-  { id: 'ration', n: 1, x: -17.2, z: 22.4, lv: 0, locker: 1 }, { id: 'box', n: 1, x: 10.5, z: 26.5, lv: 0, locker: 1 },
-  { id: 'stim', n: 1, x: 8, z: 23.5, lv: L1 }, { id: 'p9', n: 12, x: 12.5, z: 27.5, lv: 0, re: 40, ammo: 1 },
-  // east cooling plant
-  { id: 'mkt', n: 4, x: 33.2, z: 5.35, lv: L2 }, { id: 'c4', n: 2, x: 33, z: 7.9, lv: H3 },
-  { id: 'fr5', n: 30, x: 33, z: 12.45, lv: L1, re: 45, ammo: 1 }, { id: 'ration', n: 1, x: 23.4, z: 10.2, lv: 0, re: 55 },
-  // west service + north dock
-  { id: 'stun', n: 1, x: -30.5, z: 9.6, lv: 0 }, { id: 'stim', n: 1, x: -32.6, z: -0.3, lv: L2 },
-  { id: 'ration', n: 1, x: -23.6, z: 5.2, lv: 0, re: 50 },
-  { id: 'fr5', n: 30, x: 0.2, z: -24.7, lv: L2 }, { id: 'c4', n: 1, x: 8.2, z: -19.4, lv: 0, locker: 1 },
-];
 // One bundle per guard, rolled on the host the moment he goes down for good (not on a stun / tranq nap) and synced
 // as g.loot. Loud kills favour the FAMAS mag (FR-5). Takedowns still hand you the rifle sometimes, but bias toward
 // the quiet kit (suppressor, darts, sidearm, ration, box). Index 0 is "no drop yet".
@@ -489,10 +334,10 @@ function xzSlab(x1, z1, x2, z2, holes) {
 const ground = new THREE.Mesh(xzSlab(MAP.x1, MAP.z1, MAP.x2, MAP.z2, WATERS), mat(0x26352e));
 scene.add(ground);
 const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236); grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
-// wing floors sit a hair above the yard so the new ground reads as a different pad (basins stay open)
-for (const [x, z, w, d, c] of [[0, 23.5, 40, 15, 0x243028], [30, 8, 18, 18, 0x2a332c], [-28.5, 5, 15, 16, 0x2c3428], [4, -22.5, 22, 13, 0x2a3036]]) {
-  const fl = new THREE.Mesh(xzSlab(x - w / 2, z - d / 2, x + w / 2, z + d / 2, WATERS), mat(c));
-  fl.position.y = 0.012; scene.add(fl);
+// painted ground pads (wing floors, compound). Water basins stay cut out of them.
+for (const p of PADS) {
+  const fl = new THREE.Mesh(xzSlab(p.x1, p.z1, p.x2, p.z2, WATERS), mat(p.color));
+  fl.position.y = p.y || 0.012; scene.add(fl);
 }
 // ---- water: a cut basin (floor + shore walls) and a PS1 sheet on the shoreline. Swimmers sink into the cut.
 const BASIN = -1.88, SURFACE = 0.055;
@@ -570,9 +415,6 @@ function waterSink(mesh, code, moving, dt) {
   const bob = (code === 1 ? Math.sin(t * (moving ? 6.2 : 2.3)) * (moving ? 0.045 : 0.028) : Math.sin(t * 2.6) * 0.018) * Math.min(1, mesh.sink);
   return mesh.sink - bob;
 }
-const compoundFloor = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.5), mat(0x2f3a44));
-compoundFloor.rotation.x = -Math.PI / 2; compoundFloor.position.set(12.25, 0.02, -11.75); scene.add(compoundFloor);
-
 const COLORS = { wall: 0x56636b, building: 0x4a5866, crate: 0x7a6440, door: 0x9a2a2a, tunnel: 0x3a4246, post: 0x6a4a30 };
 // crunchy 32px textures for the tunnels (same PS1 vibe as the characters)
 function pixTex(size, draw, rep = [1, 1]) {
@@ -591,13 +433,13 @@ const hazardTex = pixTex(16, (x, S) => { for (let i = -S; i < S * 2; i += 8) { x
 // tiled copy of the concrete so long tunnel pieces keep 1 texel ~ 5cm instead of stretching one 32px tile
 const tiled = (u, v) => { const t = concreteTex.clone(); t.repeat.set(Math.max(1, Math.round(u)), Math.max(1, Math.round(v))); t.needsUpdate = true; return t; };
 const concreteMat = (color, u, v) => new THREE.MeshLambertMaterial({ map: tiled(u, v), color, flatShading: true });
-let doorMesh = null;
+const doorMeshes = [];
 // CUTAWAY: tall buildings fade to a ghost while they hide a player from the top-down camera (see updateCutaway)
 const cutaway = [];
 for (const w of WALLS) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1, w.h, w.z2 - w.z1), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(COLORS[w.kind]));
+  const m = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.05, w.x2 - w.x1), Math.max(0.05, w.h), Math.max(0.05, w.z2 - w.z1)), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(COLORS[w.kind] || 0x666666));
   m.position.set((w.x1 + w.x2) / 2, w.h / 2, (w.z1 + w.z2) / 2); scene.add(m);
-  if (w.kind === 'door') doorMesh = m;
+  if (w.kind === 'door') doorMeshes.push(m);
   if (w.kind === 'building' && w.h > 2) cutaway.push({ b: w, m, k: 1 });
 }
 // tunnel dressing: dark floor, roof slab, hazard-striped mouth frames, dim ceiling lamps with fake light pools
@@ -2243,7 +2085,15 @@ function setRoster(slots) {
 }
 
 // ---------------------------------------------------------------- lobby / UI
-function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
+function keptQuery(extra) {
+  const p = new URLSearchParams();
+  if (qs.get('map')) p.set('map', qs.get('map'));
+  if (qs.get('server')) p.set('server', qs.get('server'));
+  if (extra) for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+function joinLink() { return location.origin + location.pathname + keptQuery({ room: roomCode }); }
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false; mySlot = 0; fpsOn = false; syncViewButton();
   for (const o of others) { o.on = false; o.tk = ''; }
@@ -2259,7 +2109,7 @@ function enterGame() {
   }
   applyPlayerLooks();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
-  history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
+  history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + keptQuery());
 }
 $('btnHost').onclick = () => {
   unlockAudio(); role = 'host'; solo = $('soloBox').checked; roomCode = '';
@@ -2278,11 +2128,37 @@ $('btnShare').onclick = async () => {
     else { await navigator.clipboard.writeText(url); toast('Link copied', 1200, '#7fff9f'); }
   } catch { prompt('Send this link to your partner:', url); }
 };
+if (qs.get('solo') === '1' && $('soloBox')) $('soloBox').checked = true;
 if (qs.get('room')) {
   $('codeInput').value = qs.get('room').toUpperCase().slice(0, 4);
   $('btnJoin').textContent = 'JOIN ' + $('codeInput').value;
   $('lobbyMsg').textContent = 'Tap JOIN to enter your partner\'s mission.';
+} else if (qs.get('map') === 'playtest') {
+  $('lobbyMsg').textContent = 'Playtest map on this computer. Solo is ticked — a joined partner would not see this map.';
 }
+async function fillMaps() {
+  const sel = $('mapPick');
+  if (!sel) return;
+  const cur = window.__DS_MAP_ID || 'yard';
+  const add = (id, name) => { const o = document.createElement('option'); o.value = id; o.textContent = name; sel.appendChild(o); };
+  sel.textContent = '';
+  add('yard', MAP_NAME);
+  try {
+    const r = await fetch('/api/maps');
+    if (r.ok) {
+      const j = await r.json();
+      for (const m of j.maps || []) if (m && m.id && m.id !== 'yard') add(m.id, m.name || m.id);
+    }
+  } catch { /* built-in yard still plays if the list can't load */ }
+  if (![...sel.options].some((o) => o.value === cur)) add(cur, window.__DS_MAP_NAME || cur);
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : 'yard';
+  sel.onchange = () => {
+    const p = new URLSearchParams(location.search);
+    p.set('map', sel.value);
+    location.search = p.toString();
+  };
+}
+fillMaps();
 let toastTimer = 0;
 function toast(msg, ms = 1500, color = '#fff') {
   const t = $('toast'); t.textContent = msg; t.style.color = color; t.classList.remove('hidden');
@@ -2336,7 +2212,7 @@ $('ovBtn').onclick = () => {
 $('ovMenu').onclick = () => { // leave the room and go back to Host/Join
   net.fatal = true; if (net.ws) net.ws.close();
   roomCode = ''; showLobby(role === 'host' && !solo ? 'Room closed. Host a new mission or join one.' : '');
-  history.replaceState(null, '', location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
+  history.replaceState(null, '', location.pathname + keptQuery());
 };
 
 // ---------------------------------------------------------------- radar (top-right, Soliton-style)
@@ -2792,8 +2668,10 @@ function render(dt) {
     if (!live) m.q.visible = m.ex.visible = false;
   });
   // door + switches + extract
-  doorMesh.position.y = THREE.MathUtils.lerp(doorMesh.position.y, world.door ? -1.2 : 1.25, Math.min(1, dt * 3));
-  doorMesh.material.color.setHex(world.door ? 0x2a8a4a : 0x9a2a2a);
+  for (const doorMesh of doorMeshes) {
+    doorMesh.position.y = THREE.MathUtils.lerp(doorMesh.position.y, world.door ? -1.2 : doorMesh.geometry.parameters.height / 2, Math.min(1, dt * 3));
+    doorMesh.material.color.setHex(world.door ? 0x2a8a4a : 0x9a2a2a);
+  }
   switchMeshes.forEach((s, i) => {
     const armed = world.sw[i] > 0;
     s.pad.material.color.setHex(world.door ? 0x30c060 : armed ? 0xffd040 : 0x557766);

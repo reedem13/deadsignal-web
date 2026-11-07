@@ -5,7 +5,8 @@
   "description": "Project Deadsignal - browser co-op stealth prototype (2 players, phone friendly)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node scripts/check-map.mjs"
   },
   "engines": { "node": ">=18" },
   "dependencies": {

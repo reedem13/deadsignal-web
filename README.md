@@ -99,17 +99,30 @@ Gear art + the table live in `public/gear.js`. Damage, sleep, stun, C4 and heali
 - No mid-game host migration: if the host quits, the guest waits until the host returns.
 - Placeholder art. Collision is box-based. Guards can sometimes give up a chase when a wall is in the way.
 
+## Map editor
+Open `/editor` on a desktop (a phone can keep playing; the editor is a separate page).
+
+1. The page opens the map the game is using. Until someone saves one, that is the **Relay Yard** (dock slip, cooling basin, south-yard spawns).
+2. Click a piece type, then click the ground. Drag to move. Yellow squares resize. The right panel sets height, facing, locker contents, and guard waypoints. Undo is on the top bar.
+3. **Download** / **Open** is a JSON file. **Playtest** launches the game on this map in solo, on this computer.
+4. **Use in the game** stores the map on the server and makes Host / Join play it. **Original map** points the game back at the Relay Yard. A server restart forgets a saved map; the yard is still built in, and Download keeps your file.
+
+The lobby **MAP** menu picks a map for this visit. It does not change what everyone else loads.
+
 ## Files
 ```
 server.js                 static file server + WebSocket room relay (/ws), heartbeat, reconnect-friendly rooms
 public/index.html         lobby, HUD, touch controls markup
 public/style.css          mobile-first UI (safe-area aware, no zoom/scroll)
 public/main.js            game: three.js scene, input, host simulation, netcode, radar, UI
+public/leveldata.js       Relay Yard map document (the default mission)
+public/mapcompile.js      map JSON → walls, water, guards, climbs
+public/editor.html        in-browser map editor (`/editor`)
 public/gear.js            weapons/items table, pixel font + red/grey pixel icons, MGS-style slot renderer
 public/vendor/three.module.js   three.js r160 (vendored, no CDN needed)
 public/manifest.webmanifest     Add-to-Home-Screen fullscreen
 ```
-Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `SIGHT_V` (vertical vision), `ALERT_TIME`, `SWITCH_WINDOW`, the guard patrol routes and the level boxes.
+Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `SIGHT_V` (vertical vision), `ALERT_TIME`, `SWITCH_WINDOW`. The yard itself is `public/leveldata.js`.
 
 ## Next steps
 - Swap the box characters for Blockbench glTF exports (`GLTFLoader`, nearest-filtered textures, separate parts parented to bones/groups for animation).
