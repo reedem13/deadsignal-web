@@ -8,12 +8,9 @@
 //   LINKS  : vertical grapple lines down a wall face (hook bites the lip, rope hangs straight down). TOP-ONLY:
 //            top ring = RAPPEL down, or haul a teammate who waits at the foot ring up the rope. No ground -> up grapple.
 import * as THREE from 'three';
-import { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS } from './mapcompile.js';
-
-export { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS };
 
 export const TRAV = {
-  climbSpeed: { ladder: 1.5, pipe: 1.15, net: 1.25 }, // m/s up / down. net = cargo net (same climb, wider mesh)
+  climbSpeed: { ladder: 1.5, pipe: 1.15, net: 1.2 }, // m/s up / down (cargo nets are a touch slower than a ladder)
   hangBelow: 1.1,   // feet this far under the top = hands on the lip -> auto vault
   mantleT: 0.62,    // crate / ledge mantle
   topVaultT: 0.7,   // ladder top -> roof
@@ -23,9 +20,16 @@ export const TRAV = {
   landNoise: 4.2, landDrop: 1.8, // standing drop from > landDrop m = thud guards can hear (crouch = silent hang-drop)
 };
 
-// Floor heights. Geometry itself lives in leveldata.js and is compiled by mapcompile.js,
-// so the map editor and the game share one yard.
-export const L1 = 3.2, L2 = 6.4, L3 = 9.6;
+// ---------------------------------------------------------------- OPEN OCEAN
+// Waterline is y = 0. L1 main decks, L2 bridges, L3 crane / funnel. HOLD is a cargo-pit floor.
+// BOAT is a low deck you mantle onto from a swim platform, then ladder up.
+//   MERIDIAN — north VLCC, east-west. Switches, red door, bridge extract, bilge crawl, cargo hold.
+//   CINDER — southwest product tanker, north-south. First P-9 is on her deck.
+//   ASH HOLD — southeast freighter. Open hold, deckhouse, crane tower.
+// Swim platforms, the pier and the bilge are dry pads in main.js (DRY). Ships do not touch.
+export const L1 = 3.2, L2 = 6.4, L3 = 9.6, HOLD = 1.15, BOAT = 1.2;
+import { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS } from './mapcompile.js';
+export { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS };
 for (const c of CLIMBS) c.y0 = c.y0 || 0;
 
 // derived points for a co-op wall: base = booster kneels here (back to the wall), step = climber's run-up spot,
@@ -35,6 +39,8 @@ export function coopGeom(c) {
   return { dx, dz, base: P(-0.45), step: P(-1.15), hang: P(-0.4), edge: P(0.35), land: P(0.65) };
 }
 
+// Vertical grapple lines. TOP-ONLY: the top ring rappels, or hauls a teammate off the foot ring.
+// Feet on a swim platform board by co-op haul; solo players take the ladder or the net beside it.
 // Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
 //   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom   [disabled: top-only grapple]
 //   DOWN entry (top ring): face the drop -> kneel + clamp the claw, feed the line -> turn, step back over the edge -> ON THE LINE at the top
@@ -51,7 +57,6 @@ export const GRAPPLE = {
 // phases (wire index = position in this list): entry phases depend on the direction you came from
 export const LINE_PH = ['sq', 'throw', 'set', 'over', 'line', 'mantle', 'land'];
 export const LINE_ENTRY = { gp: ['sq', 'throw', 'set'], rp: ['sq', 'set', 'over'] };
-/** duration of an automated phase (line = player-driven, no duration) */
 export function lineDur(k, ph) {
   if (ph === 'mantle') return GRAPPLE.mantle; if (ph === 'land') return GRAPPLE.land;
   return (k === 'gp' ? GRAPPLE.up : GRAPPLE.dn)[ph] || 0;
@@ -140,25 +145,17 @@ export function buildTraversal(scene, { walls, hazardMat }) {
   // ground chevron at the foot of every climb spot
   const chevGeo = new THREE.ConeGeometry(0.16, 0.3, 3); chevGeo.rotateX(Math.PI / 2);
   const chevron = (x, y, z, a, m = cue) => { const c = new THREE.Mesh(chevGeo, m); c.scale.y = 0.15; c.position.set(x, y + 0.03, z); c.rotation.y = -a + Math.PI / 2; scene.add(c); return c; };
-  const pipeMat = lam(0x4f5d52), ropeMat = lam(0x8d6b3a);
+  const pipeMat = lam(0x4f5d52);
   CLIMBS.forEach((c, i) => {
     const dx = Math.cos(c.a), dz = Math.sin(c.a), tx = -dz, tz = dx; // tangent along the wall
     const fx = c.x + dx * 0.34, fz = c.z + dz * 0.34, y0 = c.y0 || 0; // just off the wall face
-    if (c.kind === 'ladder') {
-      const h = c.top - y0 + 0.55;
-      for (const s of [-0.24, 0.24]) I.box(yellow, Math.abs(tx) * 0.05 + 0.05, h, Math.abs(tz) * 0.05 + 0.05, fx + tx * s, y0 + h / 2, fz + tz * s);
-      for (let y = y0 + 0.3; y < c.top + 0.05; y += 0.3) I.box(metal, Math.abs(tx) * 0.48 + 0.035, 0.035, Math.abs(tz) * 0.48 + 0.035, fx, y, fz);
-      // grab hoops over the lip
-      for (const s of [-0.24, 0.24]) I.box(yellow, Math.abs(dx) * 0.32 + 0.05, 0.05, Math.abs(dz) * 0.32 + 0.05, fx + tx * s + dx * 0.16, y0 + h, fz + tz * s + dz * 0.16);
-    } else if (c.kind === 'net') {
-      // Cargo net: a rope grid on the wall. You still climb the centre, same as a ladder.
-      const span = c.span || 1.6, h = c.top - y0;
-      const ropes = Math.max(2, Math.round(span / 0.4));
-      for (let k = 0; k < ropes; k++) {
-        const s = (k / (ropes - 1) - 0.5) * span;
-        I.box(ropeMat, Math.abs(tx) * 0.04 + 0.035, h, Math.abs(tz) * 0.04 + 0.035, fx + tx * s, y0 + h / 2, fz + tz * s);
-      }
-      for (let y = y0 + 0.35; y < c.top - 0.05; y += 0.4) I.box(ropeMat, Math.abs(tx) * span + 0.04, 0.04, Math.abs(tz) * span + 0.04, fx, y, fz);
+    if (c.kind === 'ladder' || c.kind === 'net') {
+      const h = c.top - y0 + 0.55, net = c.kind === 'net', sideM = net ? rust : yellow, rungM = net ? rust : metal;
+      const span = net ? 0.62 : 0.48;
+      for (const s of [-0.24, 0.24]) I.box(sideM, Math.abs(tx) * 0.05 + 0.05, h, Math.abs(tz) * 0.05 + 0.05, fx + tx * s, y0 + h / 2, fz + tz * s);
+      if (net) I.box(rust, Math.abs(tx) * 0.04 + 0.04, h, Math.abs(tz) * 0.04 + 0.04, fx, y0 + h / 2, fz); // centre rope
+      for (let y = y0 + 0.28; y < c.top + 0.05; y += net ? 0.28 : 0.3) I.box(rungM, Math.abs(tx) * span + 0.03, 0.03, Math.abs(tz) * span + 0.03, fx, y, fz);
+      for (const s of [-0.24, 0.24]) I.box(sideM, Math.abs(dx) * 0.32 + 0.05, 0.05, Math.abs(dz) * 0.32 + 0.05, fx + tx * s + dx * 0.16, y0 + h, fz + tz * s + dz * 0.16);
     } else {
       const len = c.top - y0 + 0.2;
       const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, len, 6), pipeMat); pipe.position.set(fx + dx * 0.04, y0 + len / 2, fz + dz * 0.04); scene.add(pipe);
@@ -192,7 +189,7 @@ export function buildTraversal(scene, { walls, hazardMat }) {
     const g = coopGeom(c), tx = -g.dz, tz = g.dx;
     boxAt(scene, Math.abs(tx) * 1.8 + 0.12, 0.12, Math.abs(tz) * 1.8 + 0.12, hazardMat, c.x - g.dx * 0.02, c.top - 0.06, c.z - g.dz * 0.02);
     const dec = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.5), new THREE.MeshBasicMaterial({ map: coopTex, transparent: true, opacity: 0.6, depthWrite: false }));
-    dec.rotation.x = -Math.PI / 2; dec.rotation.z = -c.a - Math.PI / 2; dec.position.set(g.base.x - g.dx * 0.25, 0.04, g.base.z - g.dz * 0.25); scene.add(dec);
+    dec.rotation.x = -Math.PI / 2; dec.rotation.z = -c.a - Math.PI / 2; dec.position.set(g.base.x - g.dx * 0.25, (c.y0 || 0) + 0.04, g.base.z - g.dz * 0.25); scene.add(dec);
     hot.push({ mesh: dec, kind: 'coop', i });
   });
   // grapple walls: orange anchor plate + scuffed boot-mark stripe down the face, foot ring on the floor, top ring

@@ -23,18 +23,16 @@
 // Anything that changes guards / LIFE / who is dead (and therefore which bodies have loot) goes through the host.
 // Solo moves start right away and the host can veto them ('trx'); co-op boost / pull-up exist only when the host creates
 // world.co and broadcasts it - both clients then play their half (booster vs climber) on the host's clock.
-// Water (WATERS): walk off a bank into the dock slip or the cooling basin and you surface-swim — slower than a walk,
-// quiet, same stick. C / CROUCH / PRONE takes a short dive and you come back up. Step onto a bank to walk. Guards
-// stay on the concrete. Swim state is on the player packet (0 dry, 1 surface, 2 dive) so every client shows it.
+// Water: the whole map is open ocean. Swim platforms, holds and the pier are dry (DRY). Surface-swim is slower
+// than a walk and quiet. C / CROUCH / PRONE takes a short dive and you come back up. Step onto a hull platform to
+// board. Guards stay on the ships. Swim state is on the player packet (0 dry, 1 surface, 2 dive) so every client shows it.
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, L3 as H3, WALKS, RAILS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
-import { MAP, MAP_NAME, WALLS, TUNNELS, TUNNEL_H, TUNNEL_WALL, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, PICKUPS, PADS } from './mapcompile.js';
+import { TRAV, L1, L2, L3 as H3, HOLD, BOAT, WALKS, RAILS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { MAP, MAP_NAME, WALLS, TUNNELS, TUNNEL_H, TUNNEL_WALL, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, DRY, SEA, PICKUPS, PADS, waterVolume, onDry } from './mapcompile.js';
 
-// Level geometry is the compiled map (public/leveldata.js, or a map the editor saved).
-// The Relay Yard still compiles to the same boxes, water, guards and climbs as before.
-// index of the tunnel containing (x,z), or -1. inset shrinks the volume at the open ends (hysteresis for the camera switch).
+// Geometry comes from the compiled map (leveldata.js). The ocean is the default.
 function tunnelAt(x, z, inset = 0) {
   for (let i = 0; i < TUNNELS.length; i++) {
     const t = TUNNELS[i], ix = t.axis === 'x' ? inset : 0, iz = t.axis === 'z' ? inset : 0;
@@ -42,28 +40,18 @@ function tunnelAt(x, z, inset = 0) {
   }
   return -1;
 }
-// guards treat tunnel interiors (+ a lip at each mouth) as solid so they never crawl in after you
 const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0), x2: t.x2 + (t.axis === 'x' ? 0.3 : 0),
   z1: t.z1 - (t.axis === 'z' ? 0.3 : 0), z2: t.z2 + (t.axis === 'z' ? 0.3 : 0), h: 0, kind: 'block' }));
-const waterVolume = (x, z, pad = 0) => WATERS.find((w) => x >= w.x1 - pad && x <= w.x2 + pad && z >= w.z1 - pad && z <= w.z2 + pad) || null;
+const NP = SPAWNS.length;
 const GUARD_PATHS = GUARDS.map((g) => g.path);
-const NP = SPAWNS.length; // max players per room (server.js MAX_GUESTS + 1)
-const SWITCH_WINDOW = 2.0; // seconds both switches must overlap
-// guards: patrol 1.8 -> 1.4, investigate 2.6 -> 2.2, chase 4.6 -> 4.1 (still slower than a running player)
+const SWITCH_WINDOW = 2.0;
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
-// patrol pauses: at every waypoint a guard stops for min..min+rand seconds and slowly looks around (+-sweep rad)
 const PAUSE = { min: 2.2, rand: 1.4, sweep: 0.45, rate: 1.1 };
-// laser sight on the drawn P-9 (tight red beam + dot), locks onto the auto-aim target when there is one
 const LASER = { color: 0xff1a1a, width: 0.035, dot: 0.07 };
-const NOISE = { run: 6, walk: 2.2, splash: 2.6 }; // a running entry splashes; steady strokes are silent
-// Zelda-style surface swim: slower than a walk, heavier to start and stop, wider turns. Dive is a short
-// submerge (no oxygen meter) — you come back up. gap = minimum time between dives.
+const NOISE = { run: 6, walk: 2.2, splash: 2.6 };
 const SWIM = { speed: 1.9, dive: 1.25, accel: 7.5, decel: 5.2, turn: 4.6, diveT: 0.82, gap: 0.38 };
-// Momentum (players only): velocity ramps toward the stick/keys target instead of snapping. Kept light for stealth:
-// walk reaches full speed in ~0.2s, run in ~0.33s; stops coast for ~0.15s (walk) / ~0.25s (run).
 const MOVE = { accel: 16, decel: 21, turnAccel: 26, turnRate: 10, proneTurnRate: 4.5 };
 const SIGHT = { stand: 9, crouch: 6, prone: 3.5, fovHalf: 0.62 };
-// vertical vision (host): anyone off the ground (roof, gantry, ladder, rope) is checked in 3D from the guard's eye.
 const SIGHT_V = { eye: 1.6, downFov: 1.0, downK: 0.5, upFov: 0.85, upFovAlert: 1.05, high: 0.85, rope: 0.95, steep: 0.35, slowUp: 0.45, calmUp: 0.8,
   chest: { stand: 1.2, crouch: 0.75, prone: 0.25 } };
 const ALERT_TIME = 15, CAUTION_TIME = 10;
@@ -171,8 +159,9 @@ const solids = () => WALLS.filter((w) => !(w.kind === 'door' && world.door));
 
 function collide(p, r, guard = false) {
   if (guard && p.y > 0.3) return collideHigh(p, r);
-  // guards patrol the piers — water is a wall for them, a route for players
-  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS, WATERS) : solids());
+  // Open ocean is not a collision box (one map-sized rect would shove every guard). Deck guards are
+  // clamped to their area. A land map's basins are walls for guards. The bilge blocks them via GUARD_BLOCKS.
+  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS, SEA ? [] : WATERS) : solids());
 }
 // elevated guards: only what sticks up above their deck blocks them (walls, door, tall buildings, rails), then they are
 // clamped onto the nearest of their deck rects so they never walk off a catwalk.
@@ -311,10 +300,10 @@ const canvas = $('game');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 const PIXEL_SCALE = 0.5; // chunky PS1-ish pixels, also keeps phones fast
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a1418);
-scene.fog = new THREE.Fog(0x0a1418, 28, 72);
-const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 160);
-scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x1a2a20, 1.1));
+scene.background = new THREE.Color(0x07141c);
+scene.fog = new THREE.Fog(0x07141c, 32, 88);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 180);
+scene.add(new THREE.HemisphereLight(0x9fc3d9, 0x0c1e28, 1.05));
 const sun = new THREE.DirectionalLight(0xbfd8ff, 0.9); sun.position.set(-8, 20, 6); scene.add(sun);
 
 const mat = (c, extra = {}) => new THREE.MeshLambertMaterial({ color: c, flatShading: true, ...extra });
@@ -331,15 +320,17 @@ function xzSlab(x1, z1, x2, z2, holes) {
   }
   const g = new THREE.ShapeGeometry(s); g.rotateX(-Math.PI / 2); return g;
 }
-const ground = new THREE.Mesh(xzSlab(MAP.x1, MAP.z1, MAP.x2, MAP.z2, WATERS), mat(0x26352e));
-scene.add(ground);
-const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236); grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
-// painted ground pads (wing floors, compound). Water basins stay cut out of them.
-for (const p of PADS) {
-  const fl = new THREE.Mesh(xzSlab(p.x1, p.z1, p.x2, p.z2, WATERS), mat(p.color));
-  fl.position.y = p.y || 0.012; scene.add(fl);
+// Land maps keep a concrete yard under the basins. The ocean is only water and dry boarding pads.
+if (!SEA) {
+  scene.add(new THREE.Mesh(xzSlab(MAP.x1, MAP.z1, MAP.x2, MAP.z2, WATERS), mat(0x26352e)));
+  const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236);
+  grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
+  for (const p of PADS) {
+    const fl = new THREE.Mesh(xzSlab(p.x1, p.z1, p.x2, p.z2, WATERS), mat(p.color));
+    fl.position.y = p.y || 0.012; scene.add(fl);
+  }
 }
-// ---- water: a cut basin (floor + shore walls) and a PS1 sheet on the shoreline. Swimmers sink into the cut.
+// ---- open ocean: basin tiles plus a PS1 sheet. Dry pads are cut out so platforms sit on the waterline.
 const BASIN = -1.88, SURFACE = 0.055;
 const waterTex = pixTex(32, (x, S) => {
   x.fillStyle = '#1a7898'; x.fillRect(0, 0, S, S);
@@ -352,8 +343,8 @@ const waterTex = pixTex(32, (x, S) => {
   x.globalAlpha = 0.45; x.fillStyle = '#e9fbff';
   x.fillRect(2, 6, 3, 1); x.fillRect(18, 14, 5, 1); x.fillRect(9, 22, 3, 1); x.fillRect(24, 5, 2, 1);
 }, [1, 1]);
-const waterMat = new THREE.MeshLambertMaterial({ map: waterTex, color: 0xc5eeff, transparent: true, opacity: 0.48, depthWrite: false, side: THREE.DoubleSide });
-const basinMat = mat(0x0c3340), wetWall = mat(0x1a4550), lipMat = mat(0x7d8c86);
+const waterMat = new THREE.MeshLambertMaterial({ map: waterTex, color: 0xb7e6f6, transparent: true, opacity: 0.62, depthWrite: false, side: THREE.DoubleSide });
+const basinMat = mat(0x071c28), wetWall = mat(0x1a4550), lipMat = mat(0x7d8c86);
 const waterSheets = [];
 const spanOverlap = (a1, a2, b1, b2) => Math.min(a2, b2) - Math.max(a1, b1);
 function cutSpans(lo, hi, cuts) {
@@ -393,11 +384,17 @@ for (const w of WATERS) {
   const geo = new THREE.PlaneGeometry(lx, lz), uv = geo.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * lx * 0.42, uv.getY(i) * lz * 0.42);
   const sheet = new THREE.Mesh(geo, waterMat); sheet.rotation.x = -Math.PI / 2; sheet.position.set(cx, SURFACE, cz); scene.add(sheet); waterSheets.push(sheet);
+  if (w.open) continue; // open sea has no pool rim; hulls and pads are the shoreline
   const T = 0.2;
   for (const [a, b] of cutSpans(w.x1, w.x2, shoreCuts(w, 'z', w.z1))) addShore(a, b, w.z1 - T * 0.5, w.z1 + T * 0.5);
   for (const [a, b] of cutSpans(w.x1, w.x2, shoreCuts(w, 'z', w.z2))) addShore(a, b, w.z2 - T * 0.5, w.z2 + T * 0.5);
   for (const [a, b] of cutSpans(w.z1, w.z2, shoreCuts(w, 'x', w.x1))) addShore(w.x1 - T * 0.5, w.x1 + T * 0.5, a, b);
   for (const [a, b] of cutSpans(w.z1, w.z2, shoreCuts(w, 'x', w.x2))) addShore(w.x2 - T * 0.5, w.x2 + T * 0.5, a, b);
+}
+const padMat = mat(0x4c585c);
+for (const d of DRY) {
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(d.x2 - d.x1, 0.1, d.z2 - d.z1), padMat);
+  slab.position.set((d.x1 + d.x2) / 2, 0.03, (d.z1 + d.z2) / 2); scene.add(slab);
 }
 function updateWater() {
   const t = performance.now() / 1000;
@@ -433,14 +430,57 @@ const hazardTex = pixTex(16, (x, S) => { for (let i = -S; i < S * 2; i += 8) { x
 // tiled copy of the concrete so long tunnel pieces keep 1 texel ~ 5cm instead of stretching one 32px tile
 const tiled = (u, v) => { const t = concreteTex.clone(); t.repeat.set(Math.max(1, Math.round(u)), Math.max(1, Math.round(v))); t.needsUpdate = true; return t; };
 const concreteMat = (color, u, v) => new THREE.MeshLambertMaterial({ map: tiled(u, v), color, flatShading: true });
-const doorMeshes = [];
+let doorMesh = null;
 // CUTAWAY: tall buildings fade to a ghost while they hide a player from the top-down camera (see updateCutaway)
 const cutaway = [];
 for (const w of WALLS) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.05, w.x2 - w.x1), Math.max(0.05, w.h), Math.max(0.05, w.z2 - w.z1)), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(COLORS[w.kind] || 0x666666));
+  const color = w.paint ?? COLORS[w.kind] ?? 0x777777;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1, w.h, w.z2 - w.z1), w.kind === 'tunnel' ? concreteMat(0x9aa4a8, Math.max(w.x2 - w.x1, w.z2 - w.z1) / 1.6, 1) : mat(color));
   m.position.set((w.x1 + w.x2) / 2, w.h / 2, (w.z1 + w.z2) / 2); scene.add(m);
-  if (w.kind === 'door') doorMeshes.push(m);
+  if (w.kind === 'door') doorMesh = m;
   if (w.kind === 'building' && w.h > 2) cutaway.push({ b: w, m, k: 1 });
+  if (w.draft) {
+    const cx = (w.x1 + w.x2) / 2, cz = (w.z1 + w.z2) / 2, lw = w.x2 - w.x1, ld = w.z2 - w.z1;
+    const under = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.2, lw - 0.18), w.draft, Math.max(0.2, ld - 0.18)), mat(0x140e0c));
+    under.position.set(cx, -w.draft / 2 + 0.02, cz); scene.add(under);
+    if (w.boot !== 0) {
+      const bh = w.boot || 0.55;
+      const boot = new THREE.Mesh(new THREE.BoxGeometry(lw + 0.12, bh, ld + 0.12), mat(0x141618));
+      boot.position.set(cx, 0.06 + bh / 2, cz); scene.add(boot);
+    }
+  }
+}
+// Bridge windows, funnel band, buoys, lifeboats. Visual only.
+{
+  const win = mat(0x1c3040), band = mat(0xc4483a), life = mat(0xe07a28), buoyR = mat(0xd0453a), buoyW = mat(0xe8e4dc);
+  for (const w of WALLS) {
+    if (w.dress === 'bridge') {
+      const y = Math.max(w.h - 1.15, L1 + 0.9);
+      for (const side of [-1, 1]) {
+        const z = side < 0 ? w.z1 - 0.05 : w.z2 + 0.05;
+        const n = Math.max(2, Math.round((w.x2 - w.x1) / 2.2));
+        for (let i = 0; i < n; i++) {
+          const x = w.x1 + (w.x2 - w.x1) * ((i + 0.5) / n);
+          const pane = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.38, 0.08), win);
+          pane.position.set(x, y, z); scene.add(pane);
+        }
+      }
+    }
+    if (w.dress === 'stack') {
+      const bandM = new THREE.Mesh(new THREE.BoxGeometry(w.x2 - w.x1 + 0.1, 0.42, w.z2 - w.z1 + 0.1), band);
+      bandM.position.set((w.x1 + w.x2) / 2, w.h - 1.15, (w.z1 + w.z2) / 2); scene.add(bandM);
+    }
+  }
+  for (const [x, z] of [[-26.8, -23.2], [-27.2, 1.1], [7.4, 15.2]]) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.42, 0.62), life);
+    b.position.set(x, BOAT + 0.28, z); scene.add(b);
+  }
+  for (const [x, z] of [[-10.5, -3.2], [8.2, 4.6], [-14, 18], [6.5, -5.5], [22, 3.2]]) {
+    const g = new THREE.Group();
+    const a = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 0.46, 6), buoyR); a.position.y = 0.32;
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.26, 6), buoyW); b.position.y = 0.66;
+    g.add(a, b); g.position.set(x, 0, z); scene.add(g);
+  }
 }
 // tunnel dressing: dark floor, roof slab, hazard-striped mouth frames, dim ceiling lamps with fake light pools
 const hazardMat = new THREE.MeshLambertMaterial({ map: hazardTex, color: 0xffffff, flatShading: true });
@@ -1246,6 +1286,12 @@ function beginSwim(w) {
   toast((w.name || 'WATER') + ' — swim  ·  C dives', 1400, '#8fd8f0');
   if (loud) { beep(170, 0.08, 'sine', 0.05); beep(90, 0.12, 'triangle', 0.04); }
 }
+function settleSpawn() {
+  me.y = 0; me.vy = 0; me.tun = -1; me.dive = 0;
+  const w = swimSpot(me.x, me.z, 0);
+  if (w) beginSwim(w);
+  else if (me.sw) endSwim();
+}
 function endSwim() {
   if (!me.sw) return;
   me.sw = false; me.dive = 0; me.splash = 0;
@@ -1401,7 +1447,7 @@ function genCoops() {
   const inMap = (p) => p.x > MAP.x1 + 1.2 && p.x < MAP.x2 - 1.2 && p.z > MAP.z1 + 1.2 && p.z < MAP.z2 - 1.2;
   const crowded = (x, z) => COOPS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.8) || CLIMBS.some((c) => Math.hypot(c.x - x, c.z - z) < 1.2)
     || LINKS.some((L) => Math.hypot(L.face.x - x, L.face.z - z) < 1.1);
-  const tops = WALLS.filter((b) => (b.kind === 'building' || b.kind === 'crate') && b.h > TRAV.mantleMax).concat(WALKS);
+  const tops = WALLS.filter((b) => (b.kind === 'building' || b.kind === 'crate') && b.h > TRAV.mantleMax && !b.noCoop).concat(WALKS);
   for (const b of tops) {
     const top = b.h;
     for (const [nx, nz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
@@ -1937,7 +1983,7 @@ function hostUpdate(dt) {
 function hostRestart() {
   clearBlood(); clearGearFx();
   world = freshWorld();
-  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); lastCoId = -1;
+  me.x = SPAWNS[0].x; me.z = SPAWNS[0].z; me.tun = -1; stopMe(); resetLoadout(); settleSpawn(); lastCoId = -1;
   for (const o of peers()) { const sp = SPAWNS[o.s]; o.x = o.rx = sp.x; o.z = o.rz = sp.z; o.nvx = o.nvz = 0; net.relay({ t: 'tp', x: sp.x, z: sp.z, silent: true }, o.s); }
   sendState();
 }
@@ -2032,7 +2078,7 @@ function onGameMsg(d) {
       else if (me.tr && me.tr.id === id && Math.abs(me.tr.t - t) > 0.25) me.tr.t = t; // drift: follow the host clock
     } else world.co = null;
   } else if (d.t === 'tp' && role === 'guest') {
-    me.x = d.x; me.z = d.z; me.tun = -1; me.y = 0; me.vy = 0; me.tr = null; me.sw = false; me.dive = 0; me.splash = 0; lastCoId = -1; stopMe(); syncStanceButtons(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
+    me.x = d.x; me.z = d.z; me.tun = -1; me.y = 0; me.vy = 0; me.tr = null; me.sw = false; me.dive = 0; me.splash = 0; lastCoId = -1; stopMe(); settleSpawn(); if (!d.silent) toast('CAUGHT! Back to start', 1600);
   }
 }
 
@@ -2103,9 +2149,9 @@ function showLobby(msg) {
 function enterGame() {
   if (!$('lobby').classList.contains('hidden')) {
     $('lobby').classList.add('hidden'); $('hud').classList.remove('hidden');
-    const s = SPAWNS[mySlot] || SPAWNS[1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout();
+    const s = SPAWNS[mySlot] || SPAWNS[1]; me.x = s.x; me.z = s.z; stopMe(); resetLoadout(); settleSpawn();
     if (role === 'host' && !solo) toast('Room ' + roomCode + ' - share the link', 2500, '#7fff9f');
-    setTimeout(() => { if (role && world.phase === 'play' && !me.wpn) toast('UNARMED — P-9 locker through the south gate', 2600, '#ffd27f'); }, role === 'host' && !solo ? 1800 : 500);
+    setTimeout(() => { if (role && world.phase === 'play' && !me.wpn) toast('UNARMED — swim to CINDER. P-9 locker is on her deck', 2800, '#ffd27f'); }, role === 'host' && !solo ? 1800 : 500);
   }
   applyPlayerLooks();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
@@ -2139,19 +2185,20 @@ if (qs.get('room')) {
 async function fillMaps() {
   const sel = $('mapPick');
   if (!sel) return;
-  const cur = window.__DS_MAP_ID || 'yard';
+  const cur = window.__DS_MAP_ID || 'ocean';
   const add = (id, name) => { const o = document.createElement('option'); o.value = id; o.textContent = name; sel.appendChild(o); };
   sel.textContent = '';
-  add('yard', MAP_NAME);
+  add('ocean', MAP_NAME || 'Open Ocean');
+  add('yard', 'Relay Yard');
   try {
     const r = await fetch('/api/maps');
     if (r.ok) {
       const j = await r.json();
-      for (const m of j.maps || []) if (m && m.id && m.id !== 'yard') add(m.id, m.name || m.id);
+      for (const m of j.maps || []) if (m && m.id && m.id !== 'yard' && m.id !== 'ocean') add(m.id, m.name || m.id);
     }
-  } catch { /* built-in yard still plays if the list can't load */ }
+  } catch { /* the built-in ocean still plays */ }
   if (![...sel.options].some((o) => o.value === cur)) add(cur, window.__DS_MAP_NAME || cur);
-  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : 'yard';
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : 'ocean';
   sel.onchange = () => {
     const p = new URLSearchParams(location.search);
     p.set('map', sel.value);
@@ -2220,8 +2267,8 @@ const radar = $('radar'), rc = radar.getContext('2d');
 function drawRadar() {
   const W = radar.width, H = radar.height, sx = W / (MAP.x2 - MAP.x1), sz = H / (MAP.z2 - MAP.z1);
   const X = (x) => (x - MAP.x1) * sx, Z = (z) => (z - MAP.z1) * sz;
-  rc.fillStyle = world.alert === 2 ? 'rgba(90,10,10,0.9)' : 'rgba(0,30,18,0.9)'; rc.fillRect(0, 0, W, H);
-  rc.fillStyle = 'rgba(42, 170, 198, 0.9)';
+  rc.fillStyle = world.alert === 2 ? 'rgba(70,12,12,0.94)' : 'rgba(4, 20, 32, 0.94)'; rc.fillRect(0, 0, W, H);
+  rc.fillStyle = world.alert === 2 ? 'rgba(130, 36, 36, 0.45)' : 'rgba(14, 72, 98, 0.92)';
   for (const w of WATERS) rc.fillRect(X(w.x1), Z(w.z1), (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
   rc.fillStyle = '#3c7a55';
   for (const b of solids()) rc.fillRect(X(b.x1), Z(b.z1), (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
@@ -2529,7 +2576,7 @@ function updateCutaway(dt) {
 }
 const CAM_H = 12, CAM_Z = 7.2; // top-down cam height / back-offset before zoom (was 15 / 9)
 const topCam = new THREE.Vector3(me.x, CAM_H, me.z + CAM_Z), topLook = new THREE.Vector3(), fpsEye = new THREE.Vector3(), fpsLook = new THREE.Vector3(), camLook = new THREE.Vector3();
-const SKY = new THREE.Color(0x0a1418), TUNNEL_FOG = new THREE.Color(0x06090a);
+const SKY = new THREE.Color(0x07141c), TUNNEL_FOG = new THREE.Color(0x06090a);
 let scopeK = 0, fpsK = 0, tunK = 0, camYaw = me.a, eyeH = 0.92, eyeF = 0.12, camY = 0;
 // DAMAGE REACTIONS (both roles, purely visual): watch the synced state instead of hooking each damage path, so gun /
 // melee / FAMAS hits and host- or guest-side damage all land the same way. A player's LIFE dropping -> blood + flinch
@@ -2668,8 +2715,9 @@ function render(dt) {
     if (!live) m.q.visible = m.ex.visible = false;
   });
   // door + switches + extract
-  for (const doorMesh of doorMeshes) {
-    doorMesh.position.y = THREE.MathUtils.lerp(doorMesh.position.y, world.door ? -1.2 : doorMesh.geometry.parameters.height / 2, Math.min(1, dt * 3));
+  if (doorMesh) {
+    const dh = doorMesh.geometry.parameters.height;
+    doorMesh.position.y = THREE.MathUtils.lerp(doorMesh.position.y, world.door ? -dh * 0.45 : dh / 2, Math.min(1, dt * 3));
     doorMesh.material.color.setHex(world.door ? 0x2a8a4a : 0x9a2a2a);
   }
   switchMeshes.forEach((s, i) => {
@@ -2764,12 +2812,12 @@ function updateHud() {
   if (world.phase === 'over') obj = 'GAME OVER';
   else if (!world.door) {
     const armed = world.sw.filter((v) => v > 0).length;
-    obj = solo ? 'Stand on a switch pad (red door / relay platform) and press ACT' :
-      armed ? `Switch armed! A 2nd agent: press the OTHER switch now (${Math.max(...world.sw).toFixed(1)}s)` :
-      'Switches: one by the red door, one up on the RELAY PLATFORM - ACT within 2s of each other';
+    obj = solo ? 'MERIDIAN: ACT a switch on the bow deck or up on the bridge' :
+      armed ? `Switch armed — other agent, hit the OTHER MERIDIAN switch (${Math.max(...world.sw).toFixed(1)}s)` :
+      'MERIDIAN switches: bow deck and the bridge roof. ACT within 2s of each other';
   } else {
     const n = world.ext.filter(Boolean).length, need = extNeed();
-    obj = solo ? 'Door open - climb the EXFIL TOWER to EXTRACT' : `Door open - any ${need} of you on the EXFIL TOWER pad to EXTRACT (${Math.min(n, need)}/${need} there)`;
+    obj = solo ? 'Door open — climb MERIDIAN\'s stern to the bridge pad and EXTRACT' : `Door open — any ${need} of you on MERIDIAN's bridge pad to EXTRACT (${Math.min(n, need)}/${need})`;
   }
   $('objective').textContent = obj;
   // combat HUD: ammo counter, context label on the ACT button, keyboard prompt when a takedown is possible
@@ -2791,7 +2839,7 @@ function updateHud() {
   act.classList.toggle('kill', mode === 'td');
   act.classList.toggle('climb', !!tl);
   const onRope = mode === 'letgo' && me.tr && ON_LINE(me.tr.k);
-  const pr = $('prompt'), ptxt = me.sw ? (isTouch ? 'CROUCH = SHORT DIVE' : 'C  SHORT DIVE  ·  SWIM TO A BANK TO CLIMB OUT') : mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : onRope ? (isTouch ? 'STICK UP / DOWN = ROPE · ACT LET GO' : 'W UP · S DOWN · E LET GO')
+  const pr = $('prompt'), ptxt = me.sw ? (isTouch ? 'CROUCH = SHORT DIVE' : 'C  SHORT DIVE  ·  SWIM TO A HULL TO BOARD') : mode === 'td' ? (isTouch ? 'TAKE DOWN' : 'E  TAKE DOWN') : onRope ? (isTouch ? 'STICK UP / DOWN = ROPE · ACT LET GO' : 'W UP · S DOWN · E LET GO')
     : tl && tl[1] ? (isTouch ? tl[1] : 'E  ' + tl[1]) : '';
   if (pr.textContent !== ptxt) { pr.textContent = ptxt; pr.classList.toggle('hidden', !ptxt); }
 }
@@ -2820,4 +2868,4 @@ window.__ds = { WALLS, SWITCHES, EXTRACT, GUARDS, scene, cutaway, me, others, ge
   get fpsOn() { return fpsOn; }, toggleView, PLAYER_LOOK, meshOf, get curTm() { return curTm; }, RAILS, TRAV, WALK_TOPS, get world() { return world; }, damagePlayer, FAMAS, guardMeshes, HP_MAX, get role() { return role; }, get peer() { return peerConnected; }, armSwitch, net,
   TUNNELS, tunnelAt, get fpsK() { return fpsK; }, camera, toggleProne, toggleCrouch,
   doInteract, fireGun, toggleGun, takedownTarget, actMode, TD, GUN, meMesh, myLaser, autoTarget,
-  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3, WATERS, waterVolume, SWIM, swimSpot };
+  travMode, startTrav, groundAt, ITEMS, GRID, PICKUPS, pickups, equipWeapon, useItem, toggleBox, detonate, openInv, closeInv, get invOpen() { return invOpen; }, WPN, STUN, C4, CLIMBS, COOPS, LINKS, WALKS, hostCoop, otherMesh, input, GRAPPLE, lineDecode, myRope, players, lineOfSight, guardSees: (g, p) => guardSees(g, p), SIGHT, LOOT, killGuard, MAP, H3, WATERS, DRY, SPAWNS, onDry, waterVolume, SWIM, swimSpot };

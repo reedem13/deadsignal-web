@@ -4,21 +4,21 @@
 Tested flow: iPhone (Safari) hosts, Android (Chrome) joins, or the other way around.
 
 > Original IP, inspired by PS1-era tactical stealth. No third-party names or assets.
-> Players use the procedural low-poly olive "sneaker" and guards use the masked slate enemy kit of the same rig (`public/sneaker.js`, preview at `/character.html?who=both`). The yard is still greybox.
+> Players use the procedural low-poly olive "sneaker" and guards use the masked slate enemy kit of the same rig (`public/sneaker.js`, preview at `/character.html?who=both`). The sea and the tankers are still greybox.
 > **This is the browser test build. The Unreal Engine / Steam build comes later** and will reuse the design, not this code.
 
 ## What's in the slice
-- Night facility greybox: the original relay yard plus a south motor pool, east cooling plant (with an L3 penthouse), west service yard and north dock. 15 patrolling guards across the floors, with visible sight cones (yellow → orange when suspicious → red on ALERT).
+- Open ocean at night: three ships (MERIDIAN, a north VLCC; CINDER, a southwest product tanker; ASH HOLD, a southeast freighter) and a small pier with a tug. You spawn swimming in the channel between them. 9 guards patrol the decks and bridges (they do not swim), with visible sight cones (yellow → orange when suspicious → red on ALERT).
 - **Walk** (makes a small noise), **run** (push the stick all the way / Shift; loud — guards come look), **crouch** (slow, silent, shorter sight range, and you can hide behind low crates).
 - **Prone** (Z/X or PRONE button): belly-down commando crawl. Slowest, silent, guards only spot you from ~3.5 m and much more slowly; hides behind low crates.
-- **Tunnels** (yellow-striped mouths, gold on the radar): West Culvert (spawn yard → north-west yard), Barracks Crawlspace (through the barracks), Compound Drain (west yard → inside the extraction compound; you still need the two-switch door to win). Inside a tunnel your camera goes **first person** (only yours, not your partner's). Up/W crawls forward, left/right turns, down/S backs up. You can't stand up in there. Guards can't enter, see in, or catch you in a tunnel.
+- **Bilge** (yellow-striped mouth on MERIDIAN's south hull, gold on the radar): a crawl from the water into the ship. Inside it your camera goes **first person** (only yours, not your partner's). Up/W crawls forward, left/right turns, down/S backs up. You can't stand up in there. Guards can't enter. A ladder at the north end comes up on deck.
 - Guards: patrol → `?` investigate noises/glimpses → `!` ALERT (chase, ~15 s), then CAUTION, then calm. A guard touching you in ALERT sends you back to the start.
 - **Vertical grapple lines** (orange rings at a wall's foot / behind its lip): ACT runs a short throw + tug (or hook-set + over the edge), then **you drive the rope** — W / stick up = climb hand-over-hand, S / stick down = bounding descent, let go of the stick = hang still. Up at the top = mantle onto the roof, down at the bottom = boots down, ACT on the rope = let go (a high standing drop thuds).
 - **Guards see up**: roofs, gantry, ladders and ropes are checked in 3D from the guard's eye (vertical cone ~49° up, ~60° on ALERT; straight overhead is blind). Roof edges and decks hide you if you're back from the lip, crouched or prone; looking up makes them slower to be sure.
 - **Takedown** (ACT / E / Space, only from *behind* a guard, within ~1.4 m, rear ~±64° arc): sneaker snaps in, choke hold + two knife jabs (~2.2 s), guard drops and stays down (no sight, hearing or catching). Front/side never works; the ACT button turns red and reads TAKE DOWN when it's possible.
-- **On-site procurement:** missions start with **empty hands** — no pistol, no grenades, no ration. G (or the weapon button) draws whatever you have found; with nothing equipped it stays on FISTS and neither ACT nor F can fire. Holstered: ACT is only TAKE DOWN / USE. Drawn: ACT fires when there's no takedown/switch, F always fires. A takedown swaps the weapon for the knife and goes back to it after. The P-9 is a locker just through the **south gate** (12 rounds in that locker; more ammo in crates). 0.5 s between shots, auto-aims at the nearest guard in front of you (narrow cone straight ahead in tunnels), one hit drops him. Crates don't stop bullets, walls do. Every shot is loud: live guards within 12 m come investigate (or chase if already on ALERT). A dead or taken-down guard drops one bundle (FAMAS mag / quiet kit) and nothing else.
-- **Two-person door:** two switch pads by the red door, 10 m apart. Each player stands on one and presses ACT; the presses must land within 2 s of each other. One person can't do it alone.
-- **Extract:** both players inside the green ring behind the door = MISSION COMPLETE (time, alerts, times caught, rank). The host can restart.
+- **On-site procurement:** missions start with **empty hands** — no pistol, no grenades, no ration, and you are in the water. G (or the weapon button) draws whatever you have found; with nothing equipped it stays on FISTS and neither ACT nor F can fire. Holstered: ACT is only TAKE DOWN / USE. Drawn: ACT fires when there's no takedown/switch, F always fires. A takedown swaps the weapon for the knife and goes back to it after. The P-9 is a locker on **CINDER's main deck**, just in from the east ladder (12 rounds; more ammo in crates). 0.5 s between shots, auto-aims at the nearest guard in front of you (narrow cone straight ahead in the bilge), one hit drops him. Crates don't stop bullets, walls do. Every shot is loud: live guards within 12 m come investigate (or chase if already on ALERT). A dead or taken-down guard drops one bundle (FAMAS mag / quiet kit) and nothing else. The better kit is higher up (ASH HOLD's crane and deckhouse, MERIDIAN's bridge and funnel) or down in a cargo hold (C4).
+- **Two-person door:** two switch pads on MERIDIAN, one on the bow deck and one on the bridge roof. Each player stands on one and presses ACT; the presses must land within 2 s of each other. One person can't do it alone. The red bulkhead on the stern's south catwalk opens onto the extract ladder.
+- **Extract:** both players inside the green ring on MERIDIAN's west bridge roof = MISSION COMPLETE (time, alerts, times caught, rank). The host can restart.
 - Soliton-style radar in the top right, alert banner, objective line, beeps and vibration (Android) on ALERT.
 - **Listen-server:** the host's phone runs the guards, alerts, door, catches and win check. The guest only sends its own position and button presses. `server.js` just pairs two phones in a room and passes messages between them.
 
@@ -102,7 +102,7 @@ Gear art + the table live in `public/gear.js`. Damage, sleep, stun, C4 and heali
 ## Map editor
 Open `/editor` on a desktop (a phone can keep playing; the editor is a separate page).
 
-1. The page opens the map the game is using. Until someone saves one, that is the **Relay Yard** (dock slip, cooling basin, south-yard spawns).
+1. The page opens the map the game is using. Until someone saves one, that is the **open ocean**: MERIDIAN, CINDER and ASH HOLD, with the five swimmers in the channel. The old Relay Yard is still in the lobby MAP menu.
 2. Click a piece type, then click the ground. Drag to move. Yellow squares resize. The right panel sets height, facing, locker contents, and guard waypoints. Undo is on the top bar.
 3. **Download** / **Open** is a JSON file. **Playtest** launches the game on this map in solo, on this computer.
 4. **Use in the game** stores the map on the server and makes Host / Join play it. **Original map** points the game back at the Relay Yard. A server restart forgets a saved map; the yard is still built in, and Download keeps your file.
@@ -115,14 +115,15 @@ server.js                 static file server + WebSocket room relay (/ws), heart
 public/index.html         lobby, HUD, touch controls markup
 public/style.css          mobile-first UI (safe-area aware, no zoom/scroll)
 public/main.js            game: three.js scene, input, host simulation, netcode, radar, UI
-public/leveldata.js       Relay Yard map document (the default mission)
+public/leveldata.js       open ocean map (MERIDIAN, CINDER, ASH HOLD) — the default mission
+public/yarddata.js        optional Relay Yard, not the default
 public/mapcompile.js      map JSON → walls, water, guards, climbs
 public/editor.html        in-browser map editor (`/editor`)
 public/gear.js            weapons/items table, pixel font + red/grey pixel icons, MGS-style slot renderer
 public/vendor/three.module.js   three.js r160 (vendored, no CDN needed)
 public/manifest.webmanifest     Add-to-Home-Screen fullscreen
 ```
-Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `SIGHT_V` (vertical vision), `ALERT_TIME`, `SWITCH_WINDOW`. The yard itself is `public/leveldata.js`.
+Tuning knobs are at the top of `public/main.js`: `SPEED`, `NOISE`, `SIGHT`, `SIGHT_V` (vertical vision), `ALERT_TIME`, `SWITCH_WINDOW`. The ships are `public/leveldata.js`.
 
 ## Next steps
 - Swap the box characters for Blockbench glTF exports (`GLTFLoader`, nearest-filtered textures, separate parts parented to bones/groups for animation).

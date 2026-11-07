@@ -39,7 +39,7 @@
       <div id="hpO4" class="hpRow mini ok hidden" data-mini="1"><span class="hpLbl">P5</span><div class="hpBar"><div class="hpTrail"></div><div class="hpFill"></div></div></div>
     </div>
   </div>
-  <div id="objective">Reach the door switches</div>
+  <div id="objective">Swim to the tankers. Switches are on MERIDIAN.</div>
   <div id="toast" class="hidden"></div>
   <div id="stickZone"><div id="stickBase" class="hidden"><div id="stickKnob"></div></div></div>
   <div id="buttons">
@@ -83,10 +83,11 @@
   <div class="help">
     <b>Phone:</b> left thumb = move (push to edge = run, loud) &middot; CROUCH = slow &amp; quiet, hides behind crates &middot; PRONE = crawl, very hard to spot &middot; ACT = take down a guard from <i>behind</i> / press a door switch / fire your weapon if drawn &middot; weapon button = draw / holster (you start with fists) &middot; GEAR = items + weapons<br>
     <b>Keyboard:</b> WASD/arrows move &middot; Shift run &middot; C crouch &middot; Z/X prone &middot; E/Space act (takedown from behind, switch, else fire if drawn) &middot; G draw/holster pistol &middot; F fire (only when drawn)<br>
-    <b>Tunnels</b> (yellow-striped mouths): crawl in to switch to first person &mdash; up/W forward, left/right turn. Guards can't follow.<br>
-    <b>Climbing</b> (ACT button changes to CLIMB / MANTLE / GRAPPLE...): ladders + drainpipes (yellow) &mdash; ACT or keep pushing into them, push in = up, away = down, ACT = let go &middot; crate lips (light trim) = MANTLE &middot; orange rings = GRAPPLE, <i>top-only</i>: from the roof ring RAPPEL down, or PULL UP a teammate waiting at the foot ring (GRAB ROPE) &middot; drop from high standing = loud thud (crouch first = quiet) &middot; up high guards spot you less.<br>
-    <b>Co-op climb</b> works on almost any building wall, tall crate or catwalk lip (gold ring shows the spot; the hazard-stripe 2P wall by the signal shed is the marked one): one player faces the wall, gun holstered, ACT = kneel (BOOST), a teammate ACT = climb on and get thrown up. Or whoever is on top stands at the lip and ACT = PULL UP the teammate below.<br>
-    <b>Gear:</b> you start unarmed. GEAR button (top right) / I or Tab opens the equipment grid &mdash; pick a weapon to equip it, an item to use it (solo pauses). Find gear in lockers and crates, or search a guard you killed or took down (one drop each). South gate: P-9, stun grenades, a ration. Weapons: P-9 (+SUPP. = quiet), FR-5 rifle (bursts, loud), MK-T tranq (sleep), STUN.G (throw, stuns 5 m), C4 (plant, then DET / T). Items: RATION (+40 LIFE), C.BOX (hide: stand still), SCOPE (zoom), STIM (steady aim). Weapon box bottom-right = tap for the menu, item box bottom-left = tap to use (Q). 1-5 quick-swap once you own them (1 P-9, 2 FR-5, 3 MK-T, 4 STUN.G, 5 C4).<br>
+    <b>Water:</b> you start swimming. Steady strokes are quiet. C / CROUCH is a short dive. Swim to a hull platform, then ladder, cargo net, low deck or 2P boost to board. Guards do not swim.<br>
+    <b>Bilge</b> (yellow mouth on MERIDIAN's south hull): crawl in for first person &mdash; up/W forward, left/right turn. Guards can't follow. A ladder at the far end comes up on deck.<br>
+    <b>Climbing</b> (ACT button changes to CLIMB / MANTLE / GRAPPLE...): ladders, cargo nets + drainpipes &mdash; ACT or keep pushing into them, push in = up, away = down, ACT = let go &middot; crate lips = MANTLE &middot; orange rings = GRAPPLE, <i>top-only</i>: from the roof ring RAPPEL down, or PULL UP a teammate waiting at the foot ring &middot; drop from high standing = loud thud (crouch first = quiet).<br>
+    <b>Co-op climb</b> works on bridge faces, gunwales and the marked 2P stripes on the hulls: one player faces the wall, gun holstered, ACT = kneel (BOOST), a teammate ACT = climb on. Or whoever is on top stands at the lip and ACT = PULL UP.<br>
+    <b>Gear:</b> you start unarmed. GEAR / I or Tab opens the grid. CINDER's deck has the P-9 locker. Better kit is up ASH HOLD's crane and deckhouse, on MERIDIAN's bridge, or down in a cargo hold (C4). Search a guard you dropped for one bundle. Weapons: P-9 (+SUPP.), FR-5, MK-T, STUN.G, C4. Items: RATION, C.BOX, SCOPE, STIM.<br>
     <b>View:</b> 1ST button (top right) / V = first-person on/off; tunnels switch to first person by themselves.<br>
     <b>Team:</b> host + up to 4 joiners share the same code. Door switches and extract still need just 2 agents; the rest are free agents.
   </div>
@@ -125,9 +126,10 @@
     return;
   }
   var id = q.get('map') || '';
-  if (id === 'yard' || id === 'default') { window.__DS_MAP_ID = 'yard'; start(); return; }
+  if (id === 'yard') { window.__DS_MAP_ID = 'yard'; start(); return; }
+  if (id === 'ocean' || id === 'default') { window.__DS_MAP_ID = 'ocean'; start(); return; }
   var ac = typeof AbortController === 'function' ? new AbortController() : null;
-  timer = setTimeout(function () { if (ac) ac.abort(); window.__DS_MAP_ID = 'yard'; start(); }, 4000);
+  timer = setTimeout(function () { if (ac) ac.abort(); window.__DS_MAP_ID = 'ocean'; start(); }, 4000);
   fetch('/api/map' + (id ? '?id=' + encodeURIComponent(id) : ''), ac ? { signal: ac.signal } : undefined)
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (j) {
@@ -135,10 +137,10 @@
         window.__DS_MAP = j.map;
         window.__DS_MAP_ID = j.id || id || 'mission';
         window.__DS_MAP_NAME = j.map.name || window.__DS_MAP_ID;
-      } else window.__DS_MAP_ID = 'yard';
+      } else window.__DS_MAP_ID = 'ocean';
       start();
     })
-    .catch(function () { window.__DS_MAP_ID = 'yard'; start(); });
+    .catch(function () { window.__DS_MAP_ID = 'ocean'; start(); });
 })();
 </script>
 </body>

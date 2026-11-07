@@ -1,6 +1,7 @@
-// Turn a map document (leveldata.js / the editor) into the arrays the game already uses.
-// The default Relay Yard compiles back to the same boxes, climbs, guards and water as the old hardcoded level.
+// Turn a map document into the arrays the game already uses.
+// The default is the open ocean (MERIDIAN, CINDER, ASH HOLD). The Relay Yard is an optional second file.
 import { DEFAULT_MAP } from './leveldata.js';
+import { YARD_MAP } from './yarddata.js';
 
 export const RAIL_H = 0.9;
 export const TUNNEL_H = 1.25;
@@ -38,7 +39,13 @@ export function compileMap(doc) {
 
   const WALLS = [];
   for (const p of pieces) if (p && p.type === 'block') {
-    WALLS.push({ x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2), h: num(p.h, 1), kind: p.kind || 'crate' });
+    const w = { x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2), h: num(p.h, 1), kind: p.kind || 'crate' };
+    if (p.paint != null) w.paint = num(p.paint);
+    if (p.draft) w.draft = num(p.draft);
+    if (p.noCoop != null) w.noCoop = p.noCoop ? 1 : 0;
+    if (p.boot != null) w.boot = num(p.boot);
+    if (p.dress) w.dress = String(p.dress);
+    WALLS.push(w);
   }
   const DECK_POSTS = [];
   for (const p of pieces) if (p && p.type === 'post') {
@@ -70,9 +77,14 @@ export function compileMap(doc) {
     const y0 = num(p.y0);
     RAILS.push({ x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2), y0, h: y0 + RAIL_H });
   }
-  const WATERS = [];
-  for (const p of pieces) if (p && p.type === 'water') {
-    WATERS.push({ name: p.name || 'WATER', x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2) });
+  const DRY = [];
+  for (const p of pieces) if (p && p.type === 'dry') DRY.push({ x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2) });
+  const sea = !!src.sea;
+  let WATERS;
+  if (sea) WATERS = carveRects(MAP, DRY).map((r) => ({ ...r, name: 'OPEN OCEAN', open: 1 }));
+  else {
+    WATERS = [];
+    for (const p of pieces) if (p && p.type === 'water') WATERS.push({ name: p.name || 'WATER', x1: num(p.x1), x2: num(p.x2), z1: num(p.z1), z2: num(p.z2) });
   }
   const CLIMBS = [];
   for (const p of pieces) if (p && p.type === 'climb') {
@@ -82,9 +94,7 @@ export function compileMap(doc) {
   }
   const COOPS = [];
   for (const p of pieces) if (p && p.type === 'coop') {
-    const c = { name: p.name || 'CLIMB WALL', x: num(p.x), z: num(p.z), a: num(p.a), top: num(p.top, 3.2) };
-    if (p.y0) c.y0 = num(p.y0); // 0 is filled in by main.js, same as the old COOPS rows
-    COOPS.push(c);
+    COOPS.push({ name: p.name || 'CLIMB WALL', x: num(p.x), z: num(p.z), a: num(p.a), top: num(p.top, 3.2), y0: num(p.y0) });
   }
   const LINKS = [];
   for (const p of pieces) if (p && p.type === 'grapple') {
@@ -130,18 +140,41 @@ export function compileMap(doc) {
   }
 
   return {
-    name: src.name || 'Relay Yard',
-    id: src.id || 'yard',
-    MAP, WALLS, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, TUNNELS, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, PICKUPS, PADS,
+    name: src.name || 'Open Ocean',
+    id: src.id || 'ocean',
+    sea,
+    MAP, WALLS, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, TUNNELS, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, DRY, PICKUPS, PADS,
   };
 }
 
-function sourceMap() {
-  const custom = typeof globalThis !== 'undefined' ? globalThis.__DS_MAP : null;
-  if (custom && Array.isArray(custom.pieces) && custom.pieces.length) {
-    try { return compileMap(custom); } catch (e) { console.warn('custom map failed, using Relay Yard', e); }
+// Same cuts the ocean level used so swim platforms and the bilge are not under the water plane.
+function carveRects(ocean, holes) {
+  let rects = [{ x1: ocean.x1, x2: ocean.x2, z1: ocean.z1, z2: ocean.z2 }];
+  const keep = (r) => r.x2 - r.x1 > 0.45 && r.z2 - r.z1 > 0.45;
+  for (const h of holes) {
+    const next = [];
+    for (const r of rects) {
+      if (h.x2 <= r.x1 + 0.02 || h.x1 >= r.x2 - 0.02 || h.z2 <= r.z1 + 0.02 || h.z1 >= r.z2 - 0.02) { next.push(r); continue; }
+      const L = Math.max(r.x1, h.x1), R = Math.min(r.x2, h.x2);
+      if (h.x1 > r.x1 + 0.2) next.push({ x1: r.x1, x2: h.x1, z1: r.z1, z2: r.z2 });
+      if (h.x2 < r.x2 - 0.2) next.push({ x1: h.x2, x2: r.x2, z1: r.z1, z2: r.z2 });
+      if (h.z1 > r.z1 + 0.2) next.push({ x1: L, x2: R, z1: r.z1, z2: h.z1 });
+      if (h.z2 < r.z2 - 0.2) next.push({ x1: L, x2: R, z1: h.z2, z2: r.z2 });
+    }
+    rects = next.filter(keep);
   }
-  return compileMap(DEFAULT_MAP);
+  return rects;
+}
+
+function sourceDoc() {
+  const custom = typeof globalThis !== 'undefined' ? globalThis.__DS_MAP : null;
+  if (custom && Array.isArray(custom.pieces) && custom.pieces.length) return custom;
+  if (typeof globalThis !== 'undefined' && globalThis.__DS_MAP_ID === 'yard') return YARD_MAP;
+  return DEFAULT_MAP;
+}
+function sourceMap() {
+  try { return compileMap(sourceDoc()); }
+  catch (e) { console.warn('map failed, using the ocean', e); return compileMap(DEFAULT_MAP); }
 }
 
 export const LEVEL = sourceMap();
@@ -161,5 +194,17 @@ export const EXTRACT = LEVEL.EXTRACT;
 export const SPAWNS = LEVEL.SPAWNS;
 export const GUARDS = LEVEL.GUARDS;
 export const WATERS = LEVEL.WATERS;
+export const DRY = LEVEL.DRY;
+export const SEA = LEVEL.sea;
 export const PICKUPS = LEVEL.PICKUPS;
 export const PADS = LEVEL.PADS;
+const OCEAN_BODY = { name: 'OPEN OCEAN', x1: MAP.x1, x2: MAP.x2, z1: MAP.z1, z2: MAP.z2 };
+export function onDry(x, z, inset = 0) {
+  return DRY.some((d) => x >= d.x1 + inset && x <= d.x2 - inset && z >= d.z1 + inset && z <= d.z2 - inset);
+}
+export function waterVolume(x, z, pad = 0) {
+  if (!SEA) return WATERS.find((w) => x >= w.x1 - pad && x <= w.x2 + pad && z >= w.z1 - pad && z <= w.z2 + pad) || null;
+  if (x <= MAP.x1 + 0.5 || x >= MAP.x2 - 0.5 || z <= MAP.z1 + 0.5 || z >= MAP.z2 - 0.5) return null;
+  if (onDry(x, z, pad > 0 ? 0.42 : -0.18)) return null;
+  return OCEAN_BODY;
+}

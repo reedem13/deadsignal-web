@@ -2,6 +2,7 @@
 // Desktop first: orbit / top camera, grid snap, inspector. The phone game does not load this file.
 import * as THREE from 'three';
 import { DEFAULT_MAP } from './leveldata.js';
+import { YARD_MAP } from './yarddata.js';
 import { ITEMS } from './gear.js';
 
 const $ = (id) => document.getElementById(id);
@@ -10,12 +11,15 @@ const FACE = [
   ['North', -Math.PI / 2], ['East', 0], ['South', Math.PI / 2], ['West', Math.PI],
 ];
 const TOOLS = [
+  { id: 'hull', type: 'block', kind: 'building', label: 'Hull', color: '#6e382e', style: 'hull' },
+  { id: 'boat', type: 'block', kind: 'building', label: 'Boat deck', color: '#5c564c', style: 'boat' },
   { id: 'wall', type: 'block', kind: 'wall', label: 'Wall', color: '#56636b' },
   { id: 'building', type: 'block', kind: 'building', label: 'Building', color: '#4a5866' },
   { id: 'crate', type: 'block', kind: 'crate', label: 'Crate', color: '#7a6440' },
   { id: 'door', type: 'block', kind: 'door', label: 'Door', color: '#9a2a2a' },
   { id: 'deck', type: 'deck', label: 'Deck', color: '#7d8a92' },
   { id: 'water', type: 'water', label: 'Water', color: '#1a90b0' },
+  { id: 'dry', type: 'dry', label: 'Dry pad', color: '#4c585c' },
   { id: 'ladder', type: 'climb', kind: 'ladder', label: 'Ladder', color: '#c8a030' },
   { id: 'pipe', type: 'climb', kind: 'pipe', label: 'Drainpipe', color: '#6a8f72' },
   { id: 'net', type: 'climb', kind: 'net', label: 'Cargo net', color: '#8d6b3a' },
@@ -168,10 +172,13 @@ function fresh(toolId, x, z) {
   const t = TOOLS.find((n) => n.id === toolId);
   x = snap(x); z = snap(z);
   const rect = (type, w, d, extra) => ({ id: nextId(type), type, x1: x - w / 2, x2: x + w / 2, z1: z - d / 2, z2: z + d / 2, ...extra });
+  if (t.id === 'hull') return rect('block', 16, 12, { kind: 'building', h: 3.2, name: 'HULL', paint: 0x6e382e, draft: 1.7, noCoop: 1 });
+  if (t.id === 'boat') return rect('block', 6, 3.4, { kind: 'building', h: 1.2, name: 'BOAT', paint: 0x5c564c, draft: 0.85, boot: 0.3, noCoop: 1 });
   if (t.type === 'block') {
     const sz = { wall: [6, 1, 2.5], building: [6, 5, 3.2], crate: [1.5, 1.5, 1], door: [3, 0.5, 2.5] }[t.kind];
     return rect('block', sz[0], sz[1], { kind: t.kind, h: sz[2], name: t.label });
   }
+  if (t.type === 'dry') return rect('dry', 6, 4, { name: 'Dry pad' });
   if (t.type === 'deck') return rect('deck', 6, 1.4, { h: 3.2, name: 'DECK' });
   if (t.type === 'water') return rect('water', 8, 6, { name: 'WATER' });
   if (t.type === 'pad') return rect('pad', 8, 8, { y: 0.012, color: 0x243028, name: 'PAD' });
@@ -300,7 +307,8 @@ function buildWorld() {
   while (world.children.length) world.remove(world.children[0]);
   const b = doc.bounds || { x1: -38, x2: 40, z1: -30, z2: 32 };
   const gw = b.x2 - b.x1, gd = b.z2 - b.z1;
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(gw, gd), mat(0x26352e, 1));
+  const sea = !!doc.sea;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(gw, gd), mat(sea ? 0x0c3a4a : 0x26352e, 1));
   ground.rotation.x = -Math.PI / 2; ground.position.set((b.x1 + b.x2) / 2, 0, (b.z1 + b.z2) / 2);
   ground.userData = { ground: 1 }; world.add(ground);
   const size = Math.max(gw, gd);
@@ -318,10 +326,15 @@ function buildWorld() {
     if (p.type === 'pad') {
       const c = centerOf(p);
       box(c.w, 0.05, c.d, p.color || 0x243028, c.x, p.y || 0.02, c.z, data, 1);
+    } else     if (p.type === 'dry') {
+      const c = centerOf(p);
+      box(c.w, 0.12, c.d, 0x4c585c, c.x, 0.08, c.z, data);
     } else if (p.type === 'block' || p.type === 'post') {
       const c = p.type === 'post' ? { x: p.x, z: p.z, w: 0.16, d: 0.16 } : centerOf(p);
       const h = p.h || 1;
-      box(c.w, h, c.d, KIND_COLOR[p.kind] || KIND_COLOR.post, c.x, h / 2, c.z, data);
+      const col = p.paint != null ? p.paint : (KIND_COLOR[p.kind] || KIND_COLOR.post);
+      box(c.w, h, c.d, col, c.x, h / 2, c.z, data);
+      if (p.draft) box(Math.max(0.2, c.w - 0.2), p.draft, Math.max(0.2, c.d - 0.2), 0x140e0c, c.x, -p.draft / 2, c.z, data);
     } else if (p.type === 'deck') {
       const c = centerOf(p);
       box(c.w, 0.14, c.d, p.h > 8 ? 0x9aa8b0 : p.h > 5 ? 0x7d8a92 : 0x5c666c, c.x, p.h, c.z, data, p.noDeck ? 0.35 : 0.9);
@@ -453,9 +466,26 @@ function buildInspector() {
     host.appendChild(textField('Name', p.name || '', (v) => { p.name = v; }));
   }
   if (p.type === 'block') {
-    host.appendChild(choice('Kind', [['wall', 'Wall'], ['building', 'Building'], ['crate', 'Crate'], ['door', 'Door']], p.kind, (v) => { p.kind = v; }));
-    host.appendChild(note(p.kind === 'crate' ? 'Short crates can be mantled. Tall ones need a ladder, a net, or a climb wall.' : p.kind === 'door' ? 'Every door opens when the two switches are pressed.' : 'Walls and buildings block movement. You can walk on a building roof.'));
+    const styles = [['hull', 'Ship hull'], ['boat', 'Boat deck'], ['hold', 'Cargo hold'], ['bridge', 'Bridge'], ['crane', 'Crane'], ['stack', 'Funnel'], ['wall', 'Wall'], ['door', 'Bulkhead'], ['crate', 'Crate'], ['building', 'Plain block']];
+    const current = p.dress === 'bridge' || p.dress === 'crane' || p.dress === 'stack' ? p.dress
+      : p.kind === 'door' ? 'door' : p.kind === 'wall' ? 'wall' : p.kind === 'crate' ? 'crate'
+      : p.boot ? 'boat' : p.draft ? 'hull' : (p.paint === 0x241e1c ? 'hold' : 'building');
+    host.appendChild(choice('Style', styles, current, (v) => {
+      delete p.paint; delete p.draft; delete p.boot; delete p.dress; delete p.noCoop;
+      const set = {
+        hull: { kind: 'building', paint: 0x6e382e, draft: 1.7, noCoop: 1 },
+        boat: { kind: 'building', paint: 0x5c564c, draft: 0.85, boot: 0.3, noCoop: 1 },
+        hold: { kind: 'building', paint: 0x241e1c, noCoop: 1 },
+        bridge: { kind: 'building', paint: 0xc5ccd1, dress: 'bridge', noCoop: 1 },
+        crane: { kind: 'building', paint: 0xd1a43a, dress: 'crane' },
+        stack: { kind: 'building', paint: 0x3e3834, dress: 'stack' },
+        wall: { kind: 'wall' }, door: { kind: 'door' }, crate: { kind: 'crate', paint: 0x6e5a38 }, building: { kind: 'building' },
+      }[v];
+      Object.assign(p, set);
+    }));
+    host.appendChild(note(p.kind === 'door' ? 'The red bulkhead opens when both switches are pressed.' : p.draft ? 'A hull or boat sits in the water. Dry pads are where swimmers stand to climb aboard.' : 'Walk on top of a building or a crate.'));
   }
+  if (p.type === 'dry') host.appendChild(note('A dry pad is a swim platform, the pier, or the bilge. Everything else on an ocean map is water. Guards do not swim.'));
   if (p.x1 != null && p.type !== 'rail') {
     const c = centerOf(p);
     host.appendChild(numField('Width', c.w, (v) => { const w = Math.max(0.2, v), cx = (p.x1 + p.x2) / 2; p.x1 = cx - w / 2; p.x2 = cx + w / 2; if (p.type === 'crawl') p.axis = w >= Math.abs(p.z2 - p.z1) ? 'x' : 'z'; }));
@@ -845,14 +875,22 @@ function bind() {
   $('save').onclick = () => saveServer(false).catch((e) => setStatus(e.message));
   $('use').onclick = () => saveServer(true).catch((e) => setStatus(e.message));
   $('revert').onclick = async () => {
-    if (!confirm('Put the original Relay Yard back for everyone? This map stays saved on the server.')) return;
+    if (!confirm('Put the open ocean back for everyone? This map stays saved on the server.')) return;
     try {
       const r = await fetch('/api/maps/active', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: '' }) });
       if (!r.ok) throw new Error('Could not switch back');
-      setStatus('The game loads the Relay Yard again. This editor still has the map you were editing.');
+      setStatus('The game loads the open ocean again. This editor still has the map you were editing.');
     } catch (e) { setStatus(e.message); }
   };
   $('play').onclick = playtest;
+  $('loadYard').onclick = () => {
+    if (dirty && !confirm('Leave this map and open the Relay Yard?')) return;
+    pushUndo();
+    doc = structuredClone(YARD_MAP);
+    selected = null; tool = null; dirty = false;
+    frame(); syncTools(); rebuild();
+    setStatus('Relay Yard. It is not the mission everyone plays unless you press Use in the game.');
+  };
   window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 }
 
