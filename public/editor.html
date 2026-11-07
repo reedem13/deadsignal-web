@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deadsignal map editor</title>
+<link rel="stylesheet" href="/editor.css">
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <a class="logo" href="/">DEADSIGNAL</a>
+    <input id="mapName" title="Map name" spellcheck="false">
+    <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="redo" title="Redo (Ctrl+Y)">Redo</button>
+    <button id="toolSelect" class="on" title="Click a piece to select it">Select</button>
+    <button id="rotate" title="Turn the selection (R)">Rotate</button>
+    <button id="dup" title="Copy the selection (Ctrl+D)">Duplicate</button>
+    <button id="del" title="Delete (Del)">Delete</button>
+    <label class="snap">Snap
+      <select id="snap" title="Movement sticks to this grid">
+        <option value="0">Off</option>
+        <option value="0.1">0.1</option>
+        <option value="0.5" selected>0.5</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+    </label>
+    <button id="viewTop" title="Look straight down">Top</button>
+    <button id="viewAngle" title="The game's angled view">Angle</button>
+    <button id="frame" title="Show the whole map (F)">Frame</button>
+    <button id="helpBtn">How to</button>
+    <span class="grow"></span>
+    <button id="download">Download</button>
+    <button id="openBtn">Open</button>
+    <input id="file" type="file" accept="application/json,.json" hidden>
+    <select id="saved" title="Maps saved on this server"><option value="">Saved maps…</option></select>
+    <button id="save">Save on server</button>
+    <button id="use" class="hot">Use in the game</button>
+    <button id="revert">Ocean map</button>
+    <button id="loadYard">Load yard</button>
+    <button id="play" class="hot">Playtest</button>
+  </header>
+  <p id="phoneNote">The editor is built for a desktop. The game on your phone is unchanged.</p>
+  <div id="body">
+    <aside id="left">
+      <p class="hint">Click a piece type, then click the map to place it.</p>
+      <div id="palette"></div>
+      <label class="tiny"><input id="showRails" type="checkbox"> List rails and posts</label>
+      <input id="find" placeholder="Find a piece" spellcheck="false">
+      <div id="list"></div>
+    </aside>
+    <canvas id="view"></canvas>
+    <aside id="right">
+      <h2 id="inspTitle">Map</h2>
+      <div id="insp"></div>
+    </aside>
+  </div>
+  <footer id="status">Loading the map…</footer>
+  <div id="help" class="hidden">
+    <div class="card">
+      <h2>How to edit a map</h2>
+      <ol>
+        <li><b>Open.</b> This page loads the map the game is playing. If nobody has saved one, that is the open ocean: MERIDIAN, CINDER and ASH HOLD. Hull, boat deck and dry pad are how those ships are built. The old Relay Yard is in the lobby MAP menu.</li>
+        <li><b>Edit.</b> Click a type on the left, then click the ground to place it. Click a piece to select it and drag to move it. Yellow squares on the edges change the size. Rotate, Duplicate and Delete are on the top bar. The panel on the right is that piece: height, facing, the item in a locker, a guard's waypoints.</li>
+        <li><b>Undo</b> if a drag goes wrong. Right-drag orbits the camera. Scroll zooms. Left-drag on empty ground pans. North is up in the angled view.</li>
+        <li><b>Download</b> keeps a JSON file. <b>Open</b> brings a file back. <b>Save on server</b> stores it here without changing the live mission.</li>
+        <li><b>Playtest</b> opens the game on this map, on this computer, with Solo ticked. A partner joining that tab would not see your edits.</li>
+        <li><b>Use in the game</b> saves the map and makes Host / Join play it. <b>Original map</b> puts the ocean back for everyone. A restart forgets a server save and the ocean plays again.</li>
+      </ol>
+      <p>Low crates can be climbed without a marker. A <b>climb wall</b> is the marked spot where two players boost. A <b>cargo net</b> climbs like a ladder. Guards on a deck need walk areas or they step off.</p>
+      <button id="helpClose">Close</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="/editor.js"></script>
+</body>
+</html>

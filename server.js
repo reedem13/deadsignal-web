@@ -9,6 +9,8 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8080;
 const PUB = path.join(__dirname, 'public');
+const MAP_DIR = path.join(__dirname, 'data', 'maps');
+const ACTIVE_FILE = path.join(MAP_DIR, 'active.txt');
 const MAX_GUESTS = 4; // 5 players total
 const ROOM_TTL_MS = 3 * 60 * 1000; // keep an empty room around so phones can reconnect after app switching
 const MIME = {
@@ -17,10 +19,92 @@ const MIME = {
   '.webmanifest': 'application/manifest+json', '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json',
 };
 
+function mapIdOf(id) {
+  const s = String(id || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
+  if (!s || s === 'yard' || s === 'default' || s === 'playtest') return '';
+  return s;
+}
+function mapFile(id) { const s = mapIdOf(id); return s ? path.join(MAP_DIR, s + '.json') : null; }
+function readActive() {
+  try { return mapIdOf(fs.readFileSync(ACTIVE_FILE, 'utf8').trim()); } catch { return ''; }
+}
+function readMapFile(id) {
+  const f = mapFile(id);
+  if (!f) return null;
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; }
+}
+function listMaps() {
+  try { fs.mkdirSync(MAP_DIR, { recursive: true }); } catch { /* already there */ }
+  let names = [];
+  try { names = fs.readdirSync(MAP_DIR).filter((n) => n.endsWith('.json')); } catch { return []; }
+  return names.map((n) => {
+    const id = n.slice(0, -5);
+    const doc = readMapFile(id);
+    return doc && Array.isArray(doc.pieces) ? { id, name: doc.name || id } : null;
+  }).filter(Boolean);
+}
+function sendJson(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(body);
+}
+function readBody(req, limit = 2_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let n = 0;
+    req.on('data', (c) => { n += c.length; if (n > limit) { reject(new Error('too big')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+function chooseId(doc) {
+  return mapIdOf(doc.id) || mapIdOf(String(doc.name || 'mission').replace(/\s+/g, '-')) || 'mission';
+}
+async function handleMap(req, res, u) {
+  const q = new URL(req.url, 'http://localhost').searchParams;
+  if (req.method === 'GET' && u === '/api/maps') return sendJson(res, 200, { active: readActive(), maps: listMaps() });
+  if (req.method === 'GET' && u === '/api/map') {
+    const want = q.get('id') || '';
+    if (want === 'yard' || want === 'default') return sendJson(res, 200, { active: false, id: 'yard' });
+    const id = want ? mapIdOf(want) : readActive();
+    if (!id) return sendJson(res, 200, { active: false });
+    const map = readMapFile(id);
+    if (!map) return sendJson(res, want ? 404 : 200, want ? { error: 'no map ' + id } : { active: false });
+    return sendJson(res, 200, { active: readActive() === id, id, map });
+  }
+  if (req.method === 'POST' && (u === '/api/maps' || u === '/api/map')) {
+    let doc;
+    try { doc = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'Send a map JSON file.' }); }
+    if (!doc || !Array.isArray(doc.pieces) || doc.pieces.length > 4000) return sendJson(res, 400, { error: 'That is not a Deadsignal map.' });
+    const id = chooseId(doc);
+    doc.version = 1; doc.id = id;
+    try { fs.mkdirSync(MAP_DIR, { recursive: true }); fs.writeFileSync(mapFile(id), JSON.stringify(doc)); }
+    catch { return sendJson(res, 500, { error: 'Could not store the map.' }); }
+    return sendJson(res, 200, { ok: true, id, name: doc.name || id });
+  }
+  if (req.method === 'POST' && u === '/api/maps/active') {
+    let body = {};
+    try { body = JSON.parse(await readBody(req) || '{}'); } catch { return sendJson(res, 400, { error: 'bad json' }); }
+    const id = mapIdOf(body.id);
+    if (id && !readMapFile(id)) return sendJson(res, 404, { error: 'Save the map first.' });
+    try {
+      fs.mkdirSync(MAP_DIR, { recursive: true });
+      if (!id) fs.rmSync(ACTIVE_FILE, { force: true });
+      else fs.writeFileSync(ACTIVE_FILE, id);
+    } catch { return sendJson(res, 500, { error: 'Could not update the game map.' }); }
+    return sendJson(res, 200, { ok: true, active: id || null });
+  }
+  sendJson(res, 404, { error: 'not found' });
+}
+
 const server = http.createServer((req, res) => {
   let u;
   try { u = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400); return res.end(); }
   if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok ' + rooms.size + ' rooms'); }
+  if (u === '/api/map' || u === '/api/maps' || u === '/api/maps/active') {
+    handleMap(req, res, u).catch(() => { if (!res.headersSent) sendJson(res, 500, { error: 'map error' }); });
+    return;
+  }
+  if (u === '/editor') u = '/editor.html';
   if (u === '/') u = '/index.html';
   const f = path.normalize(path.join(PUB, u));
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }

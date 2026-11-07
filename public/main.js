@@ -29,69 +29,10 @@
 import * as THREE from 'three';
 import { ITEMS, GRID, GUN_IDS, drawSlot, pixText, textW, iconCanvas, SLOT_W, SLOT_H } from './gear.js';
 import { makeSneaker, makeEnemy } from './sneaker.js';
-import { TRAV, L1, L2, L3 as H3, HOLD, BOAT, WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { TRAV, L1, L2, L3 as H3, HOLD, BOAT, WALKS, RAILS, CLIMBS, COOPS, LINKS, GRAPPLE, LINE_ENTRY, coopGeom, lineDur, lineAutoPos, lineEncode, lineDecode, strokeAt, kickAt, buildTraversal, occludes } from './traverse.js';
+import { MAP, MAP_NAME, WALLS, TUNNELS, TUNNEL_H, TUNNEL_WALL, SWITCHES, EXTRACT, SPAWNS, GUARDS, WATERS, DRY, SEA, PICKUPS, PADS, waterVolume, onDry } from './mapcompile.js';
 
-// ---------------------------------------------------------------- level data — open ocean, three ships (see traverse.js)
-// Waterline is y = 0. L1 main decks, L2 bridges, L3 crane and funnel. Players spawn in the channel.
-// MERIDIAN (north) holds the switches, the red door and the extract pad. CINDER (southwest) has the
-// first pistol. ASH HOLD (southeast) is the freighter: hold, deckhouse, crane. A pier and tug sit far south.
-const MAP = { x1: -42, x2: 44, z1: -36, z2: 42 };
-const COL = {
-  hull: 0x6e382e, bridge: 0xc5ccd1, stack: 0x3e3834, hold: 0x241e1c, crane: 0xd1a43a,
-  boat: 0x5c564c, tug: 0x2c3338, cabin: 0xd8d2c6, crate: 0x6e5a38, box: 0xb56a32,
-};
-const B = (cx, cz, w, d, h, kind = 'crate', extra = {}) => ({ x1: cx - w / 2, x2: cx + w / 2, z1: cz - d / 2, z2: cz + d / 2, h, kind, ...extra });
-const hull = (cx, cz, w, d, extra = {}) => B(cx, cz, w, d, L1, 'building', { paint: COL.hull, draft: 1.7, noCoop: 1, ...extra });
-const WALLS = [
-  // MERIDIAN — VLCC, east-west. Stern x -24..-8, bow x 6..24, beam z -26..-10.
-  hull(-16, -18, 16, 16),
-  hull(15, -18, 18, 16),
-  hull(26, -18, 4, 10),
-  hull(-1, -24.7, 14, 2.6, { noCoop: 0 }),
-  hull(-4.7, -11.3, 6.6, 2.6, { noCoop: 0 }),
-  hull(3.7, -11.3, 4.6, 2.6, { noCoop: 0 }),
-  B(-4.575, -18, 6.85, 10.8, HOLD, 'building', { paint: COL.hold, noCoop: 1 }),
-  B(3.575, -18, 4.85, 10.8, HOLD, 'building', { paint: COL.hold, noCoop: 1 }),
-  B(-17, -18, 10, 8, L2, 'building', { paint: COL.bridge, dress: 'bridge', noCoop: 1 }),
-  B(-15.4, -16.5, 1.6, 2.2, H3, 'building', { paint: COL.stack, dress: 'stack' }),
-  B(-16.5, -18, 0.4, 8.1, 10, 'wall'),
-  B(-23.4, -12, 0.5, 4.1, 5.7, 'wall'),
-  B(-16.8, -12, 0.5, 4.1, 5.7, 'door'),
-  B(-26.15, -23.2, 5.1, 3.4, BOAT, 'building', { paint: COL.boat, draft: 0.85, boot: 0.3, noCoop: 1 }),
-  B(16.2, -16.4, 1.3, 1.1, L1 + 1.05, 'crate', { paint: COL.crate }),
-  B(11.2, -21.2, 1.2, 1.2, L1 + 1.0, 'crate', { paint: COL.crate }),
-  B(-4.1, -17.8, 1.15, 1.05, HOLD + 1.0, 'crate', { paint: COL.crate }),
-  // CINDER — product tanker, north-south. x -32..-20, z 2..24.
-  hull(-26, 13, 12, 22),
-  B(-26, 20, 8, 8, L2, 'building', { paint: COL.bridge, dress: 'bridge' }),
-  B(-26, 0.725, 6, 3.25, BOAT, 'building', { paint: COL.boat, draft: 0.85, boot: 0.3, noCoop: 1 }),
-  B(-28.4, 11.5, 1.3, 1.15, L1 + 1.05, 'crate', { paint: COL.crate }),
-  // ASH HOLD — freighter. Aft x 10..20, fore x 26..36, beam z 8..20.
-  hull(15, 14, 10, 12),
-  hull(31, 14, 10, 12),
-  hull(23, 9.4, 6, 2.8, { noCoop: 0 }),
-  hull(23, 18.8, 6, 2.4, { noCoop: 0 }),
-  B(23, 14.2, 5.2, 6.8, HOLD, 'building', { paint: COL.hold, noCoop: 1 }),
-  B(13, 11.8, 3.6, 3.2, L2, 'building', { paint: COL.bridge, dress: 'bridge' }),
-  B(18.5, 17.4, 2.6, 3.6, H3, 'building', { paint: COL.crane, dress: 'crane' }),
-  B(8.325, 15.4, 4.05, 4.4, BOAT, 'building', { paint: COL.boat, draft: 0.85, boot: 0.3, noCoop: 1 }),
-  B(28.2, 14, 1.8, 1.3, L1 + 1.15, 'crate', { paint: COL.box }),
-  B(32.4, 14.4, 2.0, 1.25, L1 + 1.15, 'crate', { paint: COL.box }),
-  // Tug alongside the south pier. Flavor, not an objective.
-  B(2.6, 31.15, 7.2, 3.1, 1.3, 'building', { paint: COL.tug, draft: 0.75, boot: 0.28, noCoop: 1, dress: 'tug' }),
-  B(3.6, 31.15, 2.4, 2.2, 2.35, 'building', { paint: COL.cabin, noCoop: 1 }),
-];
-for (const [x, z, h] of DECK_POSTS) WALLS.push(B(x, z, 0.16, 0.16, h, 'post'));
-// MERIDIAN BILGE: a crawl from a mouth on the south hull into a well under the north gunwale.
-const TUNNEL_H = 1.25, TUNNEL_WALL = 0.3;
-const TUNNELS = [
-  { name: 'MERIDIAN BILGE', x1: -0.85, x2: 0.85, z1: -22.25, z2: -10.15, axis: 'z', roof: 0.22 },
-];
-for (const t of TUNNELS) {
-  const W = TUNNEL_WALL, h = TUNNEL_H + 0.2;
-  if (t.axis === 'z') WALLS.push({ x1: t.x1 - W, x2: t.x1, z1: t.z1, z2: t.z2, h, kind: 'tunnel' }, { x1: t.x2, x2: t.x2 + W, z1: t.z1, z2: t.z2, h, kind: 'tunnel' });
-  else WALLS.push({ x1: t.x1, x2: t.x2, z1: t.z1 - W, z2: t.z1, h, kind: 'tunnel' }, { x1: t.x1, x2: t.x2, z1: t.z2, z2: t.z2 + W, h, kind: 'tunnel' });
-}
+// Geometry comes from the compiled map (leveldata.js). The ocean is the default.
 function tunnelAt(x, z, inset = 0) {
   for (let i = 0; i < TUNNELS.length; i++) {
     const t = TUNNELS[i], ix = t.axis === 'x' ? inset : 0, iz = t.axis === 'z' ? inset : 0;
@@ -101,87 +42,8 @@ function tunnelAt(x, z, inset = 0) {
 }
 const GUARD_BLOCKS = TUNNELS.map((t) => ({ x1: t.x1 - (t.axis === 'x' ? 0.3 : 0), x2: t.x2 + (t.axis === 'x' ? 0.3 : 0),
   z1: t.z1 - (t.axis === 'z' ? 0.3 : 0), z2: t.z2 + (t.axis === 'z' ? 0.3 : 0), h: 0, kind: 'block' }));
-// Switches are far enough apart, and one floor apart, that one player cannot arm both inside the window.
-const SWITCHES = [{ x: 16, z: -18, y: L1 }, { x: -15.2, z: -20.8, y: L2 }];
-const EXTRACT = { x: -19.4, z: -18.2, y: L2, r: 1.4 }; // west bridge roof, behind the red door
-// Five swim slots in the channel, empty-handed, none of them on a hull.
-const SPAWNS = [
-  { x: -1.6, z: 1.0 }, { x: 1.1, z: 2.5 }, { x: -3.8, z: 2.6 }, { x: 3.2, z: 0.5 }, { x: -0.2, z: 4.3 },
-];
 const NP = SPAWNS.length;
-// Guards live on decks (y > 0). `area` clamps them so they never walk off into the sea. They do not swim.
-const MER_BOW = [{ x1: 6.4, x2: 23.6, z1: -25.6, z2: -10.4 }, { x1: 23.6, x2: 27.6, z1: -22.6, z2: -13.4 }];
-const MER_NORTH = [{ x1: -23.5, x2: -8.4, z1: -25.6, z2: -22.35 }];
-const MER_HOLD = [{ x1: -7.15, x2: -1.45, z1: -23.0, z2: -13.05 }];
-const MER_ROOF = [{ x1: -16.15, x2: -12.35, z1: -21.6, z2: -14.45 }];
-const CIN_DECK = [{ x1: -31.5, x2: -20.5, z1: 2.5, z2: 15.5 }];
-const CIN_BRIDGE = [{ x1: -29.6, x2: -22.4, z1: 16.5, z2: 23.5 }];
-const ASH_AFT = [
-  { x1: 10.4, x2: 16.6, z1: 13.7, z2: 19.5 },
-  { x1: 10.4, x2: 19.5, z1: 8.3, z2: 9.85 },
-  { x1: 15.0, x2: 16.9, z1: 9.5, z2: 15.5 },
-  { x1: 15.2, x2: 19.5, z1: 8.3, z2: 15.2 },
-];
-const ASH_FORE = [{ x1: 26.4, x2: 35.6, z1: 8.4, z2: 19.6 }];
-const ASH_CRANE = [{ x1: 17.45, x2: 19.55, z1: 15.95, z2: 18.9 }];
-const GUARDS = [
-  { y: L1, area: MER_BOW, home: [6, 28, -26, -10], path: [[20, -13.2], [20, -23.2], [9.2, -23.2], [9.2, -13.2]] },
-  { y: L1, area: MER_NORTH, home: [-24, -8, -26, -22], path: [[-21, -24.1], [-10.2, -24.1], [-10.2, -23.1], [-21, -23.1]] },
-  { y: HOLD, area: MER_HOLD, home: [-8, -1, -23.4, -12.6], path: [[-5.5, -14.8], [-2.6, -14.8], [-2.6, -21.4], [-5.5, -21.4]] },
-  { y: L2, area: MER_ROOF, home: [-16.5, -12, -22, -14], path: [[-13.15, -20.5], [-13.15, -15.5]] },
-  { y: L1, area: CIN_DECK, home: [-32, -20, 2, 16], path: [[-22.4, 4.2], [-22.4, 14.2], [-29.6, 14.2], [-29.6, 4.2]] },
-  { y: L2, area: CIN_BRIDGE, home: [-30, -22, 16, 24], path: [[-24.2, 18.2], [-28.2, 18.2], [-28.2, 22.2], [-24.2, 22.2]] },
-  { y: L1, area: ASH_AFT, home: [10, 20, 8, 20], path: [[12.2, 16.6], [12.2, 18.5], [15.5, 18.5], [15.5, 9.1], [18.5, 9.1], [18.5, 14.2], [15.6, 14.2], [15.6, 16.6]] },
-  { y: L1, area: ASH_FORE, home: [26, 36, 8, 20], path: [[30.4, 9.3], [30.4, 18.2], [34.6, 18.2], [34.6, 9.3]] },
-  { y: H3, area: ASH_CRANE, home: [17, 20, 15.5, 19.5], path: [[18.1, 16.5], [18.7, 18.2], [17.7, 18.2]] },
-];
 const GUARD_PATHS = GUARDS.map((g) => g.path);
-// Dry pads: swim platforms, the bilge, the pier. Anything else inside the map is ocean.
-// Pads overlap the hull or boat they serve so there is no wet crack at the joint.
-const DRY = [
-  { x1: 8.8, x2: 17.4, z1: -10.4, z2: -7.15 },   // MERIDIAN south ladder + 2P
-  { x1: 16.1, x2: 21.2, z1: -29.5, z2: -25.6 },  // MERIDIAN north net
-  { x1: -32.3, x2: -28.3, z1: -25.2, z2: -21.15 }, // MERIDIAN boat step
-  { x1: 27.6, x2: 31.1, z1: -20.4, z2: -15.6 },  // MERIDIAN bow grapple
-  { x1: -1.75, x2: 1.75, z1: -23.6, z2: -7.9 },  // bilge well, crawl and mouth
-  { x1: -20.4, x2: -16.2, z1: 5.6, z2: 13.6 },   // CINDER east ladder + 2P
-  { x1: -35.7, x2: -31.6, z1: 5.5, z2: 11.1 },   // CINDER west net
-  { x1: -29.5, x2: -22.5, z1: -4.4, z2: -0.5 },  // CINDER bow step
-  { x1: -28.7, x2: -23.3, z1: 23.6, z2: 27.3 },  // CINDER stern grapple
-  { x1: 11.5, x2: 20.0, z1: 4.4, z2: 8.4 },      // ASH north ladder + 2P
-  { x1: 24.8, x2: 30.0, z1: 19.6, z2: 23.4 },    // ASH south net
-  { x1: 3.0, x2: 6.7, z1: 12.7, z2: 18.1 },      // ASH boat step
-  { x1: 35.6, x2: 39.4, z1: 11.7, z2: 17.3 },    // ASH east grapple
-  { x1: -8.4, x2: 9.4, z1: 32.1, z2: 37.3 },     // pier
-];
-const OCEAN = { name: 'OPEN OCEAN', x1: MAP.x1, x2: MAP.x2, z1: MAP.z1, z2: MAP.z2 };
-function onDry(x, z, inset = 0) {
-  return DRY.some((d) => x >= d.x1 + inset && x <= d.x2 - inset && z >= d.z1 + inset && z <= d.z2 - inset);
-}
-const waterVolume = (x, z, pad = 0) => {
-  if (x <= MAP.x1 + 0.5 || x >= MAP.x2 - 0.5 || z <= MAP.z1 + 0.5 || z >= MAP.z2 - 0.5) return null;
-  if (onDry(x, z, pad > 0 ? 0.42 : -0.18)) return null;
-  return OCEAN;
-};
-// Split the ocean sheet around dry pads so platforms and the bilge are not under the water plane.
-function carveRects(ocean, holes) {
-  let rects = [{ x1: ocean.x1, x2: ocean.x2, z1: ocean.z1, z2: ocean.z2 }];
-  const keep = (r) => r.x2 - r.x1 > 0.45 && r.z2 - r.z1 > 0.45;
-  for (const h of holes) {
-    const next = [];
-    for (const r of rects) {
-      if (h.x2 <= r.x1 + 0.02 || h.x1 >= r.x2 - 0.02 || h.z2 <= r.z1 + 0.02 || h.z1 >= r.z2 - 0.02) { next.push(r); continue; }
-      const L = Math.max(r.x1, h.x1), R = Math.min(r.x2, h.x2);
-      if (h.x1 > r.x1 + 0.2) next.push({ x1: r.x1, x2: h.x1, z1: r.z1, z2: r.z2 });
-      if (h.x2 < r.x2 - 0.2) next.push({ x1: h.x2, x2: r.x2, z1: r.z1, z2: r.z2 });
-      if (h.z1 > r.z1 + 0.2) next.push({ x1: L, x2: R, z1: r.z1, z2: h.z1 });
-      if (h.z2 < r.z2 - 0.2) next.push({ x1: L, x2: R, z1: h.z2, z2: r.z2 });
-    }
-    rects = next.filter(keep);
-  }
-  return rects;
-}
-const WATERS = carveRects(OCEAN, DRY).map((r) => ({ ...r, name: OCEAN.name, open: 1 }));
 const SWITCH_WINDOW = 2.0;
 const SPEED = { prone: 1.1, crouch: 1.8, walk: 3.2, run: 5.2, patrol: 1.4, investigate: 2.2, chase: 4.1 };
 const PAUSE = { min: 2.2, rand: 1.4, sweep: 0.45, rate: 1.1 };
@@ -210,25 +72,6 @@ const TRANQ = { sleep: 30 };
 const STUN = { range: 7, r: 5, fuse: 1.2, ko: 7, flight: 0.6 };
 const C4 = { kill: 3.2, pr: 3, pdmg: 50, noise: 18, max: 12 };
 const RATION_HP = 40, STIM_T = 30;
-// Gear stays off the spawn. The pistol is the first thing you can reach, on CINDER. The better kit is up a crane,
-// on a bridge, or down in a hold.
-const PICKUPS = [
-  { id: 'p9', n: 12, x: -25.4, z: 7.6, lv: L1, locker: 1 },
-  { id: 'p9', n: 12, x: -29.4, z: 5.4, lv: L1, re: 40, ammo: 1 },
-  { id: 'ration', n: 1, x: -24.4, z: 12.6, lv: L1 },
-  { id: 'stun', n: 2, x: -26.1, z: 20.2, lv: L2 },
-  { id: 'box', n: 1, x: 23.4, z: 13.6, lv: HOLD, locker: 1 },
-  { id: 'stim', n: 1, x: 33.4, z: 11.4, lv: L1 },
-  { id: 'mkt', n: 6, x: 13.1, z: 11.7, lv: L2 },
-  { id: 'fr5', n: 30, x: 19.15, z: 16.35, lv: H3 },
-  { id: 'fr5', n: 30, x: 29.2, z: 16.8, lv: L1, re: 45, ammo: 1 },
-  { id: 'c4', n: 2, x: 3.3, z: -19.4, lv: HOLD },
-  { id: 'ration', n: 1, x: 12.6, z: -14.6, lv: L1, re: 55 },
-  { id: 'supp', n: 1, x: -14.35, z: -19.3, lv: L2 },
-  { id: 'scope', n: 1, x: -15.4, z: -16.5, lv: H3 },
-  { id: 'stun', n: 1, x: -16.4, z: -24.8, lv: L1 },
-  { id: 'ration', n: 1, x: -3.2, z: 34.4, lv: 0, re: 50 },
-];
 // One bundle per guard, rolled on the host the moment he goes down for good (not on a stun / tranq nap) and synced
 // as g.loot. Loud kills favour the FAMAS mag (FR-5). Takedowns still hand you the rifle sometimes, but bias toward
 // the quiet kit (suppressor, darts, sidearm, ration, box). Index 0 is "no drop yet".
@@ -316,9 +159,9 @@ const solids = () => WALLS.filter((w) => !(w.kind === 'door' && world.door));
 
 function collide(p, r, guard = false) {
   if (guard && p.y > 0.3) return collideHigh(p, r);
-  // The ocean is not a collision box (one map-sized rect would shove every guard). Deck guards are
-  // clamped to their area. Water stays a route for players; the bilge blocks guards via GUARD_BLOCKS.
-  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS) : solids());
+  // Open ocean is not a collision box (one map-sized rect would shove every guard). Deck guards are
+  // clamped to their area. A land map's basins are walls for guards. The bilge blocks them via GUARD_BLOCKS.
+  collideBoxes(p, r, guard ? solids().concat(GUARD_BLOCKS, SEA ? [] : WATERS) : solids());
 }
 // elevated guards: only what sticks up above their deck blocks them (walls, door, tall buildings, rails), then they are
 // clamped onto the nearest of their deck rects so they never walk off a catwalk.
@@ -476,6 +319,16 @@ function xzSlab(x1, z1, x2, z2, holes) {
     s.holes.push(p);
   }
   const g = new THREE.ShapeGeometry(s); g.rotateX(-Math.PI / 2); return g;
+}
+// Land maps keep a concrete yard under the basins. The ocean is only water and dry boarding pads.
+if (!SEA) {
+  scene.add(new THREE.Mesh(xzSlab(MAP.x1, MAP.z1, MAP.x2, MAP.z2, WATERS), mat(0x26352e)));
+  const grid = new THREE.GridHelper(MAP.x2 - MAP.x1, 38, 0x35503f, 0x2d4236);
+  grid.position.set((MAP.x1 + MAP.x2) / 2, 0.01, (MAP.z1 + MAP.z2) / 2); scene.add(grid);
+  for (const p of PADS) {
+    const fl = new THREE.Mesh(xzSlab(p.x1, p.z1, p.x2, p.z2, WATERS), mat(p.color));
+    fl.position.y = p.y || 0.012; scene.add(fl);
+  }
 }
 // ---- open ocean: basin tiles plus a PS1 sheet. Dry pads are cut out so platforms sit on the waterline.
 const BASIN = -1.88, SURFACE = 0.055;
@@ -2278,7 +2131,15 @@ function setRoster(slots) {
 }
 
 // ---------------------------------------------------------------- lobby / UI
-function joinLink() { return location.origin + location.pathname + '?room=' + roomCode + (qs.get('server') ? '&server=' + encodeURIComponent(qs.get('server')) : ''); }
+function keptQuery(extra) {
+  const p = new URLSearchParams();
+  if (qs.get('map')) p.set('map', qs.get('map'));
+  if (qs.get('server')) p.set('server', qs.get('server'));
+  if (extra) for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+function joinLink() { return location.origin + location.pathname + keptQuery({ room: roomCode }); }
 function showLobby(msg) {
   role = null; world = freshWorld(); lastPhase = 'play'; lastAlert = 0; peerConnected = false; mySlot = 0; fpsOn = false; syncViewButton();
   for (const o of others) { o.on = false; o.tk = ''; }
@@ -2294,7 +2155,7 @@ function enterGame() {
   }
   applyPlayerLooks();
   $('roomCode').textContent = solo ? 'SOLO' : roomCode;
-  history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
+  history.replaceState(null, '', role === 'guest' ? joinLink() : location.pathname + keptQuery());
 }
 $('btnHost').onclick = () => {
   unlockAudio(); role = 'host'; solo = $('soloBox').checked; roomCode = '';
@@ -2313,11 +2174,38 @@ $('btnShare').onclick = async () => {
     else { await navigator.clipboard.writeText(url); toast('Link copied', 1200, '#7fff9f'); }
   } catch { prompt('Send this link to your partner:', url); }
 };
+if (qs.get('solo') === '1' && $('soloBox')) $('soloBox').checked = true;
 if (qs.get('room')) {
   $('codeInput').value = qs.get('room').toUpperCase().slice(0, 4);
   $('btnJoin').textContent = 'JOIN ' + $('codeInput').value;
   $('lobbyMsg').textContent = 'Tap JOIN to enter your partner\'s mission.';
+} else if (qs.get('map') === 'playtest') {
+  $('lobbyMsg').textContent = 'Playtest map on this computer. Solo is ticked — a joined partner would not see this map.';
 }
+async function fillMaps() {
+  const sel = $('mapPick');
+  if (!sel) return;
+  const cur = window.__DS_MAP_ID || 'ocean';
+  const add = (id, name) => { const o = document.createElement('option'); o.value = id; o.textContent = name; sel.appendChild(o); };
+  sel.textContent = '';
+  add('ocean', MAP_NAME || 'Open Ocean');
+  add('yard', 'Relay Yard');
+  try {
+    const r = await fetch('/api/maps');
+    if (r.ok) {
+      const j = await r.json();
+      for (const m of j.maps || []) if (m && m.id && m.id !== 'yard' && m.id !== 'ocean') add(m.id, m.name || m.id);
+    }
+  } catch { /* the built-in ocean still plays */ }
+  if (![...sel.options].some((o) => o.value === cur)) add(cur, window.__DS_MAP_NAME || cur);
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : 'ocean';
+  sel.onchange = () => {
+    const p = new URLSearchParams(location.search);
+    p.set('map', sel.value);
+    location.search = p.toString();
+  };
+}
+fillMaps();
 let toastTimer = 0;
 function toast(msg, ms = 1500, color = '#fff') {
   const t = $('toast'); t.textContent = msg; t.style.color = color; t.classList.remove('hidden');
@@ -2371,7 +2259,7 @@ $('ovBtn').onclick = () => {
 $('ovMenu').onclick = () => { // leave the room and go back to Host/Join
   net.fatal = true; if (net.ws) net.ws.close();
   roomCode = ''; showLobby(role === 'host' && !solo ? 'Room closed. Host a new mission or join one.' : '');
-  history.replaceState(null, '', location.pathname + (qs.get('server') ? '?server=' + encodeURIComponent(qs.get('server')) : ''));
+  history.replaceState(null, '', location.pathname + keptQuery());
 };
 
 // ---------------------------------------------------------------- radar (top-right, Soliton-style)

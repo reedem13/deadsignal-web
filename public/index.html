@@ -76,6 +76,8 @@
     <div class="or">or join with a code</div>
     <div class="row"><input id="codeInput" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false"><button id="btnJoin" class="big">JOIN</button></div>
     <label class="solo"><input type="checkbox" id="soloBox"> Solo test (door + extract need only you)</label>
+    <label class="solo mapPick">MAP <select id="mapPick" title="Map for this visit. The map editor sets the map everyone plays."></select></label>
+    <a class="editorLink" href="/editor">Map editor</a>
   </div>
   <div id="lobbyMsg"></div>
   <div class="help">
@@ -100,6 +102,46 @@
   <div id="ovHint"></div>
 </div>
 
-<script type="module" src="main.js"></script>
+<script>
+// Load a saved or playtest map before the game module runs. No map (or a failed load) keeps the Relay Yard.
+(function () {
+  var q = new URLSearchParams(location.search);
+  var started = false, timer = 0;
+  function start() {
+    if (started) return;
+    started = true;
+    clearTimeout(timer);
+    var s = document.createElement('script');
+    s.type = 'module';
+    s.src = 'main.js';
+    document.body.appendChild(s);
+  }
+  if (q.get('map') === 'playtest') {
+    window.__DS_MAP_ID = 'playtest';
+    try {
+      var doc = JSON.parse(localStorage.getItem('ds-playtest-map') || 'null');
+      if (doc && doc.pieces) { window.__DS_MAP = doc; window.__DS_MAP_NAME = doc.name || 'Playtest'; }
+    } catch (e) {}
+    start();
+    return;
+  }
+  var id = q.get('map') || '';
+  if (id === 'yard') { window.__DS_MAP_ID = 'yard'; start(); return; }
+  if (id === 'ocean' || id === 'default') { window.__DS_MAP_ID = 'ocean'; start(); return; }
+  var ac = typeof AbortController === 'function' ? new AbortController() : null;
+  timer = setTimeout(function () { if (ac) ac.abort(); window.__DS_MAP_ID = 'ocean'; start(); }, 4000);
+  fetch('/api/map' + (id ? '?id=' + encodeURIComponent(id) : ''), ac ? { signal: ac.signal } : undefined)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.map && j.map.pieces) {
+        window.__DS_MAP = j.map;
+        window.__DS_MAP_ID = j.id || id || 'mission';
+        window.__DS_MAP_NAME = j.map.name || window.__DS_MAP_ID;
+      } else window.__DS_MAP_ID = 'ocean';
+      start();
+    })
+    .catch(function () { window.__DS_MAP_ID = 'ocean'; start(); });
+})();
+</script>
 </body>
 </html>

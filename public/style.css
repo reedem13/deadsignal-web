@@ -24,6 +24,9 @@ h2 { margin: 0; font-size: 30px; letter-spacing: 4px; color: #c9ffd6; }
 input#codeInput { width: 130px; font: inherit; font-size: 26px; text-align: center; letter-spacing: 6px; text-transform: uppercase;
   background: #071612; color: #c9ffd6; border: 2px solid #4fbf7a; border-radius: 6px; padding: 8px; -webkit-user-select: text; user-select: text; }
 .solo { font-size: 12px; opacity: .75; }
+.mapPick { display: flex; align-items: center; gap: 8px; letter-spacing: 1px; }
+#mapPick { font: inherit; font-size: 13px; background: #071612; color: #c9ffd6; border: 2px solid #4fbf7a; border-radius: 6px; padding: 6px 8px; max-width: 220px; }
+.editorLink { color: #7fd99a; font-size: 12px; letter-spacing: 1px; }
 #lobbyMsg { min-height: 1.2em; color: #ffd27f; max-width: 420px; }
 .help { font-size: 12px; opacity: .65; max-width: 460px; line-height: 1.6; }
 #ovBody { line-height: 1.7; font-size: 16px; }

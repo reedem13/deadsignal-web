@@ -28,60 +28,10 @@ export const TRAV = {
 //   ASH HOLD — southeast freighter. Open hold, deckhouse, crane tower.
 // Swim platforms, the pier and the bilge are dry pads in main.js (DRY). Ships do not touch.
 export const L1 = 3.2, L2 = 6.4, L3 = 9.6, HOLD = 1.15, BOAT = 1.2;
-const RAIL_H = 0.9;
-const W = (x1, x2, z1, z2, h, name, extra = {}) => ({ x1, x2, z1, z2, h, name, ...extra });
-export const WALKS = [
-  // MERIDIAN: cross the cargo pit. Ends meet the stern (x = -8) and the bow (x = 6).
-  W(-8, 6, -18.6, -16.2, L1, 'HOLD CATWALK'),
-  // ASH HOLD: crane boom off the tower. Guards stay on the cab.
-  W(19.6, 30.5, 16.7, 18.1, L3, 'CRANE BOOM'),
-];
-const rx = (x1, x2, z, side, y) => ({ x1, x2, z1: side < 0 ? z - 0.08 : z, z2: side < 0 ? z : z + 0.08, y0: y, h: y + RAIL_H });
-const rz = (z1, z2, x, side, y) => ({ x1: side < 0 ? x - 0.08 : x, x2: side < 0 ? x : x + 0.08, z1, z2, y0: y, h: y + RAIL_H });
-export const RAILS = [
-  rx(-8, 6, -18.6, -1, L1), rx(-8, 6, -16.2, 1, L1),
-  rx(19.6, 30.5, 16.7, -1, L3), rx(19.6, 30.5, 18.1, 1, L3),
-];
-// support legs (main.js adds them to WALLS as kind 'post'): [x, z, height]
-export const DECK_POSTS = [
-  [-7.2, -17.4, L1], [4.8, -17.4, L1], // under MERIDIAN's hold catwalk
-];
-export const GANTRY_POSTS = DECK_POSTS;
-
-// solo ladders / drainpipes / cargo nets. y0 = floor the foot stands on, top = floor up top.
-// a = facing INTO the wall. Feet sit ~0.52 m off the face so a swimmer who just stood up can grab.
-export const CLIMBS = [
-  // MERIDIAN — three ways out of the water, plus the bilge, the hold, and the bridge
-  { name: 'MERIDIAN SOUTH LADDER', kind: 'ladder', x: 15, z: -9.48, a: -Math.PI / 2, y0: 0, top: L1, lx: 15, lz: -11.15 },
-  { name: 'MERIDIAN NORTH NET', kind: 'net', x: 18.5, z: -26.52, a: Math.PI / 2, y0: 0, top: L1, lx: 18.5, lz: -24.9 },
-  { name: 'MERIDIAN BOAT LADDER', kind: 'ladder', x: -24.52, z: -23.2, a: 0, y0: BOAT, top: L1, lx: -23.1, lz: -23.2 },
-  { name: 'MERIDIAN BILGE LADDER', kind: 'ladder', x: 0, z: -22.82, a: -Math.PI / 2, y0: 0, top: L1, lx: 0, lz: -24.25 },
-  { name: 'MERIDIAN HOLD LADDER', kind: 'ladder', x: -4, z: -13.15, a: Math.PI / 2, y0: HOLD, top: L1, lx: -4, lz: -11.55 },
-  { name: 'MERIDIAN EAST LADDER', kind: 'ladder', x: -11.48, z: -18.5, a: Math.PI, y0: L1, top: L2, lx: -13.05, lz: -18.5 },
-  { name: 'MERIDIAN BRIDGE PIPE', kind: 'pipe', x: -13.8, z: -22.52, a: Math.PI / 2, y0: L1, top: L2, lx: -13.8, lz: -21.15 },
-  { name: 'MERIDIAN POCKET LADDER', kind: 'ladder', x: -19.2, z: -13.48, a: Math.PI / 2, y0: L1, top: L2, lx: -19.2, lz: -15.15 },
-  { name: 'MERIDIAN STACK LADDER', kind: 'ladder', x: -14.08, z: -16.5, a: Math.PI, y0: L2, top: L3, lx: -15.4, lz: -16.5 },
-  // CINDER
-  { name: 'CINDER EAST LADDER', kind: 'ladder', x: -19.48, z: 11, a: Math.PI, y0: 0, top: L1, lx: -21.15, lz: 11 },
-  { name: 'CINDER WEST NET', kind: 'net', x: -32.52, z: 8.2, a: 0, y0: 0, top: L1, lx: -30.9, lz: 8.2 },
-  { name: 'CINDER BOAT LADDER', kind: 'ladder', x: -26, z: 1.48, a: Math.PI / 2, y0: BOAT, top: L1, lx: -26, lz: 3.05 },
-  { name: 'CINDER BRIDGE LADDER', kind: 'ladder', x: -26, z: 15.48, a: Math.PI / 2, y0: L1, top: L2, lx: -26, lz: 17.15 },
-  // ASH HOLD
-  { name: 'ASH NORTH LADDER', kind: 'ladder', x: 14.2, z: 7.48, a: Math.PI / 2, y0: 0, top: L1, lx: 14.2, lz: 9.15 },
-  { name: 'ASH SOUTH NET', kind: 'net', x: 27.4, z: 20.52, a: -Math.PI / 2, y0: 0, top: L1, lx: 27.4, lz: 18.85 },
-  { name: 'ASH BOAT LADDER', kind: 'ladder', x: 9.48, z: 15.6, a: 0, y0: BOAT, top: L1, lx: 11.25, lz: 15.6 },
-  { name: 'ASH HOUSE LADDER', kind: 'ladder', x: 13, z: 9.68, a: Math.PI / 2, y0: L1, top: L2, lx: 13, lz: 11.15 },
-  { name: 'ASH HOLD LADDER', kind: 'ladder', x: 23, z: 17.05, a: Math.PI / 2, y0: HOLD, top: L1, lx: 23, lz: 18.4 },
-  { name: 'ASH CRANE LADDER', kind: 'ladder', x: 18.3, z: 15.08, a: Math.PI / 2, y0: L1, top: L3, lx: 18.3, lz: 16.35 },
-];
+import { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS } from './mapcompile.js';
+export { WALKS, RAILS, DECK_POSTS, CLIMBS, COOPS, LINKS };
 for (const c of CLIMBS) c.y0 = c.y0 || 0;
 
-export const COOPS = [
-  { name: 'MERIDIAN HULL', x: 10.6, z: -10, a: -Math.PI / 2, top: L1, y0: 0 },
-  { name: 'CINDER HULL', x: -20, z: 7.2, a: Math.PI, top: L1, y0: 0 },
-  { name: 'ASH HOLD', x: 17.6, z: 8, a: Math.PI / 2, top: L1, y0: 0 },
-  { name: 'MERIDIAN BRIDGE', x: -12, z: -19.4, a: Math.PI, top: L2, y0: L1 },
-];
 // derived points for a co-op wall: base = booster kneels here (back to the wall), step = climber's run-up spot,
 // hang = climber against the wall, edge = puller kneels here on the roof, land = where the climber ends up on top
 export function coopGeom(c) {
@@ -91,14 +41,6 @@ export function coopGeom(c) {
 
 // Vertical grapple lines. TOP-ONLY: the top ring rappels, or hauls a teammate off the foot ring.
 // Feet on a swim platform board by co-op haul; solo players take the ladder or the net beside it.
-export const LINKS = [
-  { name: 'MERIDIAN BOW', x: 28.5, z: -18, a: Math.PI, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.5, land: 0.62 },
-  { name: 'CINDER STERN', x: -26, z: 24.5, a: -Math.PI / 2, y0: 0, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
-  { name: 'ASH EAST', x: 36.5, z: 14.5, a: Math.PI, y0: 0, top: L1, lip: L1 + 0.06, wall: 0.5, land: 0.62 },
-  { name: 'MERIDIAN BRIDGE LINE', x: -15.6, z: -22.5, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
-  { name: 'CINDER BRIDGE LINE', x: -28.2, z: 15.5, a: Math.PI / 2, y0: L1, top: L2, lip: L2 + 0.06, wall: 0.5, land: 0.62 },
-  { name: 'ASH CRANE LINE', x: 16.7, z: 17.4, a: 0, y0: L1, top: L3, lip: L3 + 0.06, wall: 0.5, land: 0.62 },
-];
 // Slow, deliberate timings (seconds). The ENTRY is a short automated sequence, then the player owns the rope:
 //   UP entry  (foot ring): square up -> wind + throw -> claw bites, tug test  -> ON THE LINE at the bottom   [disabled: top-only grapple]
 //   DOWN entry (top ring): face the drop -> kneel + clamp the claw, feed the line -> turn, step back over the edge -> ON THE LINE at the top
@@ -115,16 +57,6 @@ export const GRAPPLE = {
 // phases (wire index = position in this list): entry phases depend on the direction you came from
 export const LINE_PH = ['sq', 'throw', 'set', 'over', 'line', 'mantle', 'land'];
 export const LINE_ENTRY = { gp: ['sq', 'throw', 'set'], rp: ['sq', 'set', 'over'] };
-for (const L of LINKS) {
-  L.dx = Math.cos(L.a); L.dz = Math.sin(L.a);
-  L.face = { x: L.x + L.dx * L.wall, z: L.z + L.dz * L.wall };
-  L.anchor = { x: L.face.x + L.dx * 0.03, y: L.lip, z: L.face.z + L.dz * 0.03 }; // claw over the lip
-  L.rope = { x: L.face.x - L.dx * 0.07, z: L.face.z - L.dz * 0.07 };              // rope hangs just off the face
-  L.foot = { x: L.x, y: L.y0, z: L.z };
-  L.landP = { x: L.face.x + L.dx * L.land, y: L.top, z: L.face.z + L.dz * L.land };
-  L.hang = Math.max(L.y0 + 0.4, L.lip - GRAPPLE.hangDrop);
-}
-/** duration of an automated phase (line = player-driven, no duration) */
 export function lineDur(k, ph) {
   if (ph === 'mantle') return GRAPPLE.mantle; if (ph === 'land') return GRAPPLE.land;
   return (k === 'gp' ? GRAPPLE.up : GRAPPLE.dn)[ph] || 0;
